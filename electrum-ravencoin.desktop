@@ -1,0 +1,24 @@
+# If you want Electrum to appear in a Linux app launcher ("start menu"), install this by doing:
+# sudo desktop-file-install electrum-ravencoin.desktop
+
+[Desktop Entry]
+Comment=Lightweight Ravencoin Client
+Exec=sh -c "PATH=\"\\$HOME/.local/bin:\\$PATH\"; electrum-ravencoin %u"
+GenericName[en_US]=Electrum Ravencoin Wallet
+GenericName[ru_RU]=Electrum Ravencoin Wallet
+GenericName=Electrum Ravencoin Wallet
+Icon=electrum-ravencoin
+Name[en_US]=Electrum Ravencoin Wallet
+Name[ru_RU]=Electrum Ravencoin Wallet
+Name=Electrum Ravencoin Wallet
+Categories=Finance;Network;
+StartupNotify=true
+StartupWMClass=electrum-ravencoin
+Terminal=false
+Type=Application
+MimeType=x-scheme-handler/ravencoin;
+Actions=Testnet;
+
+[Desktop Action Testnet]
+Exec=sh -c "PATH=\"\\$HOME/.local/bin:\\$PATH\"; electrum-ravencoin --testnet %u"
+Name=Testnet mode

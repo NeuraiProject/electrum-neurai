@@ -1,0 +1,18 @@
+{
+  "rvn4lyfe.com": {
+    "pruning": "-",
+    "s": "50002",
+    "t": "50001",
+    "version": "1.10"
+  },
+  "rvn-dashboard.com": {
+    "pruning": "-",
+    "s": "50002",
+    "version": "1.10"
+  },
+  "aq7vuqykup2voklcrpqljf6jnjkzrouowsjfrmybdou5kdhrpr6sjjid.onion": {
+    "pruning": "-",
+    "t": "50001",
+    "version": "1.10"
+  }
+}

@@ -9,8 +9,8 @@ from .i18n import _
 from .util import age, InvoiceError, Satoshis, parse_max_spend
 from .lnaddr import lndecode, LnAddr
 from . import constants
-from .ravencoin import COIN, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
-from .ravencoin import address_to_script
+from .neurai import COIN, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
+from .neurai import address_to_script
 from .transaction import PartialTxOutput, RavenValue
 from .crypto import sha256d
 
@@ -194,7 +194,7 @@ class Invoice(StoredObject):
         if value is not None:
             lndecode(value)  # this checks the str can be decoded
 
-    # TODO: RVN Only
+    # TODO: XNA Only
     @amount_msat.validator
     def _validate_amount(self, attribute, value: Optional[RavenValue]):
         if value is None:

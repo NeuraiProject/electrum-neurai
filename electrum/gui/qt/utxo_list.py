@@ -92,7 +92,7 @@ class UTXOList(MyTreeView):
             name_short = utxo.prevout.txid.hex()[:16] + '...' + ":%d" % utxo.prevout.out_idx
             rvn_value = utxo.value_sats()
             value = rvn_value.rvn_value.value
-            type = 'RVN'
+            type = 'XNA'
             if value == 0:
                 try:
                     type = list(rvn_value.assets.keys())[0]

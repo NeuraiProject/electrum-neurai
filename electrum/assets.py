@@ -4,7 +4,7 @@ import re
 from typing import Dict, Union, Optional, Tuple
 
 from .logging import get_logger
-from .ravencoin import opcodes, push_script, base_encode, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, COIN, base_decode
+from .neurai import opcodes, push_script, base_encode, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, COIN, base_decode
 from . import transaction
 from .util import Satoshis
 from .i18n import _
@@ -347,7 +347,7 @@ def is_main_asset_name_good(name):
     if re.search(TRAILING_PUNCTUATION, name):
         return "You cannot end a main asset with punctuation."
     if re.search(RAVEN_NAMES, name):
-        return "Main assets cannot have Ravencoin-like names."
+        return "Main assets cannot have Neurai-like names."
     if re.search(MAIN_CHECK, name):
         return None
     else:

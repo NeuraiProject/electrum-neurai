@@ -27,7 +27,7 @@ from math import floor, log10
 from typing import NamedTuple, List, Callable, Sequence, Union, Dict, Tuple, Optional
 from decimal import Decimal
 
-from .ravencoin import address_to_script, sha256, COIN, is_address
+from .neurai import address_to_script, sha256, COIN, is_address
 from .transaction import Transaction, TxOutput, PartialTransaction, PartialTxInput, PartialTxOutput
 from .assets import P2PKH_SCRIPT_SIZE
 from .util import NotEnoughFunds, Satoshis, RavenValue
@@ -133,7 +133,7 @@ def strip_unneeded(bkts: List[Bucket], needs_more) -> List[Bucket]:
             bucket_value_sum += get_rvn_bucket_value()
             needed = needs_more(get_buckets(), bucket_value_sum=bucket_value_sum)
             if needed == {None} and rvn_ptr+1 == len(bkts_rvn):
-                raise Exception("keeping all RVN buckets is still not enough: {}".format(bucket_value_sum))
+                raise Exception("keeping all XNA buckets is still not enough: {}".format(bucket_value_sum))
             rvn_ptr += 1
         while needed and needed != {None}:
             asset = next(iter(needed))

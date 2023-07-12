@@ -21,13 +21,13 @@ from electrum._vendor.distutils.version import StrictVersion
 
 
 VERSION_ANNOUNCEMENT_SIGNING_KEYS = (
-        "RPuQNvDVBC5Q4fXKyfYLjrunbyqiEYckP5",  # kralverde since ravencoin fork
+        "RPuQNvDVBC5Q4fXKyfYLjrunbyqiEYckP5",  # kralverde since neurai fork
     )
 
 
 class UpdateCheck(QDialog, Logger):
-    url = "https://raw.githubusercontent.com/Electrum-RVN-SIG/electrum-ravencoin/master/check-version.json"
-    download_url = "https://github.com/Electrum-RVN-SIG/electrum-ravencoin/releases"
+    url = "https://raw.githubusercontent.com/Electrum-RVN-SIG/electrum-neurai/master/check-version.json"
+    download_url = "https://github.com/Electrum-RVN-SIG/electrum-neurai/releases"
 
     class VerifyUpdateHashes(QWidget):
         def __init__(self):
@@ -69,7 +69,7 @@ class UpdateCheck(QDialog, Logger):
                 try:
                     # This can throw on invalid base64
                     sig = base64.b64decode(str(signature.toPlainText()))
-                    verified = ecc.verify_message_with_address(address, sig, message, net=constants.RavencoinMainnet)
+                    verified = ecc.verify_message_with_address(address, sig, message, net=constants.NeuraiMainnet)
                     break
                 except:
                     pass
@@ -179,7 +179,7 @@ class UpdateCheckThread(QThread, Logger):
                     sig = base64.b64decode(sig)
                     msg = version_num.encode('utf-8')
                     if ecc.verify_message_with_address(address=address, sig65=sig, message=msg,
-                                                       net=constants.RavencoinMainnet):
+                                                       net=constants.NeuraiMainnet):
                         self.logger.info(f"valid sig for version announcement '{version_num}' from address '{address}'")
                         break
                 else:
@@ -190,6 +190,9 @@ class UpdateCheckThread(QThread, Logger):
         if not self.network:
             self.failed.emit()
             return
+        # TODO: Update notifications
+
+        return
         try:
             update_info = asyncio.run_coroutine_threadsafe(self.get_update_info(), self.network.asyncio_loop).result()
         except Exception as e:

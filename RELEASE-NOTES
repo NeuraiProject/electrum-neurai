@@ -143,8 +143,8 @@
    could not open the settings (c49d6995)
  * CLI/RPC: fix "close_wallet" command (#7348)
 
-# Release Ravencoin 0.3.0 - (May 21, 2021)
- * Conversion to Ravencoin
+# Release Neurai 0.3.0 - (May 21, 2021)
+ * Conversion to Neurai
 
 # Release 4.1.3 - (June 16, 2021)
  * Builds/binaries:

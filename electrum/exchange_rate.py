@@ -14,7 +14,7 @@ from aiorpcx.curio import timeout_after, TaskTimeout
 import aiohttp
 
 from . import util
-from .ravencoin import COIN
+from .neurai import COIN
 from .i18n import _
 from .util import (RavenValue, ThreadJob, make_dir, log_exceptions, OldTaskGroup,
                    make_aiohttp_session, resource_path, EventListener, event_listener)
@@ -23,8 +23,8 @@ from .simple_config import SimpleConfig
 from .logging import Logger
 
 DEFAULT_ENABLED = False
-DEFAULT_CURRENCY = "USD"
-DEFAULT_EXCHANGE = "CoinGecko"  # default exchange should ideally provide historical rates
+DEFAULT_CURRENCY = "USDT"
+DEFAULT_EXCHANGE = "TXBit"  # default exchange should ideally provide historical rates
 
 # See https://en.wikipedia.org/wiki/ISO_4217
 CCY_PRECISIONS = {'BHD': 3, 'BIF': 0, 'BYR': 0, 'CLF': 4, 'CLP': 0,
@@ -166,49 +166,20 @@ class ExchangeBase(Logger):
         return sorted([str(a) for (a, b) in rates.items() if b is not None and len(a) == 3])
 
 
-class CoinGecko(ExchangeBase):
-    # Refer to https://www.coingecko.com/api/documentations/v3
-
+class TXBit(ExchangeBase):
     async def get_currencies(self):
-        values = await self.get_json('api.coingecko.com',
-                                     '/api/v3/exchange_rates')
-        return [name.upper() for name in values['rates'].keys()]
+        return ['USDT']
 
     async def get_rates(self, ccy):
-        dicts = await self.get_json('api.coingecko.com',
-                                    '/api/v3/coins/ravencoin/market_chart?vs_currency=%s&days=1' % ccy)
-        return {ccy: to_decimal(dicts['prices'][-1][1])}
+        dicts = await self.get_json('api.txbit.io',
+                                    '/api/public/getticker?market=XNA/%s' % ccy)
+        return {ccy: to_decimal(dicts['result']['Last'])}
 
     def history_ccys(self):
-        return CURRENCIES[self.name()]
+        return []
 
     async def request_history(self, ccy):
-        dicts = await self.get_json('api.coingecko.com',
-                                    '/api/v3/coins/ravencoin/market_chart?vs_currency=%s&days=max' % ccy)
-        return dict([(datetime.utcfromtimestamp(d[0] / 1000).strftime('%Y-%m-%d'), to_decimal(d[1])) for d in dicts['prices']])
-
-class Bittrex(ExchangeBase):
-    # Refer to https://bittrex.github.io/api/v3
-
-    async def get_currencies(self):
-        dicts = await self.get_json('api.bittrex.com',
-                                    '/v3/markets')
-        return [d['symbol'][4:] for d in dicts if d['symbol'][:4] == 'RVN-']
-
-    async def get_rates(self, ccy):
-        dicts = await self.get_json('api.bittrex.com',
-                                    '/v3/markets/RVN-%s/ticker' % ccy)
-        return {ccy: to_decimal(dicts['lastTradeRate'])}
-
-    def history_ccys(self):
-        return CURRENCIES[self.name()]
-
-    async def request_history(self, ccy):
-        dicts = await self.get_json('api.bittrex.com',
-                                    'v3/markets/RVN-%s/candles/TRADE/DAY_1/recent' % ccy)
-        return dict([(d['startsAt'][:10], to_decimal(d['close'])) for d in dicts])
-
-    # TODO: Add more exchange API's
+        return dict()
 
 
 def dictinvert(d):
@@ -313,7 +284,7 @@ class FxThread(ThreadJob, EventListener):
         return text.replace(',', '')  # FIXME use THOUSAND_SEPARATOR in util
 
     def ccy_amount_str(self, amount, commas):
-        prec = CCY_PRECISIONS.get(self.ccy, 2)
+        prec = CCY_PRECISIONS.get(self.ccy, 2) + 3
         fmt_str = "{:%s.%df}" % (
             "," if commas else "", max(0, prec))  # FIXME use util.THOUSAND_SEPARATOR and util.DECIMAL_POINT
         try:

@@ -31,7 +31,7 @@ from collections import defaultdict
 from typing import Dict, Optional, List, Tuple, Set, Iterable, NamedTuple, Sequence, TYPE_CHECKING, Union
 import binascii
 
-from . import util, ravencoin
+from . import util, neurai
 from .util import IPFSData, profiler, WalletFileException, multisig_type, TxMinedInfo, bfh, Satoshis, RavenValue
 from .invoices import Invoice
 from .keystore import bip44_derivation
@@ -307,7 +307,7 @@ class WalletDB(JsonDB):
                 d = {'change': []}
                 receiving_addresses = []
                 for pubkey in pubkeys:
-                    addr = ravencoin.pubkey_to_address('p2pkh', pubkey)
+                    addr = neurai.pubkey_to_address('p2pkh', pubkey)
                     receiving_addresses.append(addr)
                 d['receiving'] = receiving_addresses
                 self.put('addresses', d)
@@ -332,7 +332,7 @@ class WalletDB(JsonDB):
                 assert len(addresses) == len(pubkeys)
                 d = {}
                 for pubkey in pubkeys:
-                    addr = ravencoin.pubkey_to_address('p2pkh', pubkey)
+                    addr = neurai.pubkey_to_address('p2pkh', pubkey)
                     assert addr in addresses
                     d[addr] = {
                         'pubkey': pubkey,
@@ -384,7 +384,7 @@ class WalletDB(JsonDB):
             assert isinstance(addresses, dict)
             addresses_new = dict()
             for address, details in addresses.items():
-                if not ravencoin.is_address(address):
+                if not neurai.is_address(address):
                     remove_address(address)
                     continue
                 if details is None:
@@ -485,7 +485,7 @@ class WalletDB(JsonDB):
         if not self._is_upgrade_method_needed(21, 21):
             return
 
-        from .ravencoin import script_to_scripthash
+        from .neurai import script_to_scripthash
         transactions = self.get('transactions', {})  # txid -> raw_tx
         prevouts_by_scripthash = defaultdict(list)
         for txid, raw_tx in transactions.items():
@@ -763,7 +763,7 @@ class WalletDB(JsonDB):
             return
         PR_TYPE_ONCHAIN = 0
         PR_TYPE_LN = 2
-        from .ravencoin import TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, COIN
+        from .neurai import TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, COIN
         max_sats = TOTAL_COIN_SUPPLY_LIMIT_IN_BTC * COIN
         requests = self.data.get('payment_requests', {})
         invoices = self.data.get('invoices', {})

@@ -30,7 +30,7 @@ import traceback
 from functools import partial
 from typing import List, TYPE_CHECKING, Tuple, NamedTuple, Any, Dict, Optional, Union
 
-from . import ravencoin
+from . import neurai
 from . import keystore
 from . import mnemonic
 from .bip32 import is_bip32_derivation, xpub_type, normalize_bip32_derivation, BIP32Node
@@ -148,7 +148,7 @@ class BaseWizard(Logger):
             ('standard',  _("Standard wallet")),
             #('2fa', _("Wallet with two-factor authentication")),
             #('multisig',  _("Multi-signature wallet (advanced)")),
-            ('imported',  _("Import Ravencoin addresses or private keys")),
+            ('imported',  _("Import Neurai addresses or private keys")),
         ]
         if net.TESTNET:
             wallet_kinds.insert(1, ('multisig',  _("Multi-signature wallet (advanced)")))
@@ -214,8 +214,8 @@ class BaseWizard(Logger):
                 ('restore_from_seed', _('I already have a seed')),
                 ('restore_from_key', _('Use a master key')),
             ]
-            if not self.is_kivy and not self.wallet_type == 'multisig':
-                choices.append(('choose_hw_device',  _('Use a hardware device')))
+            #if not self.is_kivy and not self.wallet_type == 'multisig':
+            #    choices.append(('choose_hw_device',  _('Use a hardware device')))
         else:
             message = _('Add a cosigner to your multi-sig wallet')
             choices = [
@@ -229,8 +229,8 @@ class BaseWizard(Logger):
 
     def import_addresses_or_keys(self):
         v = lambda x: keystore.is_address_list(x) or keystore.is_private_key_list(x, raise_on_error=True)
-        title = _("Import Ravencoin Addresses")
-        message = _("Enter a list of Ravencoin addresses (this will create a watching-only wallet), or a list of private keys.")
+        title = _("Import Neurai Addresses")
+        message = _("Enter a list of Neurai addresses (this will create a watching-only wallet), or a list of private keys.")
         self.add_xpub_dialog(title=title, message=message, run_next=self.on_import,
                              is_valid=v, allow_multi=True, show_wif_help=True)
 
@@ -239,16 +239,16 @@ class BaseWizard(Logger):
         if keystore.is_address_list(text):
             self.data['addresses'] = {}
             for addr in text.split():
-                assert ravencoin.is_address(addr)
+                assert neurai.is_address(addr)
                 self.data['addresses'][addr] = {}
         elif keystore.is_private_key_list(text):
             self.data['addresses'] = {}
             k = keystore.Imported_KeyStore({})
             keys = keystore.get_private_keys(text)
             for pk in keys:
-                assert ravencoin.is_private_key(pk)
+                assert neurai.is_private_key(pk)
                 txin_type, pubkey = k.import_privkey(pk, None)
-                addr = ravencoin.pubkey_to_address(txin_type, pubkey)
+                addr = neurai.pubkey_to_address(txin_type, pubkey)
                 self.data['addresses'][addr] = {'type':txin_type, 'pubkey':pubkey}
             self.keystores.append(k)
         else:
@@ -425,7 +425,7 @@ class BaseWizard(Logger):
             choices = [
                 ('standard',   '(p2sh)',            normalize_bip32_derivation("m/45'/0")),
 
-                # Ravencoin does not current support segwit
+                # Neurai does not current support segwit
 
                 #('p2wsh-p2sh', 'p2sh-segwit multisig (p2wsh-p2sh)', purpose48_derivation(0, xtype='p2wsh-p2sh')),
                 #('p2wsh',      'native segwit multisig (p2wsh)',    purpose48_derivation(0, xtype='p2wsh')),

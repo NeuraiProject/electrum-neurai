@@ -21,7 +21,7 @@ from electrum.gui.qt.amountedit import FreezableLineEdit
 from electrum.gui.qt.util import ComplexLineEdit, HelpLabel, EnterButton, ColorScheme, ChoicesLayout, HelpButton
 from electrum.i18n import _
 from electrum.logging import get_logger
-from electrum.ravencoin import TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, base_decode, base_encode, address_to_script, COIN
+from electrum.neurai import TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, base_decode, base_encode, address_to_script, COIN
 from electrum.transaction import PartialTxOutput, AssetMeta
 from electrum.util import Satoshis, bfh, get_asyncio_loop
 
@@ -59,7 +59,7 @@ class AssetCreateWorkspace(QWidget):
         self.asset_amount = FreezableLineEdit()
         self.reissuable = QCheckBox()
 
-        self.cost_label = QLabel('Cost: {} RVN'.format(constants.net.BURN_AMOUNTS.IssueAssetBurnAmount))
+        self.cost_label = QLabel('Cost: {} XNA'.format(constants.net.BURN_AMOUNTS.IssueAssetBurnAmount))
 
         msg = _('Reissuability') + '\n\n' \
               + _('This lets the asset be edited in the future.')
@@ -74,11 +74,11 @@ class AssetCreateWorkspace(QWidget):
             self.aval_owner_combo.setVisible(i != 0)
 
             if i == 0:
-                self.cost_label.setText('Cost: {} RVN'.format(constants.net.BURN_AMOUNTS.IssueAssetBurnAmount))
+                self.cost_label.setText('Cost: {} XNA'.format(constants.net.BURN_AMOUNTS.IssueAssetBurnAmount))
             elif i == 1:
-                self.cost_label.setText('Cost: {} RVN'.format(constants.net.BURN_AMOUNTS.IssueSubAssetBurnAmount))
+                self.cost_label.setText('Cost: {} XNA'.format(constants.net.BURN_AMOUNTS.IssueSubAssetBurnAmount))
             elif i == 2:
-                self.cost_label.setText('Cost: {} RVN'.format(constants.net.BURN_AMOUNTS.IssueUniqueAssetBurnAmount))
+                self.cost_label.setText('Cost: {} XNA'.format(constants.net.BURN_AMOUNTS.IssueUniqueAssetBurnAmount))
 
             if i == 2:
                 self.divisions.setFrozen(True)
@@ -263,7 +263,7 @@ class AssetCreateWorkspace(QWidget):
 
         top_layout = QHBoxLayout()
         top_layout.addLayout(self.create_options_layout.layout())
-        top_layout.addWidget(HelpButton("https://ravencoin.org/assets/"))
+        top_layout.addWidget(HelpButton("https://neurai.org/assets/"))
 
         widgetA = QWidget()
         widgetA.setLayout(top_layout)
@@ -486,7 +486,7 @@ class AssetCreateWorkspace(QWidget):
         self.reissue_label.setStyleSheet(ColorScheme.DEFAULT.as_stylesheet())
         self.last_checked = None
         self.associated_data_interpret = InterpretType.NO_DATA
-        self.cost_label.setText('Cost: {} RVN'.format(constants.net.BURN_AMOUNTS.IssueAssetBurnAmount))
+        self.cost_label.setText('Cost: {} XNA'.format(constants.net.BURN_AMOUNTS.IssueAssetBurnAmount))
         self.refresh_owners()
         self.aval_owner_combo.setCurrentIndex(0)
 
@@ -578,7 +578,7 @@ class AssetReissueWorkspace(QWidget):
 
         self.last_asset = None
 
-        self.cost_label = QLabel('Cost: {} RVN'.format(constants.net.BURN_AMOUNTS.ReissueAssetBurnAmount))
+        self.cost_label = QLabel('Cost: {} XNA'.format(constants.net.BURN_AMOUNTS.ReissueAssetBurnAmount))
 
         msg = _('Reissuability') + '\n\n' \
               + _('This lets the asset be edited in the future.')
@@ -807,7 +807,7 @@ class AssetReissueWorkspace(QWidget):
 
         top_layout = QHBoxLayout()
         top_layout.addWidget(self.aval_owner_combo)
-        top_layout.addWidget(HelpButton("https://ravencoin.org/assets/"))
+        top_layout.addWidget(HelpButton("https://neurai.org/assets/"))
         widgetA = QWidget()
         widgetA.setLayout(top_layout)
         widgetC = QWidget()

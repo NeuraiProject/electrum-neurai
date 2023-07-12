@@ -108,7 +108,7 @@ class InvoiceList(MyTreeView):
             if item.is_lightning():
                 icon_name = 'lightning.png'
             else:
-                icon_name = 'ravencoin.png'
+                icon_name = 'neurai.png'
                 if item.bip70:
                     icon_name = 'seal.png'
             status = self.wallet.get_invoice_status(item)
@@ -171,7 +171,7 @@ class InvoiceList(MyTreeView):
             menu.addAction(_("Details"), lambda: self.parent.show_lightning_invoice(invoice))
         else:
             if len(invoice.outputs) == 1:
-                menu.addAction(_("Copy Address"), lambda: self.parent.do_copy(invoice.get_address(), title='ravencoin Address'))
+                menu.addAction(_("Copy Address"), lambda: self.parent.do_copy(invoice.get_address(), title='neurai Address'))
             menu.addAction(_("Details"), lambda: self.parent.show_onchain_invoice(invoice))
         status = wallet.get_invoice_status(invoice)
         if status == PR_UNPAID:

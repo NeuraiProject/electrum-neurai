@@ -53,7 +53,7 @@ from . import pem
 from . import version
 from . import blockchain
 from .blockchain import Blockchain, PRE_KAWPOW_HEADER_SIZE, POST_KAWPOW_HEADER_SIZE
-from . import ravencoin
+from . import neurai
 from . import constants
 from .i18n import _
 from .logging import Logger
@@ -623,7 +623,7 @@ class Interface(Logger):
             raise Exception(f"{repr(height)} is not a block height")
 
         # For chunks within DGW checkpoints, we need to reset to start of 2016 chunks
-        if constants.net.DGW_CHECKPOINTS_START <= height <= constants.net.max_dgw_checkpoint() + constants.net.DGW_CHECKPOINTS_SPACING:
+        if constants.net.DGW_CHECKPOINTS_START <= height <= constants.net.max_checkpoint():
             #print(f'interface request chunk, setting height from {height}')
             height = (height // constants.net.DGW_CHECKPOINTS_SPACING) * constants.net.DGW_CHECKPOINTS_SPACING
 
@@ -760,7 +760,7 @@ class Interface(Logger):
             header = blockchain.deserialize_header(bfh(raw_header['hex']), height)
             self.tip_header = header
             self.tip = height
-            if self.tip < constants.net.max_dgw_checkpoint() + 2016:
+            if self.tip < constants.net.max_checkpoint():
                 raise GracefulDisconnect('server tip below max checkpoint')
             self._mark_ready()
             blockchain_updated = await self._process_header_at_tip()
@@ -805,7 +805,7 @@ class Interface(Logger):
                 could_connect, num_headers = await self.request_chunk(height, next_height)
 
                 if not could_connect:
-                    if height <= constants.net.max_dgw_checkpoint() + 2016:
+                    if height <= constants.net.max_checkpoint():
                         raise GracefulDisconnect('server chain conflicts with checkpoints or genesis')
                     last, height = await self.step(height)
                     continue
@@ -1138,9 +1138,9 @@ class Interface(Logger):
         # check response
         if not res:  # ignore empty string
             return ''
-        if not ravencoin.is_address(res):
+        if not neurai.is_address(res):
             # note: do not hard-fail -- allow server to use future-type
-            #       ravencoin address we do not recognize
+            #       neurai address we do not recognize
             self.logger.info(f"invalid donation address from server: {repr(res)}")
             res = ''
         return res
@@ -1151,7 +1151,7 @@ class Interface(Logger):
         res = await self.session.send_request('blockchain.relayfee')
         # check response
         assert_non_negative_int_or_float(res)
-        relayfee = int(res * ravencoin.COIN)
+        relayfee = int(res * neurai.COIN)
         relayfee = max(0, relayfee)
         return relayfee
 
@@ -1166,7 +1166,7 @@ class Interface(Logger):
         # check response
         if res != -1:
             assert_non_negative_int_or_float(res)
-            res = int(res * ravencoin.COIN)
+            res = int(res * neurai.COIN)
         return res
 
 

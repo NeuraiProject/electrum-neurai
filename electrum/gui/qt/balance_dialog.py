@@ -65,7 +65,7 @@ class PieChartObject:
         qp.setPen(pen)
         qp.setRenderHint(QPainter.Antialiasing)
         qp.setBrush(Qt.gray)
-        # TODO: Only RVN
+        # TODO: Only XNA
         total = sum([x[2].rvn_value.value for x in self._list])
         if total == 0:
             return

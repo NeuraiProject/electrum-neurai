@@ -29,7 +29,7 @@ import aiorpcx
 from .assets import pull_meta_from_create_or_reissue_script, BadAssetScript
 from .util import bh2u, TxMinedInfo, NetworkJobOnDefaultServer, bfh
 from .crypto import sha256d
-from .ravencoin import hash_decode, hash_encode
+from .neurai import hash_decode, hash_encode
 from .transaction import Transaction, TxOutpoint, AssetMeta
 from .blockchain import hash_header
 from .interface import GracefulDisconnect
@@ -91,7 +91,7 @@ class SPV(NetworkJobOnDefaultServer):
             # if it's in the checkpoint region, we still might not have the header
             header = self.blockchain.read_header(tx_height)
             if header is None:
-                if tx_height < constants.net.max_dgw_checkpoint():
+                if tx_height < constants.net.max_checkpoint():
                     # FIXME these requests are not counted (self._requests_sent += 1)
                     await self.taskgroup.spawn(self.interface.request_chunk(tx_height, None, can_return_early=True))
                     # await self.interface.request_chunk(tx_height, None, can_return_early=True)
@@ -232,7 +232,7 @@ class SPV(NetworkJobOnDefaultServer):
             # if it's in the checkpoint region, we still might not have the header
             header = self.blockchain.read_header(largest_height)
             if header is None:
-                if largest_height < constants.net.max_dgw_checkpoint():
+                if largest_height < constants.net.max_checkpoint():
                     # FIXME these requests are not counted (self._requests_sent += 1)
                     await self.taskgroup.spawn(self.interface.request_chunk(largest_height, None, can_return_early=True))
                     # await self.interface.request_chunk(tx_height, None, can_return_early=True)
@@ -241,7 +241,7 @@ class SPV(NetworkJobOnDefaultServer):
             if asset_meta.div_height:
                 prev_header = self.blockchain.read_header(asset_meta.div_height)
                 if prev_header is None:
-                    if asset_meta.div_height < constants.net.max_dgw_checkpoint():
+                    if asset_meta.div_height < constants.net.max_checkpoint():
                         # FIXME these requests are not counted (self._requests_sent += 1)
                         await self.taskgroup.spawn(self.interface.request_chunk(asset_meta.div_height, None, can_return_early=True))
                         # await self.interface.request_chunk(tx_height, None, can_return_early=True)
@@ -250,7 +250,7 @@ class SPV(NetworkJobOnDefaultServer):
             if asset_meta.ipfs_height:
                 prev_header = self.blockchain.read_header(asset_meta.ipfs_height)
                 if prev_header is None:
-                    if asset_meta.ipfs_height < constants.net.max_dgw_checkpoint():
+                    if asset_meta.ipfs_height < constants.net.max_checkpoint():
                         # FIXME these requests are not counted (self._requests_sent += 1)
                         await self.taskgroup.spawn(self.interface.request_chunk(asset_meta.ipfs_height, None, can_return_early=True))
                         # await self.interface.request_chunk(tx_height, None, can_return_early=True)

@@ -30,9 +30,9 @@ import asyncio
 from aiorpcx import TaskGroup
 
 from .crypto import sha256
-from . import ravencoin, util
+from . import neurai, util
 from .assets import pull_meta_from_create_or_reissue_script
-from .ravencoin import COINBASE_MATURITY
+from .neurai import COINBASE_MATURITY
 from .util import IPFSData, profiler, bfh, TxMinedInfo, UnrelatedTransactionException, with_lock, OldTaskGroup, RavenValue
 from .transaction import Transaction, TxOutput, TxInput, PartialTxInput, TxOutpoint, PartialTransaction, AssetMeta, \
     is_output_script_p2pk, is_asset_output_script_malformed_or_non_standard
@@ -358,7 +358,7 @@ class AddressSynchronizer(Logger, EventListener):
                 else:
                     v = RavenValue(v)
                 ser = tx_hash + ':%d'%n
-                scripthash = ravencoin.script_to_scripthash(txo.scriptpubkey)
+                scripthash = neurai.script_to_scripthash(txo.scriptpubkey)
                 self.db.add_prevout_by_scripthash(scripthash, prevout=TxOutpoint.from_str(ser), value=v)
                 addr = txo.address
                 if addr and self.is_mine(addr):
@@ -442,7 +442,7 @@ class AddressSynchronizer(Logger, EventListener):
             self.unconfirmed_tx.pop(tx_hash, None)
             if tx:
                 for idx, txo in enumerate(tx.outputs()):
-                    scripthash = ravencoin.script_to_scripthash(txo.scriptpubkey)
+                    scripthash = neurai.script_to_scripthash(txo.scriptpubkey)
                     prevout = TxOutpoint(bfh(tx_hash), idx)
                     self.db.remove_prevout_by_scripthash(scripthash, prevout=prevout, value=txo.value)
 
@@ -987,7 +987,7 @@ class AddressSynchronizer(Logger, EventListener):
                             confirmed_spent_amount += coin.value_sats()
                 # Compare amount, in case tx has confirmed and unconfirmed inputs, or is a coinjoin.
                 # (fixme: tx may have multiple change outputs)
-                # TODO: Only RVN
+                # TODO: Only XNA
                 if confirmed_spent_amount.rvn_value >= v.rvn_value:
                     c += v
                 else:

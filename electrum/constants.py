@@ -201,15 +201,15 @@ class NeuraiTestnet(AbstractNet):
     XPUB_HEADERS_INV = inv_dict(XPUB_HEADERS)
 
     BURN_AMOUNTS = BurnAmounts(
-        IssueAssetBurnAmount=500,
-        ReissueAssetBurnAmount=100,
-        IssueSubAssetBurnAmount=100,
-        IssueUniqueAssetBurnAmount=5,
-        IssueMsgChannelAssetBurnAmount=100,
-        IssueQualifierAssetBurnAmount=1000,
-        IssueSubQualifierAssetBurnAmount=100,
-        IssueRestrictedAssetBurnAmount=1500,
-        AddNullQualifierTagBurnAmount=0.1
+        IssueAssetBurnAmount=1000,
+        ReissueAssetBurnAmount=200,
+        IssueSubAssetBurnAmount=200,
+        IssueUniqueAssetBurnAmount=10,
+        IssueMsgChannelAssetBurnAmount=200,
+        IssueQualifierAssetBurnAmount=2000,
+        IssueSubQualifierAssetBurnAmount=200,
+        IssueRestrictedAssetBurnAmount=3000,
+        AddNullQualifierTagBurnAmount=0.2
     )
 
     BURN_ADDRESSES = BurnAddresses(

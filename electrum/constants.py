@@ -169,7 +169,7 @@ class NeuraiTestnet(AbstractNet):
     ]
     TESTNET = True
     WIF_PREFIX = 239
-    ADDRTYPE_P2PKH = 111
+    ADDRTYPE_P2PKH = 127
     ADDRTYPE_P2SH = 196
     ADDRTYPE_P2SH_ALT = 196
     MATURE = 60

@@ -163,7 +163,7 @@ class NeuraiMainnet(AbstractNet):
 
 class NeuraiTestnet(AbstractNet):
     NET_NAME = "testnet"
-    BIP44_COIN_TYPE = 1
+    BIP44_COIN_TYPE = 0
     LN_REALM_BYTE = 0
     LN_DNS_SEEDS = [
     ]
@@ -213,16 +213,16 @@ class NeuraiTestnet(AbstractNet):
     )
 
     BURN_ADDRESSES = BurnAddresses(
-        IssueAssetBurnAddress='n1issueAssetXXXXXXXXXXXXXXXXWdnemQ',
-        ReissueAssetBurnAddress='n1ReissueAssetXXXXXXXXXXXXXXWG9NLd',
-        IssueSubAssetBurnAddress='n1issueSubAssetXXXXXXXXXXXXXbNiH6v',
-        IssueUniqueAssetBurnAddress='n1issueUniqueAssetXXXXXXXXXXS4695i',
-        IssueMsgChannelAssetBurnAddress='n1issueMsgChanneLAssetXXXXXXT2PBdD',
-        IssueQualifierAssetBurnAddress='n1issueQuaLifierXXXXXXXXXXXXUysLTj',
-        IssueSubQualifierAssetBurnAddress='n1issueSubQuaLifierXXXXXXXXXYffPLh',
-        IssueRestrictedAssetBurnAddress='n1issueRestrictedXXXXXXXXXXXXZVT9V',
-        AddNullQualifierTagBurnAddress='n1addTagBurnXXXXXXXXXXXXXXXXX5oLMH',
-        GlobalBurnAddress='n1BurnXXXXXXXXXXXXXXXXXXXXXXU1qejP'
+        IssueAssetBurnAddress='tBURNXXXXXXXXXXXXXXXXXXXXXXXVZLroy',
+        ReissueAssetBurnAddress='tXReissueAssetXXXXXXXXXXXXXXYmsjpM',
+        IssueSubAssetBurnAddress='tXissueSubAssetXXXXXXXXXXXXXW53F8Q',
+        IssueUniqueAssetBurnAddress='tXissueUniqueAssetXXXXXXXXXXSChvqQ',
+        IssueMsgChannelAssetBurnAddress='tXissueMsgChanneLAssetXXXXXXVFmW2d',
+        IssueQualifierAssetBurnAddress='tXissueQuaLifierXXXXXXXXXXXXTfjTyH',
+        IssueSubQualifierAssetBurnAddress='tXissueSubQuaLifierXXXXXXXXXYmbjCh',
+        IssueRestrictedAssetBurnAddress='tXissueRestrictedXXXXXXXXXXXbvd3Ug',
+        AddNullQualifierTagBurnAddress='tXaddTagBurnXXXXXXXXXXXXXXXXYXaTg1',
+        GlobalBurnAddress='tBURNXXXXXXXXXXXXXXXXXXXXXXXVZLroy'
     )
 
 

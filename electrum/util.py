@@ -1177,19 +1177,11 @@ def time_difference(distance_in_time, include_seconds):
 
 
 mainnet_block_explorers = {
-    'neurai.network': ('https://neurai.network/',
-                          {'tx': 'tx/', 'addr': 'address/'}),
-    'rvn.traysi.org': ('http://rvn.traysi.org/',
-                       {'tx': 'tx/', 'addr': 'address/'}),
-    'rvn.cryptoscope.io': ('https://rvn.cryptoscope.io/',
+    'xna.cryptoscope.io': ('https://xna.cryptoscope.io/',
                            {'tx': 'tx/?txid=', 'addr': 'address/?address='}),
 }
 
 testnet_block_explorers = {
-    'neurai.network': ('https://testnet.neurai.network/',
-                          {'tx': 'tx/', 'addr': 'address/'}),
-    'rvn.cryptoscope.io': ('https://rvnt.cryptoscope.io/',
-                           {'tx': 'tx/?txid=', 'addr': 'address/?address='}),
 }
 
 signet_block_explorers = {
@@ -1208,12 +1200,16 @@ signet_block_explorers = {
 _block_explorer_default_api_loc = {'tx': 'tx/', 'addr': 'address/'}
 
 ipfs_explorers = {
-    'ipfs.io': ('https://ipfs.io/',
+    'ipfs.scalaproject.io': ('https://ipfs.scalaproject.io/',
                 {'ipfs': 'ipfs/'}),
-    'infura.io': ('https://ipfs.infura.io/',
-                  {'ipfs': 'ipfs/'}),
-    'neuraiipfs-gateway.com': ('https://neuraiipfs-gateway.com/',
-                                  {'ipfs': 'ipfs/'}),
+    'cloudflare-ipfs.com': ('https://cloudflare-ipfs.com/',
+                {'ipfs': 'ipfs/'}),
+    'ipfs.scalaproject.io': ('https://ipfs.scalaproject.io/',
+                {'ipfs': 'ipfs/'}),
+    'nftstorage.link': ('https://nftstorage.link/',
+                {'ipfs': 'ipfs/'}),
+    'ipfs.chaintek.net': ('https://ipfs.chaintek.net/',
+                {'ipfs': 'ipfs/'})
 }
 
 _ipfs_explorer_default_api_loc = {'ipfs': 'ipfs/'}
@@ -1226,7 +1222,7 @@ def ipfs_explorer_info():
 def ipfs_explorer(config: 'SimpleConfig') -> Optional[str]:
     if config.get('ipfs_explorer_custom') is not None:
         return None
-    default_ = 'infura.io'
+    default_ = 'ipfs.chaintek.net'
     ie_key = config.get('ipfs_explorer', default_)
     ie_tuple = ipfs_explorer_info().get(ie_key)
     if ie_tuple is None:
@@ -1279,7 +1275,7 @@ def block_explorer(config: 'SimpleConfig') -> Optional[str]:
     """
     if config.get('block_explorer_custom') is not None:
         return None
-    default_ = 'rvn.cryptoscope.io'
+    default_ = 'xna.cryptoscope.io'
     be_key = config.get('block_explorer', default_)
     be_tuple = block_explorer_info().get(be_key)
     if be_tuple is None:

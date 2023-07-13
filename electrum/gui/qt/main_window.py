@@ -309,8 +309,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
         # If the option hasn't been set yet
 
-        # TODO: Update notifs
-        if False and config.get('check_updates') is None:
+        if config.get('check_updates') is None:
             choice = self.question(title="Electrum - " + _("Enable update check"),
                                    msg=_(
                                        "For security reasons we advise that you always use the latest version of Electrum.") + " " +
@@ -318,7 +317,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             config.set_key('check_updates', bool(choice), save=True)
 
         self._update_check_thread = None
-        if False and config.get('check_updates', False):
+        if config.get('check_updates', False):
             # The references to both the thread and the window need to be stored somewhere
             # to prevent GC from getting in our way.
             def on_version_received(v):
@@ -835,8 +834,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         help_menu = menubar.addMenu(_("&Help"))
         help_menu.addAction(_("&About"), self.show_about)
         help_menu.addAction(_("&Check for updates"), self.show_update_check)
-        help_menu.addAction("&XNA Electrum Wiki", lambda: webopen("https://raven.wiki/wiki/Electrum"))
-        help_menu.addAction("&GetNeurai.org", lambda: webopen("https://GetNeurai.org"))
+        help_menu.addAction("&neurai.org", lambda: webopen("https://neurai.org"))
         help_menu.addSeparator()
         help_menu.addAction(_("&Documentation"), lambda: webopen("http://docs.electrum.org/")).setShortcut(
             QKeySequence.HelpContents)

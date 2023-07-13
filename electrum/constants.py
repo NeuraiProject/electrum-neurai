@@ -175,7 +175,7 @@ class NeuraiTestnet(AbstractNet):
     MATURE = 60
     SEGWIT_HRP = ""
     BOLT11_HRP = SEGWIT_HRP
-    GENESIS = "000000ecfc5e6324a079542221d00e10362bdc894d56500c414060eea8a3ad5a"
+    GENESIS = "0000006af8b8297448605b0283473ec712f9768f81cc7eae6269b875dee3b0cf"
     DEFAULT_PORTS = {'t': '19111', 's': '19112'}
     DEFAULT_SERVERS = read_json('servers_testnet.json', {})
     CHECKPOINTS = []

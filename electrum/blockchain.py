@@ -233,7 +233,7 @@ def init_headers_file_for_best_chain():
     filename = b.path()
     # We want to start with one less than the checkpoint so we have headers to calculate the new
     # Chainwork from
-    length = POST_KAWPOW_HEADER_SIZE * (constants.net.max_checkpoint() - 2015)
+    length = POST_KAWPOW_HEADER_SIZE * max(0, (constants.net.max_checkpoint() - 2015))
     if not os.path.exists(filename) or os.path.getsize(filename) < length:
         with open(filename, 'wb') as f:
             if length > 0:
@@ -423,9 +423,9 @@ class Blockchain(Logger):
             s += 1
 
         # DGW must be received in correct chunk sizes to be valid with our checkpoints
-        if constants.net.DGW_CHECKPOINTS_START <= start_height <= constants.net.max_checkpoint():
+        if constants.net.DGW_CHECKPOINTS_START <= start_height <= constants.net.max_checkpoint() and start_height != 0:
             assert start_height % constants.net.DGW_CHECKPOINTS_SPACING == 0, 'dgw chunk not from start'
-            assert s - start_height == constants.net.DGW_CHECKPOINTS_SPACING, 'dgw chunk not correct size'
+            assert s - start_height == constants.net.DGW_CHECKPOINTS_SPACING, f'dgw chunk not correct size: {s - start_height}'
 
     @with_lock
     def path(self):
@@ -848,6 +848,7 @@ class Blockchain(Logger):
             return False
         height = header['block_height']
         if check_height and self.height() != height - 1:
+            print('bad height')
             return False
         if height == 0:
             return hash_header(header) == constants.net.GENESIS

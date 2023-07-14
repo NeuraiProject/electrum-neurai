@@ -23,8 +23,8 @@ from .simple_config import SimpleConfig
 from .logging import Logger
 
 DEFAULT_ENABLED = False
-DEFAULT_CURRENCY = "USDT"
-DEFAULT_EXCHANGE = "TXBit"  # default exchange should ideally provide historical rates
+DEFAULT_CURRENCY = "USD"
+DEFAULT_EXCHANGE = "CoinGecko"  # default exchange should ideally provide historical rates
 
 # See https://en.wikipedia.org/wiki/ISO_4217
 CCY_PRECISIONS = {'BHD': 3, 'BIF': 0, 'BYR': 0, 'CLF': 4, 'CLP': 0,
@@ -180,6 +180,28 @@ class TXBit(ExchangeBase):
 
     async def request_history(self, ccy):
         return dict()
+
+
+class CoinGecko(ExchangeBase):
+    # Refer to https://www.coingecko.com/api/documentations/v3
+
+    async def get_currencies(self):
+        values = await self.get_json('api.coingecko.com',
+                                     '/api/v3/exchange_rates')
+        return [name.upper() for name in values['rates'].keys()]
+
+    async def get_rates(self, ccy):
+        dicts = await self.get_json('api.coingecko.com',
+                                    '/api/v3/coins/neurai/market_chart?vs_currency=%s&days=1' % ccy)
+        return {ccy: to_decimal(dicts['prices'][-1][1])}
+
+    def history_ccys(self):
+        return CURRENCIES[self.name()]
+
+    async def request_history(self, ccy):
+        dicts = await self.get_json('api.coingecko.com',
+                                    '/api/v3/coins/neurai/market_chart?vs_currency=%s&days=max' % ccy)
+        return dict([(datetime.utcfromtimestamp(d[0] / 1000).strftime('%Y-%m-%d'), to_decimal(d[1])) for d in dicts['prices']])
 
 
 def dictinvert(d):

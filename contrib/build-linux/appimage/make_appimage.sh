@@ -41,7 +41,6 @@ download_if_not_exist "$CACHEDIR/Python-$PYTHON_VERSION.tar.xz" "https://www.pyt
 verify_hash "$CACHEDIR/Python-$PYTHON_VERSION.tar.xz" "66767a35309d724f370df9e503c172b4ee444f49d62b98bc4eca725123e26c49"
 
 
-
 info "building python."
 tar xf "$CACHEDIR/Python-$PYTHON_VERSION.tar.xz" -C "$BUILDDIR"
 (

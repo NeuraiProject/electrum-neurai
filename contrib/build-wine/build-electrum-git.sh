@@ -44,18 +44,16 @@ $WINE_PYTHON -m pip install --no-build-isolation --no-dependencies --no-warn-scr
 $WINE_PYTHON -m pip install --no-build-isolation --no-dependencies --no-warn-script-location \
     --cache-dir "$WINE_PIP_CACHE_DIR" -r "$CONTRIB"/deterministic-build/requirements-hw.txt
 
-
 X16R="x16r_hash-1.0.1-cp39-cp39-win32.whl"
 KAWPOW="kawpow-0.9.4.4-cp39-cp39-win32.whl"
 
-download_if_not_exist "$CACHEDIR/$X16R" "https://raw.githubusercontent.com/kralverde/electrum-neurai-wheels/master/$X16R"
-verify_hash "$CACHEDIR/$X16R" "bb352c6d3dc17eca04f7b3d1db4dabe21d79707423cad306e32252db1a63ce67"
-download_if_not_exist "$CACHEDIR/$KAWPOW" "https://raw.githubusercontent.com/kralverde/electrum-neurai-wheels/master/$KAWPOW"
-verify_hash "$CACHEDIR/$KAWPOW" "33dd35bf4ab2c819dda33bc407c7632c424e3a2fa13b621cf68be793f7f17630"
+download_if_not_exist "$CACHEDIR/$X16R" "https://raw.githubusercontent.com/kralverde/electrum-ravencoin-wheels/master/$X16R"
+verify_hash "$CACHEDIR/$X16R" "638b85da9778906b569cbb82c6cc876d939abe185fa8e9551218643d5acdead5"
+download_if_not_exist "$CACHEDIR/$KAWPOW" "https://raw.githubusercontent.com/kralverde/electrum-ravencoin-wheels/master/$KAWPOW"
+verify_hash "$CACHEDIR/$KAWPOW" "be33d4755c1c19c36abfaee4deaa0d6ffc64d2a9451f221bcf8f12b8b236dd33"
 
 $WINE_PYTHON -m pip install --cache-dir "$WINE_PIP_CACHE_DIR" "$CACHEDIR/$X16R"
 $WINE_PYTHON -m pip install --cache-dir "$WINE_PIP_CACHE_DIR" "$CACHEDIR/$KAWPOW"
-
 
 pushd $WINEPREFIX/drive_c/electrum
 # see https://github.com/pypa/pip/issues/2195 -- pip makes a copy of the entire directory

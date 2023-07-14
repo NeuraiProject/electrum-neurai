@@ -7,7 +7,7 @@
 ;Variables
 
   !define PRODUCT_NAME "Electrum-Neurai"
-  !define PRODUCT_WEB_SITE "https://github.com/Electrum-RVN-SIG/electrum-neurai"
+  !define PRODUCT_WEB_SITE "https://github.com/NeuraiProject/electrum-neurai"
   !define PRODUCT_PUBLISHER "The Neurai Community"
   !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
 

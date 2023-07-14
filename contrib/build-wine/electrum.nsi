@@ -132,11 +132,11 @@ Section
   CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME} Testnet.lnk" "$INSTDIR\electrum-neurai-${PRODUCT_VERSION}.exe" "--testnet" "$INSTDIR\electrum-${PRODUCT_VERSION}.exe" 0
 
 
-  ;Links bitcoin: and lightning: URIs to Electrum
-  ;WriteRegStr HKCU "Software\Classes\bitcoin" "" "URL:bitcoin Protocol"
-  ;WriteRegStr HKCU "Software\Classes\bitcoin" "URL Protocol" ""
-  ;WriteRegStr HKCU "Software\Classes\bitcoin" "DefaultIcon" "$\"$INSTDIR\electrum-neurai.ico, 0$\""
-  ;WriteRegStr HKCU "Software\Classes\bitcoin\shell\open\command" "" "$\"$INSTDIR\electrum-neurai-${PRODUCT_VERSION}.exe$\" $\"%1$\""
+  ;Links neurai: and lightning: URIs to Electrum
+  ;WriteRegStr HKCU "Software\Classes\neurai" "" "URL:neurai Protocol"
+  ;WriteRegStr HKCU "Software\Classes\neurai" "URL Protocol" ""
+  ;WriteRegStr HKCU "Software\Classes\neurai" "DefaultIcon" "$\"$INSTDIR\electrum-neurai.ico, 0$\""
+  ;WriteRegStr HKCU "Software\Classes\neurai\shell\open\command" "" "$\"$INSTDIR\electrum-neurai-${PRODUCT_VERSION}.exe$\" $\"%1$\""
   ;WriteRegStr HKCU "Software\Classes\lightning" "" "URL:lightning Protocol"
   ;WriteRegStr HKCU "Software\Classes\lightning" "URL Protocol" ""
   ;WriteRegStr HKCU "Software\Classes\lightning" "DefaultIcon" "$\"$INSTDIR\electrum-neurai.ico, 0$\""

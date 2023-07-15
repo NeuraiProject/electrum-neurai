@@ -41,7 +41,7 @@ from qrcode import exceptions
 
 from electrum.simple_config import SimpleConfig
 from electrum.util import parse_max_spend, quantize_feerate, convert_bytes_to_utf8_safe, RavenValue
-from electrum.ravencoin import base_encode, NLOCKTIME_BLOCKHEIGHT_MAX
+from electrum.neurai import base_encode, NLOCKTIME_BLOCKHEIGHT_MAX
 from electrum.assets import try_get_message_from_asset_transfer, get_asset_vout_type
 from electrum.i18n import _
 from electrum.plugin import run_hook
@@ -59,7 +59,7 @@ from .util import (MessageBoxMixin, read_QIcon, Buttons, icon_path,
 
 from .fee_slider import FeeSlider, FeeComboBox
 from .confirm_tx_dialog import TxEditor
-from .amountedit import FeerateEdit, RVNAmountEdit
+from .amountedit import FeerateEdit, XNAAmountEdit
 from .locktimeedit import LockTimeEdit
 
 if TYPE_CHECKING:
@@ -443,7 +443,7 @@ class BaseTxDialog(QDialog, MessageBoxMixin):
         tx_item_fiat = None
         if (self.finalized  # ensures we don't use historical rates for tx being constructed *now*
                 and txid is not None and fx.is_enabled() and amount is not None):
-            # Only normal RVN has an assignable value
+            # Only normal XNA has an assignable value
             tx_item_fiat = self.wallet.get_tx_item_fiat(
                 tx_hash=txid, amount_sat=abs(amount.rvn_value.value), fx=fx, tx_fee=fee)
         lnworker_history = self.wallet.lnworker.get_onchain_history() if self.wallet.lnworker else {}
@@ -518,7 +518,7 @@ class BaseTxDialog(QDialog, MessageBoxMixin):
                 if tx_item_fiat:
                     amount_str += ' (%s)' % tx_item_fiat['fiat_value'].to_ui_string()
                 else:
-                    # Fiat value only for normal RVN
+                    # Fiat value only for normal XNA
                     amount_str += ' (%s)' % format_fiat_and_units(abs(amount.rvn_value.value))
         if amount_str:
             self.amount_label.setText(amount_str)
@@ -616,7 +616,7 @@ class BaseTxDialog(QDialog, MessageBoxMixin):
             assets = amt.assets
             amounts = []
             if rvn != 0:
-                amounts.append(self.main_window.format_amount(rvn, whitespaces=True) + ' RVN')
+                amounts.append(self.main_window.format_amount(rvn, whitespaces=True) + ' XNA')
             for asset, sats in assets.items():
                 amounts.append('{} {}'.format(self.main_window.format_amount(sats.value, whitespaces=True), asset))
             return ', '.join(amounts)
@@ -870,7 +870,7 @@ class PreviewTxDialog(BaseTxDialog, TxEditor):
         self.feerate_e.textEdited.connect(partial(self.on_fee_or_feerate, self.feerate_e, False))
         self.feerate_e.editingFinished.connect(partial(self.on_fee_or_feerate, self.feerate_e, True))
 
-        self.fee_e = RVNAmountEdit(self.main_window.get_decimal_point)
+        self.fee_e = XNAAmountEdit(self.main_window.get_decimal_point)
         self.fee_e.textEdited.connect(partial(self.on_fee_or_feerate, self.fee_e, False))
         self.fee_e.editingFinished.connect(partial(self.on_fee_or_feerate, self.fee_e, True))
 

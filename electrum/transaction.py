@@ -41,11 +41,11 @@ import itertools
 import binascii
 import copy
 
-from . import ecc, ravencoin, constants, segwit_addr, bip32, assets
+from . import ecc, neurai, constants, segwit_addr, bip32, assets
 from .assets import guess_asset_script_for_vin
 from .bip32 import UINT32_MAX, BIP32Node
 from .util import RavenValue, parse_max_spend, to_bytes, bh2u, bfh, chunks, is_hex_str, Satoshis, format_satoshis
-from .ravencoin import (TYPE_ADDRESS, TYPE_SCRIPT, hash_160,
+from .neurai import (TYPE_ADDRESS, TYPE_SCRIPT, hash_160,
                         hash160_to_p2sh, hash160_to_p2pkh, hash_to_segwit_addr,
                         var_int, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, COIN,
                         int_to_hex, push_script, b58_address_to_hash160,
@@ -131,7 +131,7 @@ class TxOutput:
 
     @classmethod
     def from_address_and_value(cls, address: str, value: Union[int, str], asset: str = None) -> Union['TxOutput', 'PartialTxOutput']:
-        script = bfh(ravencoin.address_to_script(address))
+        script = bfh(neurai.address_to_script(address))
         if asset:
             script = assets.create_transfer_asset_script(script, asset, value)
 
@@ -563,13 +563,13 @@ SCRIPTPUBKEY_TEMPLATE_ANYSEGWIT = [OP_ANYSEGWIT_VERSION, OPPushDataGeneric(lambd
 
 def check_scriptpubkey_template_and_dust(scriptpubkey, amount: Optional[int]):
     if match_script_against_template(scriptpubkey, SCRIPTPUBKEY_TEMPLATE_P2PKH):
-        dust_limit = ravencoin.DUST_LIMIT_P2PKH
+        dust_limit = neurai.DUST_LIMIT_P2PKH
     elif match_script_against_template(scriptpubkey, SCRIPTPUBKEY_TEMPLATE_P2SH):
-        dust_limit = ravencoin.DUST_LIMIT_P2SH
+        dust_limit = neurai.DUST_LIMIT_P2SH
     elif match_script_against_template(scriptpubkey, SCRIPTPUBKEY_TEMPLATE_P2WSH):
-        dust_limit = ravencoin.DUST_LIMIT_P2WSH
+        dust_limit = neurai.DUST_LIMIT_P2WSH
     elif match_script_against_template(scriptpubkey, SCRIPTPUBKEY_TEMPLATE_P2WPKH):
-        dust_limit = ravencoin.DUST_LIMIT_P2WPKH
+        dust_limit = neurai.DUST_LIMIT_P2WPKH
     else:
         raise Exception(f'scriptpubkey does not conform to any template: {scriptpubkey.hex()}')
     if amount < dust_limit:
@@ -593,7 +593,7 @@ def match_script_against_template(script, template, debug=False) -> bool:
     op_rvn_asset = len(script)
     for i in range(len(script)):
         # print(f'Checking OPCODE {script_item[0]} {int(opcodes.OP_RVN_ASSET)}')
-        if script[i][0] == int(opcodes.OP_RVN_ASSET): # Don't check past op RVN asset
+        if script[i][0] == int(opcodes.OP_RVN_ASSET): # Don't check past op XNA asset
             op_rvn_asset = i
             break
     script = script[:op_rvn_asset]
@@ -1047,7 +1047,7 @@ class Transaction:
             script = ''
         elif _type == 'p2wpkh-p2sh':
             raise NotImplementedError()
-            redeem_script = ravencoin.p2wpkh_nested_script(pubkeys[0])
+            redeem_script = neurai.p2wpkh_nested_script(pubkeys[0])
             script = construct_script([redeem_script])
         elif _type == 'p2wsh-p2sh':
             raise NotImplementedError()
@@ -1055,7 +1055,7 @@ class Transaction:
                 witness_script = ''
             else:
                 witness_script = self.get_preimage_script(txin)
-            redeem_script = ravencoin.p2wsh_nested_script(witness_script)
+            redeem_script = neurai.p2wsh_nested_script(witness_script)
             script = construct_script([redeem_script])
         else:
             raise UnknownTxinType(f'cannot construct scriptSig for txin_type: {_type} {txin.scriptpubkey}')
@@ -1080,10 +1080,10 @@ class Transaction:
         elif txin.script_type in ['p2pkh', 'p2wpkh', 'p2wpkh-p2sh']:
             pubkey = pubkeys[0]
             pkh = bh2u(hash_160(bfh(pubkey)))
-            script = ravencoin.pubkeyhash_to_p2pkh_script(pkh)
+            script = neurai.pubkeyhash_to_p2pkh_script(pkh)
         elif txin.script_type == 'p2pk':
             pubkey = pubkeys[0]
-            script = ravencoin.public_key_to_p2pk_script(pubkey)
+            script = neurai.public_key_to_p2pk_script(pubkey)
         else:
             raise UnknownTxinType(f'cannot construct preimage_script for txin_type: {txin.script_type}')
 
@@ -1243,7 +1243,7 @@ class Transaction:
     @classmethod
     def estimated_output_size_for_address(cls, address: str) -> int:
         """Return an estimate of serialized output size in bytes."""
-        script = ravencoin.address_to_script(address)
+        script = neurai.address_to_script(address)
         return cls.estimated_output_size_for_script(script)
 
     @classmethod
@@ -1318,7 +1318,7 @@ class Transaction:
         return set(self._script_to_output_idx[script])  # copy
 
     def get_output_idxs_from_address(self, addr: str) -> Set[int]:
-        script = ravencoin.address_to_script(addr)
+        script = neurai.address_to_script(addr)
         return self.get_output_idxs_from_scriptpubkey(script)
 
     def output_value_for_address(self, addr):
@@ -1615,11 +1615,11 @@ class PartialTxInput(TxInput, PSBTSection):
                                                   f"If a redeemScript is provided, the scriptPubKey must be for that redeemScript")
         if self.witness_script:
             if self.redeem_script:
-                if self.redeem_script != bfh(ravencoin.p2wsh_nested_script(self.witness_script.hex())):
+                if self.redeem_script != bfh(neurai.p2wsh_nested_script(self.witness_script.hex())):
                     raise PSBTInputConsistencyFailure(f"PSBT input validation: "
                                                       f"If a witnessScript is provided, the redeemScript must be for that witnessScript")
             elif self.address:
-                if self.address != ravencoin.script_to_p2wsh(self.witness_script.hex()):
+                if self.address != neurai.script_to_p2wsh(self.witness_script.hex()):
                     raise PSBTInputConsistencyFailure(f"PSBT input validation: "
                                                       f"If a witnessScript is provided, the scriptPubKey must be for that witnessScript")
 
@@ -1743,7 +1743,7 @@ class PartialTxInput(TxInput, PSBTSection):
     def scriptpubkey(self) -> Optional[bytes]:
         if self._trusted_address is not None:
             a = self.value_sats().assets
-            script = bfh(ravencoin.address_to_script(self._trusted_address))
+            script = bfh(neurai.address_to_script(self._trusted_address))
             #if a:
             #    asset, amt = list(a.items())[0]
             #    script = assets.create_transfer_asset_script(script, asset, amt)
@@ -1848,7 +1848,7 @@ class PartialTxInput(TxInput, PSBTSection):
         """Whether this input is native segwit. None means inconclusive."""
         if self._is_native_segwit is None:
             if self.address:
-                self._is_native_segwit = ravencoin.is_segwit_address(self.address)
+                self._is_native_segwit = neurai.is_segwit_address(self.address)
         return self._is_native_segwit
 
     def is_p2sh_segwit(self) -> Optional[bool]:
@@ -1857,7 +1857,7 @@ class PartialTxInput(TxInput, PSBTSection):
             def calc_if_p2sh_segwit_now():
                 if not (self.address and self.redeem_script):
                     return None
-                if self.address != ravencoin.hash160_to_p2sh(hash_160(self.redeem_script)):
+                if self.address != neurai.hash160_to_p2sh(hash_160(self.redeem_script)):
                     # not p2sh address
                     return False
                 try:

@@ -62,8 +62,8 @@ from .util import (NotEnoughFunds, UserCancelled, escape_string_for_url, profile
                    Fiat, bfh, bh2u, TxMinedInfo, quantize_feerate, create_bip21_uri, OrderedDictWithIndex, 
                    parse_max_spend, RavenValue)
 from .simple_config import SimpleConfig, FEE_RATIO_HIGH_WARNING, FEERATE_WARNING_HIGH_FEE
-from .ravencoin import COIN, TYPE_ADDRESS, standardize_script
-from .ravencoin import is_address, address_to_script, is_minikey, relayfee, dust_threshold
+from .neurai import COIN, TYPE_ADDRESS, standardize_script
+from .neurai import is_address, address_to_script, is_minikey, relayfee, dust_threshold
 from .crypto import sha256d
 from . import keystore
 from .keystore import (load_keystore, Hardware_KeyStore, KeyStore, KeyStoreWithMPK,
@@ -71,7 +71,7 @@ from .keystore import (load_keystore, Hardware_KeyStore, KeyStore, KeyStoreWithM
 from .util import multisig_type
 from .storage import StorageEncryptionVersion, WalletStorage
 from .wallet_db import WalletDB
-from . import transaction, ravencoin, coinchooser, paymentrequest, ecc, bip32
+from . import transaction, neurai, coinchooser, paymentrequest, ecc, bip32
 from .transaction import (Transaction, TxInput, UnknownTxinType, TxOutput,
                           PartialTransaction, PartialTxInput, PartialTxOutput, TxOutpoint, get_script_type_from_output_script)
 from .assets import replace_amount_in_transfer_asset_script
@@ -112,11 +112,11 @@ class BumpFeeStrategy(enum.Enum):
 async def _append_utxos_to_inputs(*, inputs: List[PartialTxInput], network: 'Network',
                                   pubkey: str, txin_type: str, imax: int, outpoint_to_script: Dict) -> None:
     if txin_type in ('p2pkh', 'p2wpkh', 'p2wpkh-p2sh'):
-        address = ravencoin.pubkey_to_address(txin_type, pubkey)
-        scripthash = ravencoin.address_to_scripthash(address)
+        address = neurai.pubkey_to_address(txin_type, pubkey)
+        scripthash = neurai.address_to_scripthash(address)
     elif txin_type == 'p2pk':
-        script = ravencoin.public_key_to_p2pk_script(pubkey)
-        scripthash = ravencoin.script_to_scripthash(bfh(script))
+        script = neurai.public_key_to_p2pk_script(pubkey)
+        scripthash = neurai.script_to_scripthash(bfh(script))
     else:
         raise Exception(f'unexpected txin_type to sweep: {txin_type}')
 
@@ -124,7 +124,7 @@ async def _append_utxos_to_inputs(*, inputs: List[PartialTxInput], network: 'Net
         prev_tx_raw = await network.get_transaction(item['tx_hash'])
         prev_tx = Transaction(prev_tx_raw)
         prev_txout = prev_tx.outputs()[item['tx_pos']]
-        if scripthash != ravencoin.script_to_scripthash(prev_txout.scriptpubkey):
+        if scripthash != neurai.script_to_scripthash(prev_txout.scriptpubkey):
             raise Exception('scripthash mismatch when sweeping')
         prevout_str = item['tx_hash'] + ':%d' % item['tx_pos']
         prevout = TxOutpoint.from_str(prevout_str)
@@ -139,7 +139,7 @@ async def _append_utxos_to_inputs(*, inputs: List[PartialTxInput], network: 'Net
         txin.pubkeys = [bfh(pubkey)]
         txin.num_sig = 1
         if txin_type == 'p2wpkh-p2sh':
-            txin.redeem_script = bfh(ravencoin.p2wpkh_nested_script(pubkey))
+            txin.redeem_script = bfh(neurai.p2wpkh_nested_script(pubkey))
         inputs.append(txin)
 
     u = await network.listunspent_for_scripthash(scripthash)
@@ -172,7 +172,7 @@ async def sweep_preparations(privkeys, network: 'Network', imax=100):
     asset_outpoints_to_locking_scripts = {}
     async with OldTaskGroup() as group:
         for sec in privkeys:
-            txin_type, privkey, compressed = ravencoin.deserialize_privkey(sec)
+            txin_type, privkey, compressed = neurai.deserialize_privkey(sec)
             await group.spawn(find_utxos_for_privkey(txin_type, privkey, compressed))
             # do other lookups to increase support coverage
             if is_minikey(sec):
@@ -201,7 +201,7 @@ async def sweep(
     inputs, keypairs, asset_outpoints_to_locking_scripts = await sweep_preparations(privkeys, network, imax)
     total = sum(txin.value_sats() for txin in inputs)
     if fee is None:
-        outputs = [PartialTxOutput(scriptpubkey=bfh(ravencoin.address_to_script(to_address)),
+        outputs = [PartialTxOutput(scriptpubkey=bfh(neurai.address_to_script(to_address)),
                                    value=total)]
         tx = PartialTransaction.from_io(inputs, outputs)
         fee = config.estimate_fee(tx.estimated_size())
@@ -211,7 +211,7 @@ async def sweep(
         raise Exception(_('Not enough funds on address.') + '\nTotal: %d satoshis\nFee: %d\nDust Threshold: %d' % (
             total, fee, dust_threshold(network)))
 
-    outputs = [PartialTxOutput(scriptpubkey=bfh(ravencoin.address_to_script(to_address)),
+    outputs = [PartialTxOutput(scriptpubkey=bfh(neurai.address_to_script(to_address)),
                                value=total - fee)]
     if locktime is None:
         locktime = get_locktime_for_new_transaction(network)
@@ -537,7 +537,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         addrs = self.get_receiving_addresses()
         if len(addrs) > 0:
             addr = str(addrs[0])
-            if not ravencoin.is_address(addr):
+            if not neurai.is_address(addr):
                 neutered_addr = addr[:5] + '..' + addr[-2:]
                 raise WalletFileException(f'The addresses in this wallet are not bitcoin addresses.\n'
                                           f'e.g. {neutered_addr} (length: {len(addr)})')
@@ -689,7 +689,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         index = self.get_address_index(address)
         pk, compressed = self.keystore.get_private_key(index, password)
         txin_type = self.get_txin_type(address)
-        serialized_privkey = ravencoin.serialize_privkey(pk, compressed, txin_type)
+        serialized_privkey = neurai.serialize_privkey(pk, compressed, txin_type)
         return serialized_privkey
 
     def export_private_key_for_path(self, path: Union[Sequence[int], str], password: Optional[str]) -> str:
@@ -882,9 +882,9 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             nonlocal_only=nonlocal_only,
         )
 
-        # If we want a RVN transactions, omit all asset transactions
+        # If we want a XNA transactions, omit all asset transactions
         # If we want an asset transaction, include all transactions that include that asset and
-        # RVN transactions for the fee
+        # XNA transactions for the fee
 
         def is_utxo_good(utxo: PartialTxInput) -> bool:
             if self.is_frozen_coin(utxo):
@@ -1101,7 +1101,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         conf_needed = None  # type: Optional[int]
         with self.lock, self.transaction_lock:
             for invoice_scriptpubkey, invoice_amt in invoice_amounts.items():
-                scripthash = ravencoin.script_to_scripthash(invoice_scriptpubkey)
+                scripthash = neurai.script_to_scripthash(invoice_scriptpubkey)
                 prevouts_and_values = self.db.get_prevouts_by_scripthash(scripthash)
                 confs_and_values = []
                 for prevout, v in prevouts_and_values:
@@ -1201,7 +1201,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     item.update(fiat_fields)
                 else:
                     timestamp = item['timestamp'] or now
-                    fiat_value = value.rvn_value / Decimal(ravencoin.COIN) * fx.timestamp_rate(timestamp)
+                    fiat_value = value.rvn_value / Decimal(neurai.COIN) * fx.timestamp_rate(timestamp)
                     item['fiat_value'] = Fiat(fiat_value, fx.ccy)
                     item['fiat_default'] = True
         return transactions
@@ -1458,7 +1458,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def dust_threshold(self):
         return dust_threshold(self.network)
 
-    # TODO: Currently RVN Only
+    # TODO: Currently XNA Only
     def get_unconfirmed_base_tx_for_batching(self) -> Optional[Transaction]:
         candidate = None
         domain = self.get_addresses()
@@ -1532,7 +1532,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             for _ in range(extra_addresses):
                 append_change_addrs(change_addrs)
         for addr in change_addrs:
-            assert is_address(addr), f"not valid ravencoin address: {addr}"
+            assert is_address(addr), f"not valid neurai address: {addr}"
             # note that change addresses are not necessarily ismine
             # in which case this is a no-op
             self.check_address_for_corruption(addr)
@@ -1708,7 +1708,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     distr_amount[asset] = value.value
 
             if None in counts_of_each:
-                # Max spend RVN
+                # Max spend XNA
                 spendable_coins = list(coins if inputs else [])
                 coins_to_spend = list(inputs or coins)
                 total_amount = RavenValue(-1)
@@ -1771,7 +1771,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     outputs.pop(i)
                 tx = PartialTransaction.from_io(list(coins_to_spend), list(outputs))
             else:
-                # No max RVN;
+                # No max XNA;
                 # Treat as standard tx with change
                 # There will be no change for assets
                 change_addrs = self.get_change_addresses_for_new_transaction(change_addr)
@@ -2715,7 +2715,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         if not req.is_lightning():
             addr = req.get_address() or ""
             if sanity_checks:
-                if not ravencoin.is_address(addr):
+                if not neurai.is_address(addr):
                     raise Exception(_('Invalid Bitcoin address.'))
                 if not self.is_mine(addr):
                     raise Exception(_('Address not in wallet.'))
@@ -2880,7 +2880,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         for addr in txi_addresses:
             d = self.db.get_txi_addr(txid, addr)
             for ser, v in d:
-                # We only care about normal RVN for price
+                # We only care about normal XNA for price
                 input_value += v.rvn_value.value
                 total_price += self.coin_price(ser.split(':')[0], price_func, ccy, v.rvn_value.value)
         return total_price / (input_value / Decimal(COIN))
@@ -3070,7 +3070,7 @@ class Simple_Wallet(Abstract_Wallet):
             return None
         if txin_type == 'p2wpkh-p2sh':
             pubkey = self.get_public_key(address)
-            return ravencoin.p2wpkh_nested_script(pubkey)
+            return neurai.p2wpkh_nested_script(pubkey)
         if txin_type == 'address':
             return None
         raise UnknownTxinType(f'unexpected txin_type {txin_type}')
@@ -3137,7 +3137,7 @@ class Imported_Wallet(Simple_Wallet):
         good_addr = []  # type: List[str]
         bad_addr = []  # type: List[Tuple[str, str]]
         for address in addresses:
-            if not ravencoin.is_address(address):
+            if not neurai.is_address(address):
                 bad_addr.append((address, _('invalid address')))
                 continue
             if self.db.has_imported_address(address):
@@ -3184,9 +3184,9 @@ class Imported_Wallet(Simple_Wallet):
         self.db.remove_imported_address(address)
         if pubkey:
             # delete key iff no other address uses it (e.g. p2pkh and p2wpkh for same key)
-            for txin_type in ravencoin.WIF_SCRIPT_TYPES.keys():
+            for txin_type in neurai.WIF_SCRIPT_TYPES.keys():
                 try:
-                    addr2 = ravencoin.pubkey_to_address(txin_type, pubkey)
+                    addr2 = neurai.pubkey_to_address(txin_type, pubkey)
                 except NotImplementedError:
                     pass
                 else:
@@ -3241,7 +3241,7 @@ class Imported_Wallet(Simple_Wallet):
             if txin_type not in ('p2pkh', 'p2wpkh', 'p2wpkh-p2sh'):
                 bad_keys.append((key, _('not implemented type') + f': {txin_type}'))
                 continue
-            addr = ravencoin.pubkey_to_address(txin_type, pubkey)
+            addr = neurai.pubkey_to_address(txin_type, pubkey)
             good_addr.append(addr)
             self.db.add_imported_address(addr, {'type':txin_type, 'pubkey':pubkey})
             self.adb.add_address(addr)
@@ -3276,7 +3276,7 @@ class Imported_Wallet(Simple_Wallet):
             txin_type = self.get_txin_type(addr)
             if txin_type == 'address':
                 return
-            if addr != ravencoin.pubkey_to_address(txin_type, pubkey):
+            if addr != neurai.pubkey_to_address(txin_type, pubkey):
                 raise InternalAddressCorruption()
 
     def _add_input_sig_info(self, txin, address, *, only_der_suffix):
@@ -3406,7 +3406,7 @@ class Deterministic_Wallet(Abstract_Wallet):
             path = convert_bip32_path_to_list_of_uint32(path)
         pk, compressed = self.keystore.get_private_key(path, password)
         txin_type = self.get_txin_type()  # assumes no mixed-scripts in wallet
-        return ravencoin.serialize_privkey(pk, compressed, txin_type)
+        return neurai.serialize_privkey(pk, compressed, txin_type)
 
     def get_public_keys_with_deriv_info(self, address: str):
         der_suffix = self.get_address_index(address)
@@ -3551,7 +3551,7 @@ class Standard_Wallet(Simple_Deterministic_Wallet):
 
     def pubkeys_to_address(self, pubkeys):
         pubkey = pubkeys[0]
-        return ravencoin.pubkey_to_address(self.txin_type, pubkey)
+        return neurai.pubkey_to_address(self.txin_type, pubkey)
 
 
 class Multisig_Wallet(Deterministic_Wallet):
@@ -3567,7 +3567,7 @@ class Multisig_Wallet(Deterministic_Wallet):
 
     def pubkeys_to_address(self, pubkeys):
         redeem_script = self.pubkeys_to_scriptcode(pubkeys)
-        return ravencoin.redeem_script_to_address(self.txin_type, redeem_script)
+        return neurai.redeem_script_to_address(self.txin_type, redeem_script)
 
     def pubkeys_to_scriptcode(self, pubkeys: Sequence[str]) -> str:
         return transaction.multisig_script(sorted(pubkeys), self.m)
@@ -3579,7 +3579,7 @@ class Multisig_Wallet(Deterministic_Wallet):
         if txin_type == 'p2sh':
             return scriptcode
         elif txin_type == 'p2wsh-p2sh':
-            return ravencoin.p2wsh_nested_script(scriptcode)
+            return neurai.p2wsh_nested_script(scriptcode)
         elif txin_type == 'p2wsh':
             return None
         raise UnknownTxinType(f'unexpected txin_type {txin_type}')

@@ -1,17 +1,8 @@
 {
-    "168.119.100.140": {
+    "electrumx-testnet.neurai.org": {
         "pruning": "-",
-        "s": "50002",
-        "version": "1.9"
-    },
-    "electrum.ravencoin.foundation": {
-        "pruning": "-",
-        "s": "50012",
-        "version": "1.9"
-    },
-    "rvn4lyfe.com": {
-        "pruning": "-",
-        "s": "50003",
-        "version": "1.10"
+        "s": "19112",
+        "t": "19111",
+        "version": "1.0"
     }
 }

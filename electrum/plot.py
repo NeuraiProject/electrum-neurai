@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as md
 
 from .i18n import _
-from .ravencoin import COIN
+from .neurai import COIN
 
 
 class NothingToPlotException(Exception):
@@ -37,7 +37,7 @@ def plot_history(history):
     plt.subplots_adjust(bottom=0.2)
     plt.xticks(rotation=25)
     ax = plt.gca()
-    plt.ylabel('RVN')
+    plt.ylabel('XNA')
     plt.xlabel('Month')
     xfmt = md.DateFormatter('%Y-%m-%d')
     ax.xaxis.set_major_formatter(xfmt)

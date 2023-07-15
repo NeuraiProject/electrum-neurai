@@ -10,11 +10,11 @@ recordclass
 certifi
 bitstring
 attrs>=19.2.0
-x16r_hash
-x16rv2_hash
-kawpow
 matplotlib
 
 # Note that we also need the dnspython[DNSSEC] extra which pulls in cryptography,
 # but as that is not pure-python it cannot be listed in this file!
 dnspython>=2.0
+
+x16r_hash @ git+https://github.com/brian112358/x16r_hash@d79211ee8b5d86a9709caefded79f318a1d9f3a8
+kawpow

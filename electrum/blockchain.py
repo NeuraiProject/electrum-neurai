@@ -29,7 +29,7 @@ import struct
 from typing import Optional, Dict, Mapping, Sequence
 
 from . import util
-from .ravencoin import hash_encode, int_to_hex, rev_hex
+from .neurai import hash_encode, int_to_hex, rev_hex
 from .crypto import sha256d
 from . import constants
 from .util import bfh, bh2u, with_lock
@@ -38,10 +38,9 @@ from .logging import get_logger, Logger
 
 try:
     import x16r_hash
-    import x16rv2_hash
     import kawpow
 except ImportError as e:
-    sys.exit("x16r, x16rv2 and kawpow modules are required")
+    sys.exit("x16r and kawpow modules are required")
 
 _logger = get_logger(__name__)
 
@@ -53,31 +52,9 @@ PRE_KAWPOW_HEADER_SIZE = 80
 
 DGW_PASTBLOCKS = 180
 
-if constants.net.TESTNET:
-    X16Rv2ActivationTS = 1567533600
-    KawpowActivationTS = 1585159200
-    KawpowActivationHeight = 231544
-    nDGWActivationBlock = 1
-else:
-    X16Rv2ActivationTS = 1569945600
-    KawpowActivationTS = 1588788000
-    KawpowActivationHeight = 1219736
-    nDGWActivationBlock = 338778
-
-
-def set_constants():
-    global X16Rv2ActivationTS, KawpowActivationTS, KawpowActivationHeight, nDGWActivationBlock
-    if constants.net.TESTNET:
-        X16Rv2ActivationTS = 1567533600
-        KawpowActivationTS = 1585159200
-        KawpowActivationHeight = 231544
-        nDGWActivationBlock = 1
-    else:
-        X16Rv2ActivationTS = 1569945600
-        KawpowActivationTS = 1588788000
-        KawpowActivationHeight = 1219736
-        nDGWActivationBlock = 338778
-
+KawpowActivationTS = 1681720841
+KawpowActivationHeight = 1
+nDGWActivationBlock = 1
 
 class MissingHeader(Exception):
     pass
@@ -140,10 +117,6 @@ def hash_header(header: dict) -> str:
         header['prev_block_hash'] = '00' * 32
     if header['timestamp'] >= KawpowActivationTS:
         return hash_raw_header_kawpow(serialize_header(header))
-    elif header['timestamp'] >= X16Rv2ActivationTS:
-        hdr = serialize_header(header)[:80 * 2]
-        h = hash_raw_header_v2(hdr)
-        return h
     else:
         hdr = serialize_header(header)[:80 * 2]
         h = hash_raw_header(hdr)
@@ -152,12 +125,6 @@ def hash_header(header: dict) -> str:
 
 def hash_raw_header(header: str) -> str:
     raw_hash = x16r_hash.getPoWHash(bfh(header)[:80])
-    hash_result = hash_encode(raw_hash)
-    return hash_result
-
-
-def hash_raw_header_v2(header: str) -> str:
-    raw_hash = x16rv2_hash.getPoWHash(bfh(header)[:80])
     hash_result = hash_encode(raw_hash)
     return hash_result
 
@@ -195,8 +162,8 @@ def read_blockchains(config: 'SimpleConfig'):
                             prev_hash=None)
     blockchains[constants.net.GENESIS] = best_chain
     # consistency checks
-    if best_chain.height() > constants.net.max_dgw_checkpoint():
-        header_after_cp = best_chain.read_header(constants.net.max_dgw_checkpoint() + 1)
+    if best_chain.height() > constants.net.max_checkpoint():
+        header_after_cp = best_chain.read_header(constants.net.max_checkpoint() + 1)
         if not header_after_cp or not best_chain.can_connect(header_after_cp, check_height=False):
             _logger.info("[blockchain] deleting best chain. cannot connect header after last cp to last cp.")
             os.unlink(best_chain.path())
@@ -218,7 +185,7 @@ def read_blockchains(config: 'SimpleConfig'):
         prev_hash = (64 - len(prev_hash)) * "0" + prev_hash  # left-pad with zeroes
         first_hash = (64 - len(first_hash)) * "0" + first_hash
         # forks below the max checkpoint are not allowed
-        if forkpoint <= constants.net.max_dgw_checkpoint() + 2016:
+        if forkpoint <= constants.net.max_checkpoint():
             delete_chain(filename, "deleting fork below max checkpoint")
             return
         # find parent (sorting by forkpoint guarantees it's already instantiated)
@@ -266,7 +233,7 @@ def init_headers_file_for_best_chain():
     filename = b.path()
     # We want to start with one less than the checkpoint so we have headers to calculate the new
     # Chainwork from
-    length = POST_KAWPOW_HEADER_SIZE * constants.net.max_dgw_checkpoint()
+    length = POST_KAWPOW_HEADER_SIZE * max(0, (constants.net.max_checkpoint() - 2015))
     if not os.path.exists(filename) or os.path.getsize(filename) < length:
         with open(filename, 'wb') as f:
             if length > 0:
@@ -287,7 +254,7 @@ class Blockchain(Logger):
         assert isinstance(forkpoint_hash, str) and len(forkpoint_hash) == 64, forkpoint_hash
         assert (prev_hash is None) or (isinstance(prev_hash, str) and len(prev_hash) == 64), prev_hash
         # assert (parent is None) == (forkpoint == 0)
-        if 0 < forkpoint <= constants.net.max_dgw_checkpoint():
+        if 0 < forkpoint <= constants.net.max_checkpoint():
             raise Exception(f"cannot fork below max checkpoint. forkpoint: {forkpoint}")
         Logger.__init__(self)
         self.config = config
@@ -411,8 +378,6 @@ class Blockchain(Logger):
             raise Exception("bits mismatch: %s vs %s" % (bits, header.get('bits')))
         if header['timestamp'] >= KawpowActivationTS:
             hash_func = kawpow_hash
-        elif header['timestamp'] >= X16Rv2ActivationTS:
-            hash_func = x16rv2_hash.getPoWHash
         else:
             hash_func = x16r_hash.getPoWHash
         _powhash = rev_hex(bh2u(hash_func(bfh(serialize_header(header)))))
@@ -444,7 +409,7 @@ class Blockchain(Logger):
             # Don't bother with the target of headers in the middle of
             # DGW checkpoints
             target = 0
-            if constants.net.DGW_CHECKPOINTS_START <= s <= constants.net.max_dgw_checkpoint() + 2016:
+            if constants.net.DGW_CHECKPOINTS_START <= s <= constants.net.max_checkpoint():
                 if self.is_dgw_height_checkpoint(s) is not None:
                     target = self.get_target(s, headers)
                 else:
@@ -458,9 +423,9 @@ class Blockchain(Logger):
             s += 1
 
         # DGW must be received in correct chunk sizes to be valid with our checkpoints
-        if constants.net.DGW_CHECKPOINTS_START <= start_height <= constants.net.max_dgw_checkpoint():
+        if constants.net.DGW_CHECKPOINTS_START <= start_height <= constants.net.max_checkpoint() and start_height != 0:
             assert start_height % constants.net.DGW_CHECKPOINTS_SPACING == 0, 'dgw chunk not from start'
-            assert s - start_height == constants.net.DGW_CHECKPOINTS_SPACING, 'dgw chunk not correct size'
+            assert s - start_height == constants.net.DGW_CHECKPOINTS_SPACING, f'dgw chunk not correct size: {s - start_height}'
 
     @with_lock
     def path(self):
@@ -478,7 +443,7 @@ class Blockchain(Logger):
     @with_lock
     def save_chunk(self, start_height: int, chunk: bytes):
         assert start_height >= 0, start_height
-        chunk_within_checkpoint_region = start_height < constants.net.max_dgw_checkpoint() + 2016
+        chunk_within_checkpoint_region = start_height < constants.net.max_checkpoint()
         # chunks in checkpoint region are the responsibility of the 'main chain'
         if chunk_within_checkpoint_region and self.parent is not None:
             main_chain = get_best_chain()
@@ -659,7 +624,7 @@ class Blockchain(Logger):
         if height < constants.net.DGW_CHECKPOINTS_START:
             return None
         # Greater than the end of the saved checkpoints
-        if height > constants.net.max_dgw_checkpoint() + 2016:
+        if height > constants.net.max_checkpoint():
             return None
         height_mod = height % constants.net.DGW_CHECKPOINTS_SPACING
         # Is the first saved
@@ -759,7 +724,7 @@ class Blockchain(Logger):
         PastDifficultyAverage = 0
         PastDifficultyAveragePrev = 0
 
-        for i in range(PastBlocksMax):
+        for i in range(min(PastBlocksMax, height)):
             CountBlocks += 1
 
             if CountBlocks <= PastBlocksMin:
@@ -849,7 +814,7 @@ class Blockchain(Logger):
         # With DGW checkpoints, we cannot determine the work on the blocks between
         # Since we cannot fork below the checkpoints, lets just set chainwork under them
         # to 0
-        if height < constants.net.max_dgw_checkpoint() + 2016:
+        if height < constants.net.max_checkpoint():
             return 0
 
         # We want to calculate chainwork from 0.
@@ -883,6 +848,7 @@ class Blockchain(Logger):
             return False
         height = header['block_height']
         if check_height and self.height() != height - 1:
+            print('bad height')
             return False
         if height == 0:
             return hash_header(header) == constants.net.GENESIS

@@ -79,11 +79,11 @@ def all_subclasses(cls) -> Set:
 
 ca_path = certifi.where()
 
-base_units = {'RVN': 8}  # {'BTC':8, 'mBTC':5, 'bits':2, 'sat':0}
+base_units = {'XNA': 8}  # {'BTC':8, 'mBTC':5, 'bits':2, 'sat':0}
 base_units_inverse = inv_dict(base_units)
-base_units_list = ['RVN']  # list(dict) does not guarantee order
+base_units_list = ['XNA']  # list(dict) does not guarantee order
 
-DECIMAL_POINT_DEFAULT = 8  # RVN
+DECIMAL_POINT_DEFAULT = 8  # XNA
 
 
 class UnknownBaseUnit(Exception): pass
@@ -349,13 +349,13 @@ class IPFSData(NamedTuple):
     #is_rip14: Optional[bool]  # true/false/unknown
 
 
-class RavenValue:  # The raw RVN value as well as asset values of a transaction
+class RavenValue:  # The raw XNA value as well as asset values of a transaction
     @staticmethod
     def from_json(d: Dict):
         if d is None:
             return None
-        assert 'RVN' in d and 'ASSETS' in d
-        return RavenValue(d['RVN'], d['ASSETS'])
+        assert 'XNA' in d and 'ASSETS' in d
+        return RavenValue(d['XNA'], d['ASSETS'])
 
     def __init__(self, rvn: Union[int, Satoshis, str] = 0, assets=None):
         if assets is None:
@@ -399,7 +399,7 @@ class RavenValue:  # The raw RVN value as well as asset values of a transaction
         ret = []
         r = self.__rvn_value
         if r:
-            ret.append(f'{format_satoshis(r, num_zeros=1)} RVN')
+            ret.append(f'{format_satoshis(r, num_zeros=1)} XNA')
         for a, v in self.__asset_value.items():
             ret.append(f'{format_satoshis(v, num_zeros=1)} {a}')
 
@@ -508,13 +508,13 @@ class RavenValue:  # The raw RVN value as well as asset values of a transaction
 
     def to_json(self):
         d = {
-            'RVN': self.rvn_value if isinstance(self.rvn_value, str) else self.rvn_value.value,
+            'XNA': self.rvn_value if isinstance(self.rvn_value, str) else self.rvn_value.value,
             'ASSETS': {k: v if isinstance(v, str) else v.value for k, v in self.assets.items()},
         }
         return d
 
     def is_incoming(self):
-        # 0 >= if receiving assets or RVN
+        # 0 >= if receiving assets or XNA
         # <0 for the fee spent
         return self.rvn_value >= 0
 
@@ -953,11 +953,11 @@ def user_dir():
     elif 'ANDROID_DATA' in os.environ:
         return android_data_dir()
     elif os.name == 'posix':
-        return os.path.join(os.environ["HOME"], ".electrum-ravencoin")
+        return os.path.join(os.environ["HOME"], ".electrum-neurai")
     elif "APPDATA" in os.environ:
-        return os.path.join(os.environ["APPDATA"], "Electrum-Ravencoin")
+        return os.path.join(os.environ["APPDATA"], "Electrum-Neurai")
     elif "LOCALAPPDATA" in os.environ:
-        return os.path.join(os.environ["LOCALAPPDATA"], "Electrum-Ravencoin")
+        return os.path.join(os.environ["LOCALAPPDATA"], "Electrum-Neurai")
     else:
         # raise Exception("No home directory found in environment variables.")
         return
@@ -1177,19 +1177,11 @@ def time_difference(distance_in_time, include_seconds):
 
 
 mainnet_block_explorers = {
-    'ravencoin.network': ('https://ravencoin.network/',
-                          {'tx': 'tx/', 'addr': 'address/'}),
-    'rvn.traysi.org': ('http://rvn.traysi.org/',
-                       {'tx': 'tx/', 'addr': 'address/'}),
-    'rvn.cryptoscope.io': ('https://rvn.cryptoscope.io/',
+    'xna.cryptoscope.io': ('https://xna.cryptoscope.io/',
                            {'tx': 'tx/?txid=', 'addr': 'address/?address='}),
 }
 
 testnet_block_explorers = {
-    'ravencoin.network': ('https://testnet.ravencoin.network/',
-                          {'tx': 'tx/', 'addr': 'address/'}),
-    'rvn.cryptoscope.io': ('https://rvnt.cryptoscope.io/',
-                           {'tx': 'tx/?txid=', 'addr': 'address/?address='}),
 }
 
 signet_block_explorers = {
@@ -1208,12 +1200,16 @@ signet_block_explorers = {
 _block_explorer_default_api_loc = {'tx': 'tx/', 'addr': 'address/'}
 
 ipfs_explorers = {
-    'ipfs.io': ('https://ipfs.io/',
+    'ipfs.scalaproject.io': ('https://ipfs.scalaproject.io/',
                 {'ipfs': 'ipfs/'}),
-    'infura.io': ('https://ipfs.infura.io/',
-                  {'ipfs': 'ipfs/'}),
-    'ravencoinipfs-gateway.com': ('https://ravencoinipfs-gateway.com/',
-                                  {'ipfs': 'ipfs/'}),
+    'cloudflare-ipfs.com': ('https://cloudflare-ipfs.com/',
+                {'ipfs': 'ipfs/'}),
+    'ipfs.scalaproject.io': ('https://ipfs.scalaproject.io/',
+                {'ipfs': 'ipfs/'}),
+    'nftstorage.link': ('https://nftstorage.link/',
+                {'ipfs': 'ipfs/'}),
+    'ipfs.chaintek.net': ('https://ipfs.chaintek.net/',
+                {'ipfs': 'ipfs/'})
 }
 
 _ipfs_explorer_default_api_loc = {'ipfs': 'ipfs/'}
@@ -1226,7 +1222,7 @@ def ipfs_explorer_info():
 def ipfs_explorer(config: 'SimpleConfig') -> Optional[str]:
     if config.get('ipfs_explorer_custom') is not None:
         return None
-    default_ = 'infura.io'
+    default_ = 'ipfs.chaintek.net'
     ie_key = config.get('ipfs_explorer', default_)
     ie_tuple = ipfs_explorer_info().get(ie_key)
     if ie_tuple is None:
@@ -1279,7 +1275,7 @@ def block_explorer(config: 'SimpleConfig') -> Optional[str]:
     """
     if config.get('block_explorer_custom') is not None:
         return None
-    default_ = 'rvn.cryptoscope.io'
+    default_ = 'xna.cryptoscope.io'
     be_key = config.get('block_explorer', default_)
     be_tuple = block_explorer_info().get(be_key)
     if be_tuple is None:
@@ -1333,21 +1329,21 @@ class InvalidBitcoinURI(Exception): pass
 # TODO rename to parse_bip21_uri or similar
 def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
     """Raises InvalidBitcoinURI on malformed URI."""
-    from . import ravencoin
-    from .ravencoin import COIN, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
+    from . import neurai
+    from .neurai import COIN, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
     from .lnaddr import lndecode
 
     if not isinstance(uri, str):
         raise InvalidBitcoinURI(f"expected string, not {repr(uri)}")
 
     if ':' not in uri:
-        if not ravencoin.is_address(uri):
-            raise InvalidBitcoinURI("Not a ravencoin address")
+        if not neurai.is_address(uri):
+            raise InvalidBitcoinURI("Not a neurai address")
         return {'address': uri}
 
     u = urllib.parse.urlparse(uri)
     if u.scheme.lower() != BITCOIN_BIP21_URI_SCHEME:
-        raise InvalidBitcoinURI("Not a ravencoin URI")
+        raise InvalidBitcoinURI("Not a neurai URI")
     address = u.path
 
     # python for android fails to parse query
@@ -1363,7 +1359,7 @@ def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
 
     out = {k: v[0] for k, v in pq.items()}
     if address:
-        if not ravencoin.is_address(address):
+        if not neurai.is_address(address):
             raise InvalidBitcoinURI(f"Invalid bitcoin address: {address}")
         out['address'] = address
     if 'amount' in out:
@@ -1398,7 +1394,7 @@ def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
             raise InvalidBitcoinURI(f"failed to parse 'exp' field: {repr(e)}") from e
     if 'sig' in out:
         try:
-            out['sig'] = bh2u(ravencoin.base_decode(out['sig'], base=58))
+            out['sig'] = bh2u(neurai.base_decode(out['sig'], base=58))
         except Exception as e:
             raise InvalidBitcoinURI(f"failed to parse 'sig' field: {repr(e)}") from e
     if 'lightning' in out:
@@ -1436,8 +1432,8 @@ def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
 
 def create_bip21_uri(addr, amount_sat: Optional[int], message: Optional[str],
                      *, extra_query_params: Optional[dict] = None) -> str:
-    from . import ravencoin
-    if not ravencoin.is_address(addr):
+    from . import neurai
+    if not neurai.is_address(addr):
         return ""
     if extra_query_params is None:
         extra_query_params = {}
@@ -1629,7 +1625,7 @@ class TxMinedInfo(NamedTuple):
 
 def make_aiohttp_session(proxy: Optional[dict], headers=None, timeout=None):
     if headers is None:
-        headers = {'User-Agent': 'Electrum-Ravencoin'}
+        headers = {'User-Agent': 'Electrum-Neurai'}
     if timeout is None:
         # The default timeout is high intentionally.
         # DNS on some systems can be really slow, see e.g. #5337

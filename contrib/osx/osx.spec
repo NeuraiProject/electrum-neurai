@@ -4,10 +4,10 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules, coll
 
 import sys, os
 
-PACKAGE='Electrum-Ravencoin'
+PACKAGE='Electrum-Neurai'
 PYPKG='electrum'
 MAIN_SCRIPT='run_electrum'
-ICONS_FILE=PYPKG + '/gui/icons/electrum-ravencoin.icns'
+ICONS_FILE=PYPKG + '/gui/icons/electrum-neurai.icns'
 
 
 for i, x in enumerate(sys.argv):
@@ -63,7 +63,7 @@ a = Analysis([electrum+ MAIN_SCRIPT,
               electrum+'electrum/util.py',
               electrum+'electrum/wallet.py',
               electrum+'electrum/simple_config.py',
-              electrum+'electrum/ravencoin.py',
+              electrum+'electrum/neurai.py',
               electrum+'electrum/dnssec.py',
               electrum+'electrum/commands.py',
               electrum+'electrum/plugins/trezor/qt.py',

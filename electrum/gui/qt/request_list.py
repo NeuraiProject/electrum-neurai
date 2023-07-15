@@ -182,9 +182,9 @@ class RequestList(MyTreeView):
             return
         menu = QMenu(self)
         if req.get_address():
-            menu.addAction(_("Copy Address"), lambda: self.parent.do_copy(req.get_address(), title='Ravencoin Address'))
+            menu.addAction(_("Copy Address"), lambda: self.parent.do_copy(req.get_address(), title='Neurai Address'))
             URI = self.wallet.get_request_URI(req)
-            menu.addAction(_("Copy URI"), lambda: self.parent.do_copy(URI, title='Ravencoin URI'))
+            menu.addAction(_("Copy URI"), lambda: self.parent.do_copy(URI, title='Neurai URI'))
         if req.is_lightning():
             menu.addAction(_("Copy Lightning Request"), lambda: self.parent.do_copy(req.lightning_invoice, title='Lightning Request'))
         self.add_copy_menu(menu, idx)

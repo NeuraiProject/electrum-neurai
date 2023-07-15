@@ -27,7 +27,7 @@ import dns
 import threading
 from dns.exception import DNSException
 
-from . import ravencoin
+from . import neurai
 from . import dnssec
 from .util import read_json_file, write_json_file, to_string
 from .logging import Logger
@@ -46,7 +46,7 @@ class Contacts(dict, Logger):
         # backward compatibility
         for k, v in self.items():
             _type, n = v
-            if _type == 'address' and ravencoin.is_address(n):
+            if _type == 'address' and neurai.is_address(n):
                 self.pop(k)
                 self[n] = ('address', k)
 
@@ -73,7 +73,7 @@ class Contacts(dict, Logger):
             return res
 
     def resolve(self, k):
-        if ravencoin.is_address(k):
+        if neurai.is_address(k):
             return {
                 'address': k,
                 'type': 'address'
@@ -94,7 +94,7 @@ class Contacts(dict, Logger):
                 'type': 'openalias',
                 'validated': validated
             }
-        raise Exception("Invalid ravencoin address or alias", k)
+        raise Exception("Invalid neurai address or alias", k)
 
     def fetch_openalias(self, config):
         self.alias_info = None
@@ -139,7 +139,7 @@ class Contacts(dict, Logger):
         for k, v in list(data.items()):
             if k == 'contacts':
                 return self._validate(v)
-            if not ravencoin.is_address(k):
+            if not neurai.is_address(k):
                 data.pop(k)
             else:
                 _type, _ = v

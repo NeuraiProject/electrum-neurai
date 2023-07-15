@@ -51,9 +51,9 @@ from PyQt5.QtWidgets import (QMessageBox, QSystemTrayIcon, QTabWidget,
 import electrum
 from electrum.blockchain import DGW_PASTBLOCKS, hash_header
 from electrum.gui import messages
-from electrum import (keystore, ecc, constants, util, ravencoin, commands,
+from electrum import (keystore, ecc, constants, util, neurai, commands,
                       paymentrequest, lnutil)
-from electrum.ravencoin import COIN, is_address, base_decode, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, address_to_scripthash
+from electrum.neurai import COIN, is_address, base_decode, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, address_to_scripthash
 from electrum.plugin import run_hook, BasePlugin
 from electrum.i18n import _
 from electrum.util import (RavenValue, format_time, get_asyncio_loop,
@@ -79,7 +79,7 @@ from electrum.lnaddr import lndecode
 from .asset_workspace import AssetCreateWorkspace, AssetReissueWorkspace
 
 from .exception_window import Exception_Hook
-from .amountedit import RVNAmountEdit
+from .amountedit import XNAAmountEdit
 from .qrcodewidget import QRDialog
 from .qrtextedit import ShowQRTextEdit, ScanQRTextEdit, ScanShowQRTextEdit
 from .transaction_dialog import show_transaction
@@ -183,7 +183,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.asset_whitelist = self.wallet.config.get('asset_whitelist', [])
 
         # Tracks sendable things
-        self.send_options = ['RVN']  # type: List[str]
+        self.send_options = ['XNA']  # type: List[str]
 
         Exception_Hook.maybe_setup(config=self.config, wallet=self.wallet)
 
@@ -271,7 +271,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         if self.config.get("is_maximized"):
             self.showMaximized()
 
-        self.setWindowIcon(read_QIcon("electrum-ravencoin.png"))
+        self.setWindowIcon(read_QIcon("electrum-neurai.png"))
         self.init_menubar()
 
         wrtabs = weakref.proxy(tabs)
@@ -308,6 +308,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.contacts.fetch_openalias(self.config)
 
         # If the option hasn't been set yet
+
         if config.get('check_updates') is None:
             choice = self.question(title="Electrum - " + _("Enable update check"),
                                    msg=_(
@@ -321,7 +322,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             # to prevent GC from getting in our way.
             def on_version_received(v):
                 if UpdateCheck.is_newer(v):
-                    self.update_check_button.setText(_("Update to Electrum-Ravencoin {} is available").format(v))
+                    self.update_check_button.setText(_("Update to Electrum-Neurai {} is available").format(v))
                     self.update_check_button.clicked.connect(lambda: self.show_update_check(v))
                     self.update_check_button.show()
 
@@ -561,7 +562,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
     @classmethod
     def get_app_name_and_version_str(cls) -> str:
-        name = "Electrum Ravencoin"
+        name = "Electrum Neurai"
         if constants.net.TESTNET:
             name += " " + constants.net.NET_NAME.capitalize()
         return f"{name} {ELECTRUM_VERSION}"
@@ -583,8 +584,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         if self.wallet.is_watching_only():
             msg = ' '.join([
                 _("This wallet is watching-only."),
-                _("This means you will not be able to spend Ravencoins with it."),
-                _("Make sure you own the seed phrase or the private keys, before you request Ravencoins to be sent to this wallet.")
+                _("This means you will not be able to spend Neurais with it."),
+                _("Make sure you own the seed phrase or the private keys, before you request Neurais to be sent to this wallet.")
             ])
             self.show_warning(msg, title=_('Watch-only wallet'))
 
@@ -625,7 +626,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         msg = ''.join([
             _("You are in testnet mode."), ' ',
             _("Testnet coins are worthless."), '\n',
-            _("Testnet is separate from the main Ravencoin network. It is used for testing.")
+            _("Testnet is separate from the main Neurai network. It is used for testing.")
         ])
         cb = QCheckBox(_("Don't show this again."))
         cb_checked = False
@@ -833,8 +834,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         help_menu = menubar.addMenu(_("&Help"))
         help_menu.addAction(_("&About"), self.show_about)
         help_menu.addAction(_("&Check for updates"), self.show_update_check)
-        help_menu.addAction("&RVN Electrum Wiki", lambda: webopen("https://raven.wiki/wiki/Electrum"))
-        help_menu.addAction("&GetRavencoin.org", lambda: webopen("https://GetRavencoin.org"))
+        help_menu.addAction("&neurai.org", lambda: webopen("https://neurai.org"))
         help_menu.addSeparator()
         help_menu.addAction(_("&Documentation"), lambda: webopen("http://docs.electrum.org/")).setShortcut(
             QKeySequence.HelpContents)
@@ -857,11 +857,11 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
     def show_about(self):
         QMessageBox.about(self, "Electrum",
                           (_("Version") + " %s" % ELECTRUM_VERSION + "\n\n" +
-                           _("Electrum's focus is speed, with low resource usage and simplifying Ravencoin.") + " " +
+                           _("Electrum's focus is speed, with low resource usage and simplifying Neurai.") + " " +
                            _("You do not need to perform regular backups, because your wallet can be "
                              "recovered from a secret phrase that you can memorize or write on paper.") + " " +
                            _("Startup times are instant because it operates in conjunction with high-performance "
-                             "servers that handle the most complicated parts of the Ravencoin system.") + "\n\n" +
+                             "servers that handle the most complicated parts of the Neurai system.") + "\n\n" +
                            _("Uses icons from the Icons8 icon pack (icons8.com).")))
 
     def show_bitcoin_paper(self):
@@ -1384,7 +1384,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
         buy_error = QLabel()
         buy_error.setStyleSheet(ColorScheme.RED.as_stylesheet())
-        buy_amt = RVNAmountEdit(self.get_decimal_point)
+        buy_amt = XNAAmountEdit(self.get_decimal_point)
 
         def on_edit(w):
             buy_error.setText('')    
@@ -1400,7 +1400,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         vbox2.addWidget(buy_text, 1)
         vbox2.addWidget(buy_error, 1)
 
-        buy_amt_label = QLabel(_("RVN Offered:"))
+        buy_amt_label = QLabel(_("XNA Offered:"))
         vbox2.addWidget(buy_amt_label, 1)
         vbox2.addWidget(buy_amt, 1)
 
@@ -1435,7 +1435,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         l = QTextEdit()
 
         def test():
-            from electrum.ravencoin import address_to_script
+            from electrum.neurai import address_to_script
             from electrum.transaction import Satoshis
             
             i1 = PartialTxInput(prevout=TxOutpoint(bytes.fromhex('7e602949d4c149b433f368046c0c478e2557a20ced1b394bf10045ff358768fb'), 0), is_coinbase_output=False)
@@ -2113,7 +2113,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             'electrum': electrum,
             'daemon': self.gui_object.daemon,
             'util': util,
-            'bitcoin': ravencoin,
+            'bitcoin': neurai,
             'lnutil': lnutil,
         })
 
@@ -2530,7 +2530,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             self.logger.exception('')
             self.show_message(repr(e))
             return
-        xtype = ravencoin.deserialize_privkey(pk)[0]
+        xtype = neurai.deserialize_privkey(pk)[0]
         d = WindowModalDialog(self, _("Private key"))
         d.setMinimumSize(600, 150)
         vbox = QVBoxLayout()
@@ -2554,8 +2554,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
     def do_sign(self, address, message, signature, password):
         address = address.text().strip()
         message = message.toPlainText().strip()
-        if not ravencoin.is_address(address):
-            self.show_message(_('Invalid Ravencoin address.'))
+        if not neurai.is_address(address):
+            self.show_message(_('Invalid Neurai address.'))
             return
         if self.wallet.is_watching_only():
             self.show_message(_('This is a watching-only wallet.'))
@@ -2582,8 +2582,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
     def do_verify(self, address, message, signature):
         address = address.text().strip()
         message = message.toPlainText().strip().encode('utf-8')
-        if not ravencoin.is_address(address):
-            self.show_message(_('Invalid Ravencoin address.'))
+        if not neurai.is_address(address):
+            self.show_message(_('Invalid Neurai address.'))
             return
         try:
             # This can throw on invalid base64
@@ -2966,8 +2966,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         d.setMinimumSize(600, 300)
         vbox = QVBoxLayout(d)
         hbox_top = QHBoxLayout()
-        hbox_top.addWidget(QLabel(_("RVN currently in your wallet will be used for the fee to sweep assets\n"
-                                    "if there is no RVN held in the private keys.\n"
+        hbox_top.addWidget(QLabel(_("XNA currently in your wallet will be used for the fee to sweep assets\n"
+                                    "if there is no XNA held in the private keys.\n"
                                     "Enter private keys:")))
         hbox_top.addWidget(InfoButton(WIF_HELP_TEXT), alignment=Qt.AlignRight)
         vbox.addLayout(hbox_top)
@@ -2992,7 +2992,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
         def get_address():
             addr = str(address_e.text()).strip()
-            if ravencoin.is_address(addr):
+            if neurai.is_address(addr):
                 return addr
 
         def get_pk(*, raise_on_error=False):
@@ -3035,7 +3035,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
             self.warn_if_watching_only()
 
-            # If there is not RVN in the privkeys, use our own
+            # If there is not XNA in the privkeys, use our own
                         
             outputs = []
             if total_held.assets:
@@ -3191,7 +3191,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.logviewer.setAcceptRichText(False)
         self.logviewer.setReadOnly(True)
         self.logviewer.setPlainText(
-            _("Enable 'Write logs to file' in Preferences -> General and restart Electrum-Ravencoin to view logs here"))
+            _("Enable 'Write logs to file' in Preferences -> General and restart Electrum-Neurai to view logs here"))
         layout.addWidget(self.logviewer, 1, 1)
         logfile = get_logfile_path()
         self.logtimer = QTimer(self)
@@ -3304,7 +3304,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         output_amount = QLabel('')
         grid.addWidget(QLabel(_('Output amount') + ':'), 2, 0)
         grid.addWidget(output_amount, 2, 1)
-        fee_e = RVNAmountEdit(self.get_decimal_point)
+        fee_e = XNAAmountEdit(self.get_decimal_point)
         combined_fee = QLabel('')
         combined_feerate = QLabel('')
 

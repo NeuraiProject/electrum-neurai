@@ -17,7 +17,7 @@ from electrum import util, paymentrequest
 from electrum import lnutil
 from electrum.plugin import run_hook
 from electrum.i18n import _
-from electrum.ravencoin import COIN, make_op_return
+from electrum.neurai import COIN, make_op_return
 from electrum.util import (AssetAmountModified, UserFacingException, get_asyncio_loop, bh2u,
                            InvalidBitcoinURI, maybe_extract_lightning_payment_identifier, NotEnoughFunds,
                            NoDynamicFeeEstimates, InvoiceError, parse_max_spend, RavenValue)
@@ -74,7 +74,7 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
         grid.setSpacing(8)
         grid.setColumnStretch(3, 1)
 
-        # Let user choose to send RVN or Asset
+        # Let user choose to send XNA or Asset
         self.to_send_combo = QComboBox()
         self.amount_e = PayToAmountEdit(lambda: 8 if self.to_send_combo.currentIndex() > 0 else self.window.get_decimal_point(),
                                         lambda: self.window.send_options[self.to_send_combo.currentIndex()][:4])
@@ -82,9 +82,9 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
         from .paytoedit import PayToEdit
         self.payto_e = PayToEdit(self)
         msg = (_("Recipient of the funds.") + "\n\n"
-               + _("You may enter a Ravencoin address, a label from your list of contacts "
+               + _("You may enter a Neurai address, a label from your list of contacts "
                    "(a list of completions will be proposed), "
-                   "or an alias (email-like address that forwards to a Ravencoin address)") + ". "
+                   "or an alias (email-like address that forwards to a Neurai address)") + ". "
                + _("Lightning invoices are also supported.") + "\n\n"
                + _("You can also pay to many outputs in a single transaction, "
                    "specifying one output per line.") + "\n" + _("Format: address, amount") + "\n"

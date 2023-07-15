@@ -399,7 +399,7 @@ class HistoryModel(CustomModel, Logger):
             capital_gain = tx_item.get('capital_gain')
 
             if value.rvn_value != 0:
-                asset_name = 'RVN'
+                asset_name = 'XNA'
                 amount = value.rvn_value
                 balance = tx_item['balance'].rvn_value
                 node_data = HistoryNodeData(
@@ -879,11 +879,11 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
         grid.addWidget(QLabel(self.format_date(start_date)), 1, 1)
         grid.addWidget(QLabel(self.format_date(end_date)), 1, 2)
         #
-        grid.addWidget(QLabel(_("RVN balance")), 2, 0)
+        grid.addWidget(QLabel(_("XNA balance")), 2, 0)
         grid.addWidget(QLabel(format_amount(start['BTC_balance'].rvn_value)), 2, 1)
         grid.addWidget(QLabel(format_amount(end['BTC_balance'].rvn_value)), 2, 2)
         #
-        grid.addWidget(QLabel(_("RVN Fiat price")), 3, 0)
+        grid.addWidget(QLabel(_("XNA Fiat price")), 3, 0)
         grid.addWidget(QLabel(format_fiat(start.get('BTC_fiat_price'))), 3, 1)
         grid.addWidget(QLabel(format_fiat(end.get('BTC_fiat_price'))), 3, 2)
         #
@@ -900,11 +900,11 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
         grid.addWidget(QLabel(format_fiat(end.get('unrealized_gains', ''))), 6, 2)
         #
         grid2 = QGridLayout()
-        grid2.addWidget(QLabel(_("RVN incoming")), 0, 0)
+        grid2.addWidget(QLabel(_("XNA incoming")), 0, 0)
         grid2.addWidget(QLabel(format_amount(flow['BTC_incoming'].rvn_value)), 0, 1)
         grid2.addWidget(QLabel(_("Fiat incoming")), 1, 0)
         grid2.addWidget(QLabel(format_fiat(flow.get('fiat_incoming'))), 1, 1)
-        grid2.addWidget(QLabel(_("RVN outgoing")), 2, 0)
+        grid2.addWidget(QLabel(_("XNA outgoing")), 2, 0)
         grid2.addWidget(QLabel(format_amount(flow['BTC_outgoing'].rvn_value)), 2, 1)
         grid2.addWidget(QLabel(_("Fiat outgoing")), 3, 0)
         grid2.addWidget(QLabel(format_fiat(flow.get('fiat_outgoing'))), 3, 1)
@@ -1030,7 +1030,7 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
             menu.addAction(_("Edit {}").format(label), lambda p=persistent: self.edit(QModelIndex(p)))
         menu.addAction(_("View Transaction"), lambda: self.show_transaction(tx_item, tx))
         channel_id = tx_item.channel_id
-        if tx_item.asset_name != 'RVN':
+        if tx_item.asset_name != 'XNA':
             menu.addAction(_('Mark as spam'), lambda: self.parent.hide_asset(tx_item.asset_name))
         if channel_id:
             menu.addAction(_("View Channel"), lambda: self.parent.show_channel(bytes.fromhex(channel_id)))
@@ -1083,7 +1083,7 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
         d = WindowModalDialog(self, _('Export History'))
         d.setMinimumSize(400, 200)
         vbox = QVBoxLayout(d)
-        defaultname = os.path.expanduser('~/electrum-ravencoin-history.csv')
+        defaultname = os.path.expanduser('~/electrum-neurai-history.csv')
         select_msg = _('Select file to export your wallet transactions to')
         hbox, filename_e, csv_button = filename_field(self, self.config, defaultname, select_msg)
         vbox.addLayout(hbox)

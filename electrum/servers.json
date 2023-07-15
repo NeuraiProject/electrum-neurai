@@ -1,18 +1,20 @@
 {
-  "rvn4lyfe.com": {
+  "electrumx1.neurai.org": {
     "pruning": "-",
-    "s": "50002",
-    "t": "50001",
-    "version": "1.10"
+    "s": "19012",
+    "t": "19011",
+    "version": "1.0"
   },
-  "rvn-dashboard.com": {
+  "electrumx2.neurai.org": {
     "pruning": "-",
-    "s": "50002",
-    "version": "1.10"
+    "s": "19012",
+    "t": "19011",
+    "version": "1.0"
   },
-  "aq7vuqykup2voklcrpqljf6jnjkzrouowsjfrmybdou5kdhrpr6sjjid.onion": {
+  "electrumx3.neurai.org": {
     "pruning": "-",
-    "t": "50001",
-    "version": "1.10"
+    "s": "19012",
+    "t": "19011",
+    "version": "1.0"
   }
 }

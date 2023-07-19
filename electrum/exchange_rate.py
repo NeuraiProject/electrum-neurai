@@ -16,7 +16,7 @@ import aiohttp
 from . import util
 from .neurai import COIN
 from .i18n import _
-from .util import (RavenValue, ThreadJob, make_dir, log_exceptions, OldTaskGroup,
+from .util import (NeuraiValue, ThreadJob, make_dir, log_exceptions, OldTaskGroup,
                    make_aiohttp_session, resource_path, EventListener, event_listener)
 from .network import Network
 from .simple_config import SimpleConfig
@@ -417,8 +417,8 @@ class FxThread(ThreadJob, EventListener):
             rate = self.exchange_rate()
         else:
             rate = self.timestamp_rate(timestamp)
-        if isinstance(btc_balance, RavenValue):
-            btc_balance = btc_balance.rvn_value.value
+        if isinstance(btc_balance, NeuraiValue):
+            btc_balance = btc_balance.xna_value.value
         return '' if rate.is_nan() else "%s %s" % (self.value_str(btc_balance, rate), self.ccy)
 
     def get_fiat_status_text(self, btc_balance, base_unit, decimal_point):

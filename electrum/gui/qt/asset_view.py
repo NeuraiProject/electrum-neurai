@@ -38,7 +38,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QMenu, QCheckBox, QSplitter, QFr
 
 from electrum.i18n import _
 from electrum.network import Network
-from electrum.util import IPFSData, get_ipfs_path, ipfs_explorer_URL, profiler, RavenValue, Satoshis, get_asyncio_loop, make_aiohttp_session
+from electrum.util import IPFSData, get_ipfs_path, ipfs_explorer_URL, profiler, NeuraiValue, Satoshis, get_asyncio_loop, make_aiohttp_session
 from electrum.neurai import COIN, is_address, base_decode
 from electrum.wallet import InternalAddressCorruption
 from electrum.transaction import AssetMeta
@@ -538,8 +538,8 @@ class AssetList(MyTreeView):
         assets = {}  # type: Dict[str, List[int, Optional[AssetMeta]]]
 
         c, u, x = self.wallet.get_balance()
-        confirmed_balance: RavenValue = c
-        unconfirmed_balance: RavenValue = u + x
+        confirmed_balance: NeuraiValue = c
+        unconfirmed_balance: NeuraiValue = u + x
 
         all_assets = {x for x in confirmed_balance.assets.keys()}
         all_assets.update({x for x in unconfirmed_balance.assets.keys()})

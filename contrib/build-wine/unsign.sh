@@ -24,8 +24,8 @@ for mine in $(ls dist/*.exe); do
     if test -f signed/$f; then
         echo "Found file at signed/$f"
     else
-        echo "Downloading https://download.electrum.org/$version/$f"
-        wget -q https://download.electrum.org/$version/$f -O signed/$f
+        echo "Downloading https://download.neurai.org/$version/$f"
+        wget -q https://download.neurai.org/$version/$f -O signed/$f
     fi
     out="signed/stripped/$f"
     # Remove PE signature from signed binary

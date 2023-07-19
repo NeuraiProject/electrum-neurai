@@ -12,7 +12,7 @@ from .i18n import _
 DOUBLE_PUNCTUATION = "^.*[._]{2,}.*$"
 LEADING_PUNCTUATION = "^[._].*$"
 TRAILING_PUNCTUATION = "^.*[._]$"
-RAVEN_NAMES = "^RVN$|^RAVEN$|^RAVENCOIN$|^#RVN$|^#RAVEN$|^#RAVENCOIN$"
+NEURAI_NAMES = "^XNA$|^NEURAI$|^NEURAI$|^#XNA$|^#NEURAI$|^#NEURAI$"
 
 MAIN_CHECK = "^[A-Z0-9._]{3,}$"
 SUB_CHECK = "^[A-Z0-9._]+$"
@@ -86,18 +86,18 @@ def get_asset_vout_type(script: bytes) -> Optional[str]:
     if script[-1] != 0x75:
         return None
     ops = transaction.script_GetOp(script)
-    rvn_ptr = -1
+    xna_ptr = -1
     for op, l, ptr in ops:
-        if op == opcodes.OP_RVN_ASSET:
-            rvn_ptr = ptr - 1
+        if op == opcodes.OP_XNA_ASSET:
+            xna_ptr = ptr - 1
             break
-    if not rvn_ptr > 0:
+    if not xna_ptr > 0:
         return None
-    if script[rvn_ptr+2:rvn_ptr+5] == b'rvn':
-        rvn_ptr += 5
+    if script[xna_ptr+2:xna_ptr+5] == b'xna':
+        xna_ptr += 5
     else:
-        rvn_ptr += 6
-    type = bytes([script[rvn_ptr]])
+        xna_ptr += 6
+    type = bytes([script[xna_ptr]])
 
     if type == b't':
         return _('Transfer')
@@ -114,29 +114,29 @@ def try_get_message_from_asset_transfer(script: bytes) -> Optional[Tuple[str, Op
     if script[-1] != 0x75:
         return None
     ops = transaction.script_GetOp(script)
-    rvn_ptr = -1
+    xna_ptr = -1
     for op, _, ptr in ops:
-        if op == opcodes.OP_RVN_ASSET:
-            rvn_ptr = ptr - 1
+        if op == opcodes.OP_XNA_ASSET:
+            xna_ptr = ptr - 1
             break
-    if not rvn_ptr > 0:
+    if not xna_ptr > 0:
         return None
-    if script[rvn_ptr+2:rvn_ptr+5] == b'rvn':
-        rvn_ptr += 5
+    if script[xna_ptr+2:xna_ptr+5] == b'xna':
+        xna_ptr += 5
     else:
-        rvn_ptr += 6
-    type = bytes([script[rvn_ptr]])
+        xna_ptr += 6
+    type = bytes([script[xna_ptr]])
     if type != b't':
         return None
-    rvn_ptr += 1
-    name_len = script[rvn_ptr]
+    xna_ptr += 1
+    name_len = script[xna_ptr]
     ipfs = None
     timestamp = None
     try:
-        if script[rvn_ptr+1+name_len+8] != 0xff:
-            ipfs = script[rvn_ptr+1+name_len+8:rvn_ptr+1+name_len+8+34]
-        if script[rvn_ptr+1+name_len+8+34] != 0xff:
-            timestamp = script[rvn_ptr+1+name_len+8+34:rvn_ptr+1+name_len+8+34+8]
+        if script[xna_ptr+1+name_len+8] != 0xff:
+            ipfs = script[xna_ptr+1+name_len+8:xna_ptr+1+name_len+8+34]
+        if script[xna_ptr+1+name_len+8+34] != 0xff:
+            timestamp = script[xna_ptr+1+name_len+8+34:xna_ptr+1+name_len+8+34+8]
     except Exception as e:
         return None
 
@@ -153,56 +153,56 @@ def replace_amount_in_transfer_asset_script(script: bytes, amount: int) -> bytes
     if script[-1] != 0x75:
         raise BadAssetScript('No OP_DROP')
     ops = transaction.script_GetOp(script)
-    rvn_ptr = -1
+    xna_ptr = -1
     for op, _, ptr in ops:
-        if op == opcodes.OP_RVN_ASSET:
-            rvn_ptr = ptr - 1
+        if op == opcodes.OP_XNA_ASSET:
+            xna_ptr = ptr - 1
             break
-    if not rvn_ptr > 0:
-        raise BadAssetScript('No OP_RVN_ASSET')
-    if script[rvn_ptr+2:rvn_ptr+5] == b'rvn':
-        rvn_ptr += 5
+    if not xna_ptr > 0:
+        raise BadAssetScript('No OP_XNA_ASSET')
+    if script[xna_ptr+2:xna_ptr+5] == b'xna':
+        xna_ptr += 5
     else:
-        rvn_ptr += 6
-    type = bytes([script[rvn_ptr]])
+        xna_ptr += 6
+    type = bytes([script[xna_ptr]])
     if type != b't':
         raise BadAssetScript('Not an asset transfer script')
-    rvn_ptr += 1
-    name_len = script[rvn_ptr]
-    pre_sats = script[:rvn_ptr+1+name_len]
-    post_sats = script[rvn_ptr+1+name_len+8:]
+    xna_ptr += 1
+    name_len = script[xna_ptr]
+    pre_sats = script[:xna_ptr+1+name_len]
+    post_sats = script[xna_ptr+1+name_len+8:]
     return pre_sats + amount.to_bytes(8, 'little', signed=False) + post_sats
 
 def pull_meta_from_create_or_reissue_script(script: bytes) -> Dict:
     if script[-1] != 0x75:
         raise BadAssetScript('No OP_DROP')
     ops = transaction.script_GetOp(script)
-    rvn_ptr = -1
+    xna_ptr = -1
     for op, _, ptr in ops:
-        if op == opcodes.OP_RVN_ASSET:
-            rvn_ptr = ptr - 1
+        if op == opcodes.OP_XNA_ASSET:
+            xna_ptr = ptr - 1
             break
-    if not rvn_ptr > 0:
-        raise BadAssetScript('No OP_RVN_ASSET')
-    if script[rvn_ptr+2:rvn_ptr+5] == b'rvn':
-        rvn_ptr += 5
+    if not xna_ptr > 0:
+        raise BadAssetScript('No OP_XNA_ASSET')
+    if script[xna_ptr+2:xna_ptr+5] == b'xna':
+        xna_ptr += 5
     else:
-        rvn_ptr += 6
-    type = bytes([script[rvn_ptr]])
+        xna_ptr += 6
+    type = bytes([script[xna_ptr]])
     if type not in (b'q', b'r', b'o'):
         raise BadAssetScript('Not an asset creation script')
 
-    rvn_ptr += 1
+    xna_ptr += 1
     if type == b'q':
-        name_len = script[rvn_ptr]
-        name = script[rvn_ptr+1:rvn_ptr+1+name_len]
-        sats = script[rvn_ptr+1+name_len:rvn_ptr+1+name_len+8]
-        divs = script[rvn_ptr+1+name_len+8]
-        reis = script[rvn_ptr+1+name_len+8+1]
-        has_i = script[rvn_ptr+1+name_len+8+1+1]
+        name_len = script[xna_ptr]
+        name = script[xna_ptr+1:xna_ptr+1+name_len]
+        sats = script[xna_ptr+1+name_len:xna_ptr+1+name_len+8]
+        divs = script[xna_ptr+1+name_len+8]
+        reis = script[xna_ptr+1+name_len+8+1]
+        has_i = script[xna_ptr+1+name_len+8+1+1]
         ifps = None
         if has_i != 0:
-            ifps = script[rvn_ptr+1+name_len+8+1+1+1:rvn_ptr+1+name_len+8+1+1+1+34]
+            ifps = script[xna_ptr+1+name_len+8+1+1+1:xna_ptr+1+name_len+8+1+1+1+34]
         return {
             'name': name.decode('ascii'),
             'sats_in_circulation': int.from_bytes(sats, 'little'),
@@ -213,14 +213,14 @@ def pull_meta_from_create_or_reissue_script(script: bytes) -> Dict:
             'type': 'q'
         }
     elif type == b'r':
-        name_len = script[rvn_ptr]
-        name = script[rvn_ptr + 1:rvn_ptr + 1 + name_len]
-        sats = script[rvn_ptr + 1 + name_len:rvn_ptr + 1 + name_len + 8]
-        divs = script[rvn_ptr + 1 + name_len + 8]
-        reis = script[rvn_ptr + 1 + name_len + 8 + 1]
+        name_len = script[xna_ptr]
+        name = script[xna_ptr + 1:xna_ptr + 1 + name_len]
+        sats = script[xna_ptr + 1 + name_len:xna_ptr + 1 + name_len + 8]
+        divs = script[xna_ptr + 1 + name_len + 8]
+        reis = script[xna_ptr + 1 + name_len + 8 + 1]
         ifps = None
-        if rvn_ptr + 1 + name_len + 8 + 1 + 1 != len(script) - 1:
-            ifps = script[rvn_ptr + 1 + name_len + 8 + 1 + 1:rvn_ptr + 1 + name_len + 8 + 1 + 1 + 34]
+        if xna_ptr + 1 + name_len + 8 + 1 + 1 != len(script) - 1:
+            ifps = script[xna_ptr + 1 + name_len + 8 + 1 + 1:xna_ptr + 1 + name_len + 8 + 1 + 1 + 34]
         return {
             'name': name.decode('ascii'),
             'sats_in_circulation': int.from_bytes(sats, 'little'),
@@ -231,8 +231,8 @@ def pull_meta_from_create_or_reissue_script(script: bytes) -> Dict:
             'type': 'r'
         }
     else:
-        name_len = script[rvn_ptr]
-        name = script[rvn_ptr + 1:rvn_ptr + 1 + name_len]
+        name_len = script[xna_ptr]
+        name = script[xna_ptr + 1:xna_ptr + 1 + name_len]
         return {
             'name': name.decode('ascii'),
             'sats_in_circulation': 100_000_000,
@@ -252,23 +252,23 @@ def create_transfer_asset_script(standard: bytes, asset: str, value: Union[int, 
         value = value.value
     if isinstance(value, str):
         value = 0
-    asset_header = b'rvnt'.hex()
+    asset_header = b'xnat'.hex()
     name = push_script(asset.encode('ascii').hex())
     amt = value.to_bytes(8, byteorder="little", signed=False).hex()
     asset_portion = asset_header+name+amt + (memo.hex() if memo else '') + (expiry.to_bytes(8, 'little', signed=False) if expiry else '')
     return standard + \
-        bytes([opcodes.OP_RVN_ASSET]) + \
+        bytes([opcodes.OP_XNA_ASSET]) + \
         bytes.fromhex(push_script(asset_portion)) + \
         bytes([opcodes.OP_DROP])
 
 
 def create_owner_asset_script(standard: bytes, asset: str):
     assert asset[-1] == '!'
-    asset_header = b'rvno'.hex()
+    asset_header = b'xnao'.hex()
     name = push_script(asset.encode('ascii').hex())
     asset_portion = asset_header+name
     return standard + \
-        bytes([opcodes.OP_RVN_ASSET]) + \
+        bytes([opcodes.OP_XNA_ASSET]) + \
         bytes.fromhex(push_script(asset_portion)) + \
         bytes([opcodes.OP_DROP])
 
@@ -278,7 +278,7 @@ def create_reissue_asset_script(standard: bytes, asset: str, value: int, divisio
     assert value <= TOTAL_COIN_SUPPLY_LIMIT_IN_BTC * COIN
     assert isinstance(reissuable, bool)
     assert isinstance(data, bytes) or data is None
-    asset_header = b'rvnr'.hex()
+    asset_header = b'xnar'.hex()
     name = push_script(asset.encode('ascii').hex())
     amt = value.to_bytes(8, byteorder='little', signed=False).hex()
     d = divisions.hex()
@@ -287,7 +287,7 @@ def create_reissue_asset_script(standard: bytes, asset: str, value: int, divisio
     if data:
         asset_portion += data.hex()
     return standard + \
-           bytes([opcodes.OP_RVN_ASSET]) + \
+           bytes([opcodes.OP_XNA_ASSET]) + \
            bytes.fromhex(push_script(asset_portion)) + \
            bytes([opcodes.OP_DROP])
 
@@ -297,7 +297,7 @@ def create_new_asset_script(standard: bytes, asset: str, value: int, divisions: 
     assert value <= TOTAL_COIN_SUPPLY_LIMIT_IN_BTC * COIN
     assert isinstance(reissuable, bool)
     assert isinstance(data, bytes) or data is None
-    asset_header = b'rvnq'.hex()
+    asset_header = b'xnaq'.hex()
     name = push_script(asset.encode('ascii').hex())
     amt = value.to_bytes(8, byteorder='little', signed=False).hex()
     d = bytes([divisions]).hex()
@@ -307,7 +307,7 @@ def create_new_asset_script(standard: bytes, asset: str, value: int, divisions: 
     if data:
         asset_portion += data.hex()
     return standard + \
-           bytes([opcodes.OP_RVN_ASSET]) + \
+           bytes([opcodes.OP_XNA_ASSET]) + \
            bytes.fromhex(push_script(asset_portion)) + \
            bytes([opcodes.OP_DROP])
 
@@ -346,7 +346,7 @@ def is_main_asset_name_good(name):
         return "You cannot begin a main asset with punctuation."
     if re.search(TRAILING_PUNCTUATION, name):
         return "You cannot end a main asset with punctuation."
-    if re.search(RAVEN_NAMES, name):
+    if re.search(NEURAI_NAMES, name):
         return "Main assets cannot have Neurai-like names."
     if re.search(MAIN_CHECK, name):
         return None

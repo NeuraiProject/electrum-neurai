@@ -30,7 +30,7 @@ from PyQt5.QtGui import QStandardItemModel, QStandardItem, QFont
 from PyQt5.QtWidgets import QAbstractItemView, QComboBox, QLabel, QMenu
 
 from electrum.i18n import _
-from electrum.util import block_explorer_URL, profiler, RavenValue
+from electrum.util import block_explorer_URL, profiler, NeuraiValue
 from electrum.plugin import run_hook
 from electrum.neurai import is_address
 from electrum.wallet import InternalAddressCorruption
@@ -129,7 +129,7 @@ class AddressList(MyTreeView):
             self.Columns.TYPE: _('Type'),
             self.Columns.ADDRESS: _('Address'),
             self.Columns.LABEL: _('Label'),
-            self.Columns.COIN_BALANCE: _('Balance') + ' (RVN)',
+            self.Columns.COIN_BALANCE: _('Balance') + ' (XNA)',
             self.Columns.FIAT_BALANCE: ccy + ' ' + _('Balance'),
             self.Columns.NUM_TXS: _('Tx'),
         }
@@ -167,10 +167,10 @@ class AddressList(MyTreeView):
         for address in addr_list:
             c, u, x = self.wallet.get_addr_balance(address)
             balance = c + u + x
-            is_used_and_empty = self.wallet.adb.is_used(address) and balance == RavenValue()
+            is_used_and_empty = self.wallet.adb.is_used(address) and balance == NeuraiValue()
             if self.show_used == AddressUsageStateFilter.UNUSED and (balance or is_used_and_empty):
                 continue
-            if self.show_used == AddressUsageStateFilter.FUNDED and balance == RavenValue():
+            if self.show_used == AddressUsageStateFilter.FUNDED and balance == NeuraiValue():
                 continue
             if self.show_used == AddressUsageStateFilter.USED_AND_EMPTY and not is_used_and_empty:
                 continue
@@ -221,7 +221,7 @@ class AddressList(MyTreeView):
         num = self.wallet.adb.get_address_history_len(address)
         c, u, x = self.wallet.get_addr_balance(address)
         # TODO: Figure out a way to display assets
-        balance = c.rvn_value + u.rvn_value + x.rvn_value
+        balance = c.xna_value + u.xna_value + x.xna_value
         balance_text = self.parent.format_amount(balance, whitespaces=True)
         # create item
         fx = self.parent.fx

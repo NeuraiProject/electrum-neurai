@@ -44,7 +44,7 @@ import copy
 from . import ecc, neurai, constants, segwit_addr, bip32, assets
 from .assets import guess_asset_script_for_vin
 from .bip32 import UINT32_MAX, BIP32Node
-from .util import RavenValue, parse_max_spend, to_bytes, bh2u, bfh, chunks, is_hex_str, Satoshis, format_satoshis
+from .util import NeuraiValue, parse_max_spend, to_bytes, bh2u, bfh, chunks, is_hex_str, Satoshis, format_satoshis
 from .neurai import (TYPE_ADDRESS, TYPE_SCRIPT, hash_160,
                         hash160_to_p2sh, hash160_to_p2pkh, hash_to_segwit_addr,
                         var_int, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, COIN,
@@ -117,8 +117,8 @@ class TxOutput:
         self.asset = asset
 
     @property
-    def raven_value(self) -> RavenValue:
-        return RavenValue(0, {self.asset: self._value}) if self.asset else RavenValue(self._value)
+    def neurai_value(self) -> NeuraiValue:
+        return NeuraiValue(0, {self.asset: self._value}) if self.asset else NeuraiValue(self._value)
 
     @property
     def value(self) -> Union[int, str]:
@@ -158,11 +158,11 @@ class TxOutput:
             raise SerializationError('extra junk at the end of TxOutput bytes')
         return txout
 
-    def to_legacy_tuple(self) -> Tuple[int, str, RavenValue]:
+    def to_legacy_tuple(self) -> Tuple[int, str, NeuraiValue]:
         if self.asset:
-            value = RavenValue(0, {self.asset: self.value})
+            value = NeuraiValue(0, {self.asset: self.value})
         else:
-            value = RavenValue(self.value)
+            value = NeuraiValue(self.value)
         if self.address:
             return TYPE_ADDRESS, self.address, value
         return TYPE_SCRIPT, self.scriptpubkey.hex(), value
@@ -171,16 +171,16 @@ class TxOutput:
     def from_legacy_tuple(cls, _type: int, addr: str, val) -> Union['TxOutput', 'PartialTxOutput']:
 
         if isinstance(val, Dict):
-            val = RavenValue.from_json(val)
+            val = NeuraiValue.from_json(val)
         if isinstance(val, int):
-            val = RavenValue(val)
+            val = NeuraiValue(val)
 
         asset_d = val.assets
         asset = None
         if asset_d:
             asset, value = list(val.assets.items())[0]
         else:
-            value = val.rvn_value
+            value = val.xna_value
 
         if _type == TYPE_ADDRESS:
             return cls.from_address_and_value(addr, value, asset)
@@ -214,9 +214,9 @@ class TxOutput:
 
     def to_json(self):
         if self.asset:
-            value = RavenValue(0, {self.asset: self.value})
+            value = NeuraiValue(0, {self.asset: self.value})
         else:
-            value = RavenValue(self.value)
+            value = NeuraiValue(self.value)
         d = {
             'scriptpubkey': self.scriptpubkey.hex(),
             'address': self.address,
@@ -322,7 +322,7 @@ class TxInput:
         """
         return self._is_coinbase_output
 
-    def value_sats(self) -> Optional[RavenValue]:
+    def value_sats(self) -> Optional[NeuraiValue]:
         return None
 
     def to_json(self):
@@ -590,13 +590,13 @@ def match_script_against_template(script, template, debug=False) -> bool:
             return False
 
     # Chop off assets
-    op_rvn_asset = len(script)
+    op_xna_asset = len(script)
     for i in range(len(script)):
-        # print(f'Checking OPCODE {script_item[0]} {int(opcodes.OP_RVN_ASSET)}')
-        if script[i][0] == int(opcodes.OP_RVN_ASSET): # Don't check past op XNA asset
-            op_rvn_asset = i
+        # print(f'Checking OPCODE {script_item[0]} {int(opcodes.OP_XNA_ASSET)}')
+        if script[i][0] == int(opcodes.OP_XNA_ASSET): # Don't check past op XNA asset
+            op_xna_asset = i
             break
-    script = script[:op_rvn_asset]
+    script = script[:op_xna_asset]
     
     if debug:
         _logger.debug(f"match script against template: {script}")
@@ -647,7 +647,7 @@ def is_output_script_p2pk(_bytes: bytes) -> bool:
 
     decoded = []
     for tup in raw_decoded:
-        if tup[0] == opcodes.OP_RVN_ASSET:
+        if tup[0] == opcodes.OP_XNA_ASSET:
             break
         decoded.append(tup)
 
@@ -666,7 +666,7 @@ def is_asset_output_script_malformed_or_non_standard(_bytes: bytes) -> bool:
     decoded = []
     record = False
     for tup in raw_decoded:
-        if tup[0] == opcodes.OP_RVN_ASSET:
+        if tup[0] == opcodes.OP_XNA_ASSET:
             record = True
         if record:
             decoded.append(tup)
@@ -674,7 +674,7 @@ def is_asset_output_script_malformed_or_non_standard(_bytes: bytes) -> bool:
     asset_portion = BCDataStream()
     try:
         asset_portion.write(decoded[1][1])
-        assert asset_portion.read_bytes(3) == b'rvn'
+        assert asset_portion.read_bytes(3) == b'xna'
         script_type = asset_portion.read_bytes(1)
         asset_name_len = asset_portion.read_bytes(1)[0]
         asset_name = asset_portion.read_bytes(asset_name_len)
@@ -711,7 +711,7 @@ def get_address_from_output_script(_bytes: bytes, *, net=None) -> Optional[str]:
 
     decoded = []
     for tup in raw_decoded:
-        if tup[0] == opcodes.OP_RVN_ASSET:
+        if tup[0] == opcodes.OP_XNA_ASSET:
             break
         decoded.append(tup)
 
@@ -774,18 +774,18 @@ def get_assets_from_script(script: bytes) -> Dict[str, int]:
 
     # TODO: Generalize
 
-    def search_for_rvn(b: bytes, start: int) -> int:
+    def search_for_xna(b: bytes, start: int) -> int:
         index = -1
-        if b[start:start+3] == b'rvn':
+        if b[start:start+3] == b'xna':
             index = start+3
-        elif b[start+1:start+4] == b'rvn':
+        elif b[start+1:start+4] == b'xna':
             index = start+4
         return index
 
     if script[0] == 0xA9 and script[1] == 0x14 and script[22] == 0x87:  # Script hash
-        index = search_for_rvn(script, 25)
+        index = search_for_xna(script, 25)
     else:  # Assumed Pubkey hash
-        index = search_for_rvn(script, 27)
+        index = search_for_xna(script, 27)
 
     if index > 0:
         type = script[index]
@@ -1219,7 +1219,7 @@ class Transaction:
 
     def has_unbalanced_assets(self) -> bool:
         try:
-            difference: RavenValue = sum((x.value_sats() for x in self.inputs()), RavenValue()) - sum((x.raven_value for x in self.outputs()), RavenValue())
+            difference: NeuraiValue = sum((x.value_sats() for x in self.inputs()), NeuraiValue()) - sum((x.neurai_value for x in self.outputs()), NeuraiValue())
         except ValueError:
             return False
         for val in difference.assets.values():
@@ -1251,7 +1251,7 @@ class Transaction:
         old_var_int_len = len(var_int(base_size)) // 2
         # type (t)ransfer for change
         # change addresses internal length is always < 0x4c
-        additional_bytes = len(b'\xc00rvnt0%b00000000\x75' % asset.encode('ascii'))
+        additional_bytes = len(b'\xc00xnat0%b00000000\x75' % asset.encode('ascii'))
         new_var_int_len = len(var_int(base_size + additional_bytes)) // 2
         return new_var_int_len - old_var_int_len + additional_bytes
 
@@ -1513,7 +1513,7 @@ class PartialTxInput(TxInput, PSBTSection):
         self.script_type = 'unknown'
         self.num_sig = 0  # type: int  # num req sigs for multisig
         self.pubkeys = []  # type: List[bytes]  # note: order matters
-        self.__trusted_value_sats = None  # type: Optional[RavenValue]
+        self.__trusted_value_sats = None  # type: Optional[NeuraiValue]
         self._trusted_address = None  # type: Optional[str]
         self.block_height = None  # type: Optional[int]  # height at which the TXO is mined; None means unknown
         self.spent_height = None  # type: Optional[int]  # height at which the TXO got spent
@@ -1528,7 +1528,7 @@ class PartialTxInput(TxInput, PSBTSection):
 
     @_trusted_value_sats.setter
     def _trusted_value_sats(self, v):
-        assert isinstance(v, RavenValue)
+        assert isinstance(v, NeuraiValue)
         self.__trusted_value_sats = v
 
     @property
@@ -1710,23 +1710,23 @@ class PartialTxInput(TxInput, PSBTSection):
             key_type, key = self.get_keytype_and_key_from_fullkey(full_key)
             wr(key_type, val, key=key)
 
-    def value_sats(self) -> Optional[RavenValue]:
+    def value_sats(self) -> Optional[NeuraiValue]:
         if self._trusted_value_sats is not None:
             return self._trusted_value_sats
         if self.utxo:
             out_idx = self.prevout.out_idx
             outpoint = self.utxo.outputs()[out_idx]
             if outpoint.asset:
-                value = RavenValue(0, {outpoint.asset: outpoint.value})
+                value = NeuraiValue(0, {outpoint.asset: outpoint.value})
             else:
-                value = RavenValue(outpoint.value)
+                value = NeuraiValue(outpoint.value)
             return value
         if self.witness_utxo:
             outpoint = self.witness_utxo
             if outpoint.asset:
-                value = RavenValue(0, {outpoint.asset: outpoint.value})
+                value = NeuraiValue(0, {outpoint.asset: outpoint.value})
             else:
-                value = RavenValue(outpoint.value)
+                value = NeuraiValue(outpoint.value)
             return value
         return None
 
@@ -2268,17 +2268,17 @@ class PartialTransaction(Transaction):
                                 [asset_create_vout]
         self.invalidate_ser_cache()
 
-    def input_value(self) -> RavenValue:
+    def input_value(self) -> NeuraiValue:
         input_values = [txin.value_sats() for txin in self.inputs()]
         if any([val is None for val in input_values]):
             raise MissingTxInputAmount()
-        return sum(input_values, RavenValue())
+        return sum(input_values, NeuraiValue())
 
-    def output_value(self) -> RavenValue:
+    def output_value(self) -> NeuraiValue:
         return \
-            sum([RavenValue(0, {x.asset: x.value}) if x.asset else RavenValue(x.value) for x in self.outputs()], RavenValue())
+            sum([NeuraiValue(0, {x.asset: x.value}) if x.asset else NeuraiValue(x.value) for x in self.outputs()], NeuraiValue())
 
-    def get_fee(self) -> Optional[RavenValue]:
+    def get_fee(self) -> Optional[NeuraiValue]:
         try:
             return self.input_value() - self.output_value()
         except MissingTxInputAmount:

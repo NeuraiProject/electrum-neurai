@@ -60,7 +60,7 @@ from .util import (NotEnoughFunds, UserCancelled, escape_string_for_url, profile
                    WalletFileException, BitcoinException,
                    InvalidPassword, format_time, timestamp_to_datetime, Satoshis,
                    Fiat, bfh, bh2u, TxMinedInfo, quantize_feerate, create_bip21_uri, OrderedDictWithIndex, 
-                   parse_max_spend, RavenValue)
+                   parse_max_spend, NeuraiValue)
 from .simple_config import SimpleConfig, FEE_RATIO_HIGH_WARNING, FEERATE_WARNING_HIGH_FEE
 from .neurai import COIN, TYPE_ADDRESS, standardize_script
 from .neurai import is_address, address_to_script, is_minikey, relayfee, dust_threshold
@@ -263,7 +263,7 @@ class TxWalletDelta(NamedTuple):
     is_relevant: bool  # "related to wallet?"
     is_any_input_ismine: bool
     is_all_input_ismine: bool
-    delta: RavenValue
+    delta: NeuraiValue
     fee: Optional[int]
 
 class TxWalletDetails(NamedTuple):
@@ -275,7 +275,7 @@ class TxWalletDetails(NamedTuple):
     can_cpfp: bool
     can_dscancel: bool  # whether user can double-spend to self
     can_save_as_local: bool
-    amount: Optional[RavenValue]
+    amount: Optional[NeuraiValue]
     fee: Optional[int]
     tx_mined_status: TxMinedInfo
     mempool_depth_bytes: Optional[int]
@@ -718,7 +718,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         """
         is_relevant = False  # "related to wallet?"
         num_input_ismine = 0
-        v_in = v_in_mine = v_out = v_out_mine = RavenValue()
+        v_in = v_in_mine = v_out = v_out_mine = NeuraiValue()
         with self.lock, self.transaction_lock:
             for txin in tx.inputs():
                 addr = self.adb.get_txin_address(txin)
@@ -733,9 +733,9 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 elif v_in is not None:
                     v_in += value
             for txout in tx.outputs():
-                v_out += txout.raven_value
+                v_out += txout.neurai_value
                 if self.is_mine(txout.address):
-                    v_out_mine += txout.raven_value
+                    v_out_mine += txout.neurai_value
                     is_relevant = True
         delta = v_out_mine - v_in_mine
         if v_in is not None:
@@ -749,7 +749,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             is_any_input_ismine=num_input_ismine > 0,
             is_all_input_ismine=num_input_ismine == len(tx.inputs()),
             delta=delta,
-            fee=fee.rvn_value.value if fee else None,
+            fee=fee.xna_value.value if fee else None,
         )
 
     def get_tx_info(self, tx: Transaction) -> TxWalletDetails:
@@ -758,7 +758,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         is_any_input_ismine = tx_wallet_delta.is_any_input_ismine
         is_swap = self.is_swap_tx(tx)
         fee_int = tx_wallet_delta.fee
-        fee = RavenValue(fee_int) if fee_int else None
+        fee = NeuraiValue(fee_int) if fee_int else None
         exp_n = None
         can_broadcast = False
         can_bump = False
@@ -790,7 +790,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                         fee = self.adb.get_tx_fee(tx_hash)
                     if fee and self.network and self.config.has_fee_mempool():
                         size = tx.estimated_size()
-                        fee_per_byte = fee.rvn_value.value / size
+                        fee_per_byte = fee.xna_value.value / size
                         exp_n = self.config.fee_to_depth(fee_per_byte)
                     can_bump = (is_any_input_ismine or is_swap) and not tx.is_final()
                     can_dscancel = (is_any_input_ismine and not tx.is_final()
@@ -834,7 +834,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             can_dscancel=can_dscancel,
             can_save_as_local=can_save_as_local,
             amount=amount,
-            fee=fee.rvn_value.value if fee else None,
+            fee=fee.xna_value.value if fee else None,
             tx_mined_status=tx_mined_status,
             mempool_depth_bytes=exp_n,
             can_remove=can_remove,
@@ -845,8 +845,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def get_non_frozen_assets(self) -> List[str]:
         with self._freeze_lock:
             frozen_addresses = self._frozen_addresses.copy()
-        total_sum = sum((x.value_sats() for x in self.get_utxos(excluded_addresses=frozen_addresses)), RavenValue())
-        return total_sum.rvn_value > 0, list(total_sum.assets.keys())
+        total_sum = sum((x.value_sats() for x in self.get_utxos(excluded_addresses=frozen_addresses)), NeuraiValue())
+        return total_sum.xna_value > 0, list(total_sum.assets.keys())
 
     def get_balance(self, **kwargs):
         domain = self.get_addresses()
@@ -928,8 +928,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         # todo: add lightning frozen
         c, u, x = self.get_balance()
         fc, fu, fx = self.get_frozen_balance()
-        lightning = self.lnworker.get_balance() if self.has_lightning() else RavenValue()
-        f_lightning = self.lnworker.get_balance(frozen=True) if self.has_lightning() else RavenValue()
+        lightning = self.lnworker.get_balance() if self.has_lightning() else NeuraiValue()
+        f_lightning = self.lnworker.get_balance(frozen=True) if self.has_lightning() else NeuraiValue()
         # subtract frozen funds
         cc = c - fc
         uu = u - fu
@@ -974,14 +974,14 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         height = self.adb.get_local_height()
         if pr:
             return Invoice.from_bip70_payreq(pr, height=height)
-        amount_msat = RavenValue()
+        amount_msat = NeuraiValue()
         for x in outputs:
             if parse_max_spend(x.value):
-                amount_msat = RavenValue('!') if not x.asset else RavenValue(0, {x.asset:'!'})
+                amount_msat = NeuraiValue('!') if not x.asset else NeuraiValue(0, {x.asset:'!'})
                 break
             else:
                 assert isinstance(x.value, int), f"{x.value!r}"
-                amount_msat += (RavenValue(x.value) if not x.asset else RavenValue(0, {x.asset:x.value})) * 1000
+                amount_msat += (NeuraiValue(x.value) if not x.asset else NeuraiValue(0, {x.asset:x.value})) * 1000
         timestamp = None
         exp = None
         if URI:
@@ -1092,10 +1092,10 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         outputs = invoice.get_outputs()
         if not outputs:  # e.g. lightning-only
             return False, None, []
-        invoice_amounts = defaultdict(RavenValue)  # type: Dict[bytes, RavenValue]  # scriptpubkey -> value_sats
+        invoice_amounts = defaultdict(NeuraiValue)  # type: Dict[bytes, NeuraiValue]  # scriptpubkey -> value_sats
         for txo in outputs:  # type: PartialTxOutput
-            invoice_amounts[txo.scriptpubkey] += RavenValue(1 if txo.asset else 0, assets=({} if not txo.asset else {txo.asset: 1})) if parse_max_spend(txo.value) \
-                                                else RavenValue(txo.value if txo.asset else 0, assets=({} if not txo.asset else {txo.asset: txo.value}))
+            invoice_amounts[txo.scriptpubkey] += NeuraiValue(1 if txo.asset else 0, assets=({} if not txo.asset else {txo.asset: 1})) if parse_max_spend(txo.value) \
+                                                else NeuraiValue(txo.value if txo.asset else 0, assets=({} if not txo.asset else {txo.asset: txo.value}))
         relevant_txs = set()
         is_paid = True
         conf_needed = None  # type: Optional[int]
@@ -1112,7 +1112,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     confs_and_values.append((tx_height.conf or 0, v))
                 # check that there is at least one TXO, and that they pay enough.
                 # note: "at least one TXO" check is needed for zero amount invoice (e.g. OP_RETURN)
-                vsum = RavenValue()
+                vsum = NeuraiValue()
                 for conf, v in reversed(sorted(confs_and_values)):
                     vsum += v
                     if vsum >= invoice_amt:
@@ -1154,7 +1154,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 tx_item['label'] = item['label']
                 tx_item['type'] = item['type']
                 ln_value = Decimal(item['amount_msat']) / 1000  # for channel open/close tx
-                tx_item['ln_value'] = RavenValue(ln_value)
+                tx_item['ln_value'] = NeuraiValue(ln_value)
             else:
                 if item['type'] == 'swap':
                     # swap items do not have all the fields. We can skip skip them
@@ -1163,14 +1163,14 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     continue
                 transactions_tmp[txid] = item
                 ln_value = Decimal(item['amount_msat']) / 1000  # for channel open/close tx
-                item['ln_value'] = RavenValue(ln_value)
+                item['ln_value'] = NeuraiValue(ln_value)
         # add lightning_transactions
         lightning_history = self.lnworker.get_lightning_history() if self.lnworker and include_lightning else {}
         for tx_item in lightning_history.values():
             txid = tx_item.get('txid')
             ln_value = Decimal(tx_item['amount_msat']) / 1000
             tx_item['lightning'] = True
-            tx_item['ln_value'] = RavenValue(ln_value)
+            tx_item['ln_value'] = NeuraiValue(ln_value)
             key = tx_item.get('txid') or tx_item['payment_hash']
             transactions_tmp[key] = tx_item
         # sort on-chain and LN stuff into new dict, by timestamp
@@ -1180,28 +1180,28 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                            key=lambda x: x[1].get('monotonic_timestamp') or x[1].get('timestamp') or float('inf')):
             transactions[k] = v
         now = time.time()
-        balance = RavenValue()
+        balance = NeuraiValue()
         for item in transactions.values():
             # add on-chain and lightning values
-            value = RavenValue()
+            value = NeuraiValue()
             if item.get('bc_value'):
                 value += item['bc_value']
             if item.get('ln_value'):
                 value += item.get('ln_value')
             # note: 'value' and 'balance' has msat precision (as LN has msat precision)
-            # This is no longer true as 'RavenValue' converts fields into Satoshis
+            # This is no longer true as 'NeuraiValue' converts fields into Satoshis
             item['value'] = value
             balance += value
             item['balance'] = balance
             if fx and fx.is_enabled() and fx.get_history_config():
                 txid = item.get('txid')
                 if not item.get('lightning') and txid:
-                    fiat_fields = self.get_tx_item_fiat(tx_hash=txid, amount_sat=value.rvn_value, fx=fx,
+                    fiat_fields = self.get_tx_item_fiat(tx_hash=txid, amount_sat=value.xna_value, fx=fx,
                                                         tx_fee=item['fee_sat'])
                     item.update(fiat_fields)
                 else:
                     timestamp = item['timestamp'] or now
-                    fiat_value = value.rvn_value / Decimal(neurai.COIN) * fx.timestamp_rate(timestamp)
+                    fiat_value = value.xna_value / Decimal(neurai.COIN) * fx.timestamp_rate(timestamp)
                     item['fiat_value'] = Fiat(fiat_value, fx.ccy)
                     item['fiat_default'] = True
         return transactions
@@ -1223,8 +1223,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
 
         show_fiat = fx and fx.is_enabled() and fx.get_history_config()
         out = []
-        income = RavenValue()
-        expenditures = RavenValue()
+        income = NeuraiValue()
+        expenditures = NeuraiValue()
         capital_gains = Decimal(0)
         fiat_income = Decimal(0)
         fiat_expenditures = Decimal(0)
@@ -1250,16 +1250,16 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                                            tx.outputs()))
             # fixme: use in and out values
             value = item['bc_value']
-            if value < RavenValue():
+            if value < NeuraiValue():
                 expenditures -= value
             else:
                 income += value
             # fiat computations
             if show_fiat:
-                fiat_fields = self.get_tx_item_fiat(tx_hash=tx_hash, amount_sat=value.rvn_value.value, fx=fx, tx_fee=tx_fee)
+                fiat_fields = self.get_tx_item_fiat(tx_hash=tx_hash, amount_sat=value.xna_value.value, fx=fx, tx_fee=tx_fee)
                 fiat_value = fiat_fields['fiat_value'].value
                 item.update(fiat_fields)
-                if value < RavenValue():
+                if value < NeuraiValue():
                     capital_gains += fiat_fields['capital_gain'].value
                     fiat_expenditures += -fiat_value
                 else:
@@ -1312,7 +1312,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     out['acquisition_price'] = Fiat(ap, fx.ccy)
                     out['liquidation_price'] = Fiat(lp, fx.ccy)
                     out['unrealized_gains'] = Fiat(lp - ap, fx.ccy)
-                    out['fiat_balance'] = Fiat(fx.historical_value(balance.rvn_value, date), fx.ccy)
+                    out['fiat_balance'] = Fiat(fx.historical_value(balance.xna_value, date), fx.ccy)
                     out['BTC_fiat_price'] = Fiat(fx.historical_value(COIN, date), fx.ccy)
                 return out
 
@@ -1341,11 +1341,11 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         }
 
     def acquisition_price(self, coins, price_func, ccy):
-        return Decimal(sum(self.coin_price(coin.prevout.txid.hex(), price_func, ccy, self.adb.get_txin_value(coin).rvn_value.value) for coin in coins))
+        return Decimal(sum(self.coin_price(coin.prevout.txid.hex(), price_func, ccy, self.adb.get_txin_value(coin).xna_value.value) for coin in coins))
 
     def liquidation_price(self, coins, price_func, timestamp):
         p = price_func(timestamp)
-        return sum([coin.value_sats().rvn_value.value for coin in coins]) * p / Decimal(COIN)
+        return sum([coin.value_sats().xna_value.value for coin in coins]) * p / Decimal(COIN)
 
     def default_fiat_value(self, tx_hash, fx, value_sat):
         return Decimal(int(value_sat)) / Decimal(COIN) * self.price_at_timestamp(tx_hash, fx.timestamp_rate)
@@ -1426,7 +1426,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             fee = self.adb.get_tx_fee(tx_hash)
             if fee is not None:
                 size = tx.estimated_size()
-                fee_per_byte = fee.rvn_value.value / size
+                fee_per_byte = fee.xna_value.value / size
                 extra.append(format_fee_satoshis(fee_per_byte) + ' sat/b')
             if fee is not None and height in (TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_UNCONFIRMED) \
                     and self.config.has_fee_mempool():
@@ -1471,7 +1471,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                                                         TX_HEIGHT_LOCAL):
                 continue
             # tx should be "outgoing" from wallet
-            if hist_item.delta.rvn_value.value >= 0:
+            if hist_item.delta.xna_value.value >= 0:
                 continue
             tx = self.db.get_transaction(hist_item.txid)
             if not tx:
@@ -1702,7 +1702,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             
             distr_amount = defaultdict(lambda: 0)
             current_count = defaultdict(lambda: 0)
-            for asset, value in sum((x.raven_value for x in outputs), RavenValue()).assets.items():
+            for asset, value in sum((x.neurai_value for x in outputs), NeuraiValue()).assets.items():
                 # Initialize the distr_amount in order to mix static amounts and '!' amounts
                 if value > 0:
                     distr_amount[asset] = value.value
@@ -1711,27 +1711,27 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 # Max spend XNA
                 spendable_coins = list(coins if inputs else [])
                 coins_to_spend = list(inputs or coins)
-                total_amount = RavenValue(-1)
+                total_amount = NeuraiValue(-1)
                 outputs_to_remove = []
 
                 initial = True
-                while total_amount.rvn_value.value <= 0:
+                while total_amount.xna_value.value <= 0:
                     if not initial:
                         # If our forced inputs are not enough, suppliment with others
                         if not spendable_coins:
                             raise NotEnoughFunds()
                         coins_to_spend.append(spendable_coins.pop())
-                    sendable: RavenValue = sum(map(lambda c: c.value_sats(), coins_to_spend), RavenValue())
+                    sendable: NeuraiValue = sum(map(lambda c: c.value_sats(), coins_to_spend), NeuraiValue())
                     tx = PartialTransaction.from_io(list(coins_to_spend), list(outputs))
                     fee = fee_estimator(tx.estimated_size())
-                    total_amount = sendable - tx.output_value() - RavenValue(fee)
+                    total_amount = sendable - tx.output_value() - NeuraiValue(fee)
                     initial = False
 
                 for (weight, i) in i_max:
                     asset_name = outputs[i].asset
                     current_count[asset_name] += 1
                     if asset_name is None:
-                        val = int((total_amount.rvn_value.value/i_max_sum[None]) * weight)
+                        val = int((total_amount.xna_value.value/i_max_sum[None]) * weight)
                     else:
                         val = int((total_amount.assets[asset_name].value/i_max_sum[asset_name]) * weight)
                         # Must evenly distribute based on divisibility
@@ -1749,7 +1749,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     # If last add extras
                     if current_count[asset_name] == counts_of_each[asset_name]:
                         if not asset_name:
-                            val += (total_amount.rvn_value.value - distr_amount[asset_name])
+                            val += (total_amount.xna_value.value - distr_amount[asset_name])
                         else:
                             try:
                                 val += (total_amount.assets[asset_name].value - distr_amount[asset_name])
@@ -1775,7 +1775,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 # Treat as standard tx with change
                 # There will be no change for assets
                 change_addrs = self.get_change_addresses_for_new_transaction(change_addr)
-                sendable: RavenValue = sum(map(lambda c: c.value_sats(), inputs or coins), RavenValue())
+                sendable: NeuraiValue = sum(map(lambda c: c.value_sats(), inputs or coins), NeuraiValue())
                 outputs_to_remove = []
                 for (weight, i) in i_max:
                     asset_name = outputs[i].asset
@@ -1892,7 +1892,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         value_sats = utxo.value_sats()
         assert value_sats is not None
         threshold = self.config.get('unconf_utxo_freeze_threshold', 5_000)
-        if value_sats.rvn_value.value >= threshold:
+        if value_sats.xna_value.value >= threshold:
             return False
         # if funding tx has any is_mine input, then UTXO is fine
         funding_tx = self.db.get_transaction(utxo.prevout.txid.hex())
@@ -2519,7 +2519,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         #    sig = bitcoin.base_encode(sig, base=58)
         #    extra_query_params['name'] = req['name']
         #    extra_query_params['sig'] = sig
-        uri = create_bip21_uri(addr, amount.rvn_value.value if not asset else amount.assets[asset].value, message, extra_query_params=extra_query_params)
+        uri = create_bip21_uri(addr, amount.xna_value.value if not asset else amount.assets[asset].value, message, extra_query_params=extra_query_params)
         return str(uri)
 
     def check_expired_status(self, r: Invoice, status):
@@ -2683,7 +2683,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             outputs=outputs,
             message=message,
             time=timestamp,
-            amount_msat=RavenValue(amount_sat)*1000 if not asset else RavenValue(0, {asset: amount_sat * 1000}),
+            amount_msat=NeuraiValue(amount_sat)*1000 if not asset else NeuraiValue(0, {asset: amount_sat * 1000}),
             exp=exp_delay,
             height=height,
             bip70=None,
@@ -2881,8 +2881,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             d = self.db.get_txi_addr(txid, addr)
             for ser, v in d:
                 # We only care about normal XNA for price
-                input_value += v.rvn_value.value
-                total_price += self.coin_price(ser.split(':')[0], price_func, ccy, v.rvn_value.value)
+                input_value += v.xna_value.value
+                total_price += self.coin_price(ser.split(':')[0], price_func, ccy, v.xna_value.value)
         return total_price / (input_value / Decimal(COIN))
 
     def clear_coin_price_cache(self):
@@ -3000,14 +3000,14 @@ class Abstract_Wallet(ABC, Logger, EventListener):
 
     def get_tx_fee_warning(
             self, *,
-            invoice_amt: RavenValue,
+            invoice_amt: NeuraiValue,
             tx_size: int,
             fee: int,
             has_unbalanced_assets: bool
         ) -> Optional[Tuple[bool, str, str]]:
 
         feerate = Decimal(fee) / tx_size  # sat/byte
-        fee_ratio = Decimal(fee) / invoice_amt.rvn_value.value if invoice_amt.rvn_value.value else (1 if not invoice_amt.assets else 0)
+        fee_ratio = Decimal(fee) / invoice_amt.xna_value.value if invoice_amt.xna_value.value else (1 if not invoice_amt.assets else 0)
         
         long_warning = None
         short_warning = None

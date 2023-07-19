@@ -194,7 +194,7 @@ class opcodes(IntEnum):
     OP_INVALIDOPCODE = 0xff
 
     # Neurai
-    OP_RVN_ASSET = 0xc0
+    OP_XNA_ASSET = 0xc0
 
     def hex(self) -> str:
         return bytes([self]).hex()

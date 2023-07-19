@@ -118,11 +118,11 @@ def parse_max_spend(amt: Any) -> Optional[int]:
     ```
     """
 
-    if isinstance(amt, RavenValue):
-        def parse_ravenvalue():
-            rvn_max_spend = parse_max_spend(amt.rvn_value)
-            if rvn_max_spend is not None:
-                return rvn_max_spend
+    if isinstance(amt, NeuraiValue):
+        def parse_neuraivalue():
+            xna_max_spend = parse_max_spend(amt.xna_value)
+            if xna_max_spend is not None:
+                return xna_max_spend
             
             for _, value in amt.assets.items():
                 m_spend = parse_max_spend(value)
@@ -130,7 +130,7 @@ def parse_max_spend(amt: Any) -> Optional[int]:
                     return m_spend
             return None
 
-        return parse_ravenvalue()
+        return parse_neuraivalue()
 
     if not (isinstance(amt, str) and amt and amt[-1] == '!'):
         return None
@@ -349,27 +349,27 @@ class IPFSData(NamedTuple):
     #is_rip14: Optional[bool]  # true/false/unknown
 
 
-class RavenValue:  # The raw XNA value as well as asset values of a transaction
+class NeuraiValue:  # The raw XNA value as well as asset values of a transaction
     @staticmethod
     def from_json(d: Dict):
         if d is None:
             return None
         assert 'XNA' in d and 'ASSETS' in d
-        return RavenValue(d['XNA'], d['ASSETS'])
+        return NeuraiValue(d['XNA'], d['ASSETS'])
 
-    def __init__(self, rvn: Union[int, Satoshis, str] = 0, assets=None):
+    def __init__(self, xna: Union[int, Satoshis, str] = 0, assets=None):
         if assets is None:
             assets = {}
-        assert isinstance(rvn, (int, Satoshis, str))
+        assert isinstance(xna, (int, Satoshis, str))
         assert isinstance(assets, Dict)
-        if isinstance(rvn, int):
-            self.__rvn_value = Satoshis(rvn)
-        elif isinstance(rvn, Satoshis):
-            self.__rvn_value = rvn
-        elif isinstance(rvn, str) and '!' in rvn:
-            self.__rvn_value = rvn
+        if isinstance(xna, int):
+            self.__xna_value = Satoshis(xna)
+        elif isinstance(xna, Satoshis):
+            self.__xna_value = xna
+        elif isinstance(xna, str) and '!' in xna:
+            self.__xna_value = xna
         else:
-            raise ValueError(f'Invalid rvn value: {rvn}')
+            raise ValueError(f'Invalid xna value: {xna}')
         
         self.__asset_value = {}
         for asset, value in assets.items():
@@ -380,24 +380,24 @@ class RavenValue:  # The raw XNA value as well as asset values of a transaction
             elif isinstance(value, str) and '!' in value:
                 pass
             else:
-                raise ValueError(f'Invalid rvn value: {rvn}')
+                raise ValueError(f'Invalid xna value: {xna}')
 
             self.__asset_value[asset] = value
 
     @property
-    def rvn_value(self) -> Union[Satoshis, str]:
-        return self.__rvn_value
+    def xna_value(self) -> Union[Satoshis, str]:
+        return self.__xna_value
 
     @property
     def assets(self) -> Dict[str, Union[Satoshis, str]]:
         return copy.copy(self.__asset_value)
 
     def __repr__(self):
-        return 'RavenValue(RVN: {}, ASSETS: {})'.format(self.__rvn_value, {k: v.__str__() for k, v in self.__asset_value.items()})
+        return 'NeuraiValue(XNA: {}, ASSETS: {})'.format(self.__xna_value, {k: v.__str__() for k, v in self.__asset_value.items()})
 
     def __str__(self):
         ret = []
-        r = self.__rvn_value
+        r = self.__xna_value
         if r:
             ret.append(f'{format_satoshis(r, num_zeros=1)} XNA')
         for a, v in self.__asset_value.items():
@@ -406,11 +406,11 @@ class RavenValue:  # The raw XNA value as well as asset values of a transaction
         return ', '.join(ret)
 
     def __add__(self, other):
-        if isinstance(other, RavenValue):
-            if '!' == self.rvn_value or '!' == other.rvn_value:
+        if isinstance(other, NeuraiValue):
+            if '!' == self.xna_value or '!' == other.xna_value:
                 v_r = '!'
             else:
-                v_r = self.rvn_value + other.rvn_value
+                v_r = self.xna_value + other.xna_value
             v_a = self.assets
             for k, v in other.assets.items():
                 if k in v_a:
@@ -420,13 +420,13 @@ class RavenValue:  # The raw XNA value as well as asset values of a transaction
                         v_a[k] += v
                 else:
                     v_a[k] = v
-            return RavenValue(v_r, v_a)
+            return NeuraiValue(v_r, v_a)
         else:
-            raise ValueError('RavenValue required')
+            raise ValueError('NeuraiValue required')
 
     def __sub__(self, other):
-        if isinstance(other, RavenValue):
-            v_r = self.rvn_value - other.rvn_value
+        if isinstance(other, NeuraiValue):
+            v_r = self.xna_value - other.xna_value
             v_a = self.assets
             for k, v in other.assets.items():
                 if k in v_a:
@@ -435,36 +435,36 @@ class RavenValue:  # The raw XNA value as well as asset values of a transaction
                         del v_a[k]
                 else:
                     v_a[k] = -v
-            return RavenValue(v_r, v_a)
+            return NeuraiValue(v_r, v_a)
         else:
-            raise ValueError('RavenValue required')
+            raise ValueError('NeuraiValue required')
 
     def __mul__(self, other):
         if isinstance(other, int):
-            new_rvn_value = Satoshis(self.__rvn_value.value * other)
+            new_xna_value = Satoshis(self.__xna_value.value * other)
             new_assets = {}
             for asset, val in self.assets.items():
                 new_assets[asset] = val * other
-            return RavenValue(new_rvn_value, new_assets)
+            return NeuraiValue(new_xna_value, new_assets)
         else:
             raise ValueError('int required')
 
     def __floordiv__(self, other):
         if isinstance(other, int):
-            new_v_r = self.__rvn_value.value // other
-            new_rvn_value = Satoshis(int(new_v_r))
+            new_v_r = self.__xna_value.value // other
+            new_xna_value = Satoshis(int(new_v_r))
             new_assets = {}
             for asset, val in self.assets.items():
                 new_v_a = val.value // other
                 new_assets[asset] = Satoshis(int(new_v_a))
-            return RavenValue(new_rvn_value, new_assets)
+            return NeuraiValue(new_xna_value, new_assets)
         else:
             raise ValueError('int required')
 
     def __eq__(self, other):
-        if not isinstance(other, RavenValue):
+        if not isinstance(other, NeuraiValue):
             return False
-        if self.__rvn_value != other.__rvn_value:
+        if self.__xna_value != other.__xna_value:
             return False
         for asset, value in self.__asset_value.items():
             if value != other.__asset_value.get(asset, 0):
@@ -472,16 +472,16 @@ class RavenValue:  # The raw XNA value as well as asset values of a transaction
         return True
         
     def __hash__(self):
-        k1 = hash(self.__rvn_value)
+        k1 = hash(self.__xna_value)
         k2 = hash(frozenset(self.__asset_value.items()))
         return int((k1 + k2) * (k1 + k2 + 1) / 2 + k2)
 
     def __lt__(self, other):
-        if isinstance(other, RavenValue):
+        if isinstance(other, NeuraiValue):
             o_a = other.assets
             if len(self.__asset_value) == 0 and len(o_a) != 0:
                 return True
-            if self.__rvn_value >= other.__rvn_value:
+            if self.__xna_value >= other.__xna_value:
                 return False
             for asset, amt in self.__asset_value.items():
                 if asset not in o_a:
@@ -490,13 +490,13 @@ class RavenValue:  # The raw XNA value as well as asset values of a transaction
                     return False
             return True
         else:
-            raise ValueError('RavenValue required')
+            raise ValueError('NeuraiValue required')
 
     def __ge__(self, other):
         return not self.__lt__(other)
 
     def __copy__(self):
-        return RavenValue(self.__rvn_value, self.__asset_value)
+        return NeuraiValue(self.__xna_value, self.__asset_value)
 
     def __deepcopy__(self, memo):
         cls = self.__class__
@@ -508,7 +508,7 @@ class RavenValue:  # The raw XNA value as well as asset values of a transaction
 
     def to_json(self):
         d = {
-            'XNA': self.rvn_value if isinstance(self.rvn_value, str) else self.rvn_value.value,
+            'XNA': self.xna_value if isinstance(self.xna_value, str) else self.xna_value.value,
             'ASSETS': {k: v if isinstance(v, str) else v.value for k, v in self.assets.items()},
         }
         return d
@@ -516,7 +516,7 @@ class RavenValue:  # The raw XNA value as well as asset values of a transaction
     def is_incoming(self):
         # 0 >= if receiving assets or XNA
         # <0 for the fee spent
-        return self.rvn_value >= 0
+        return self.xna_value >= 0
 
 
 # note: this is not a NamedTuple as then its json encoding cannot be customized
@@ -1177,24 +1177,21 @@ def time_difference(distance_in_time, include_seconds):
 
 
 mainnet_block_explorers = {
+    'neuraiexplorer.com': ('https://neuraiexplorer.com/',
+                           {'tx': 'tx/', 'addr': 'address/'}),
     'xna.cryptoscope.io': ('https://xna.cryptoscope.io/',
                            {'tx': 'tx/?txid=', 'addr': 'address/?address='}),
+    'blockbook.neurai.org': ('https://blockbook.neurai.org/',
+                           {'tx': 'tx/', 'addr': 'address/'}),
 }
 
 testnet_block_explorers = {
+    'testnet.neuraiexplorer.com': ('https://neuraiexplorer.com/',
+                           {'tx': 'tx/', 'addr': 'address/'}),
 }
 
 signet_block_explorers = {
-    'bc-2.jp': ('https://explorer.bc-2.jp/',
-                        {'tx': 'tx/', 'addr': 'address/'}),
-    'mempool.space': ('https://mempool.space/signet/',
-                        {'tx': 'tx/', 'addr': 'address/'}),
-    'bitcoinexplorer.org': ('https://signet.bitcoinexplorer.org/',
-                       {'tx': 'tx/', 'addr': 'address/'}),
-    'wakiyamap.dev': ('https://signet-explorer.wakiyamap.dev/',
-                       {'tx': 'tx/', 'addr': 'address/'}),
-    'system default': ('blockchain:/',
-                       {'tx': 'tx/', 'addr': 'address/'}),
+
 }
 
 _block_explorer_default_api_loc = {'tx': 'tx/', 'addr': 'address/'}
@@ -1319,7 +1316,7 @@ def block_explorer_URL(config: 'SimpleConfig', kind: str, item: str) -> Optional
 
 
 # note: when checking against these, use .lower() to support case-insensitivity
-BITCOIN_BIP21_URI_SCHEME = 'raven'
+BITCOIN_BIP21_URI_SCHEME = 'neurai'
 LIGHTNING_URI_SCHEME = 'lightning'
 
 

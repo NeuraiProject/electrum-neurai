@@ -16,5 +16,24 @@
     "s": "19012",
     "t": "19011",
     "version": "1.0"
+  },
+  "electrumx4.neurai.org": {
+    "pruning": "-",
+    "s": "19012",
+    "t": "19011",
+    "version": "1.0"
+  },
+  "electrumx.neuraiexplorer.com": {
+    "pruning": "-",
+    "s": "19012",
+    "t": "19011",
+    "version": "1.0"
+  },
+  "electrumx2.neuraiexplorer.com": {
+    "pruning": "-",
+    "s": "19012",
+    "t": "19011",
+    "version": "1.0"
   }
+
 }

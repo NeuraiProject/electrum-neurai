@@ -74,8 +74,8 @@ setup(
     data_files=data_files,
     description="Lightweight Neurai Wallet",
     author="kralverde",
-    author_email="electrum.raven@gmail.com",
+    author_email="electrum.neurai@gmail.com",
     license="MIT Licence",
-    url="https://github.com/Electrum-RVN-SIG/electrum-neurai",
+    url="https://github.com/NeuraiProject/electrum-neurai",
     long_description="""Lightweight Neurai Wallet""",
 )

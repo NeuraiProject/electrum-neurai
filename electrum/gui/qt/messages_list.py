@@ -47,7 +47,7 @@ from ...logging import Logger
 
 
 class UpdateDevMessagesThread(QThread, Logger):
-    url = "https://raw.githubusercontent.com/Electrum-RVN-SIG/electrum-neurai/master/dev-notifications.json"
+    url = "https://raw.githubusercontent.com/NeuraiProject/electrum-neurai/master/dev-notifications.json"
 
     def __init__(self, parent):
         QThread.__init__(self)

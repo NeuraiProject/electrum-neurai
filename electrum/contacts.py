@@ -116,7 +116,7 @@ class Contacts(dict, Logger):
         except DNSException as e:
             self.logger.info(f'Error resolving openalias: {repr(e)}')
             return None
-        prefix = 'rvn'
+        prefix = 'xna'
         for record in records:
             string = to_string(record.strings[0], 'utf8')
             if string.startswith('oa1:' + prefix):

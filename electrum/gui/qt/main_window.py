@@ -56,7 +56,7 @@ from electrum import (keystore, ecc, constants, util, neurai, commands,
 from electrum.neurai import COIN, is_address, base_decode, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, address_to_scripthash
 from electrum.plugin import run_hook, BasePlugin
 from electrum.i18n import _
-from electrum.util import (RavenValue, format_time, get_asyncio_loop,
+from electrum.util import (NeuraiValue, format_time, get_asyncio_loop,
                            UserCancelled, profiler,
                            bh2u, bfh, InvalidPassword,
                            UserFacingException,
@@ -850,7 +850,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         d = self.network.get_donation_address()
         if d:
             host = self.network.get_parameters().server.host
-            self.handle_payment_identifier('raven:%s?message=donation for %s' % (d, host))
+            self.handle_payment_identifier('neurai:%s?message=donation for %s' % (d, host))
         else:
             self.show_error(_('No donation address for this server'))
 
@@ -907,16 +907,16 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                 break
         # Combine the transactions if there are at least three
         if len(txns) >= 3:
-            total_amount = RavenValue()
+            total_amount = NeuraiValue()
             for tx in txns:
                 tx_wallet_delta = self.wallet.get_wallet_delta(tx)
                 if not tx_wallet_delta.is_relevant:
                     continue
                 total_amount += tx_wallet_delta.delta
             recv = ''
-            rvn = total_amount.rvn_value
+            xna = total_amount.xna_value
             assets = total_amount.assets
-            recv += self.format_amount_and_units(rvn)
+            recv += self.format_amount_and_units(xna)
             if assets:
                 recv += ', '
                 assets = ['{}: {}'.format(asset, self.config.format_amount(val)) for asset, val in assets.items()]
@@ -929,9 +929,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                 if not tx_wallet_delta.is_relevant:
                     continue
                 recv = ''
-                rvn = tx_wallet_delta.delta.rvn_value
+                xna = tx_wallet_delta.delta.xna_value
                 assets = tx_wallet_delta.delta.assets
-                recv += self.format_amount_and_units(rvn)
+                recv += self.format_amount_and_units(xna)
                 if assets:
                     recv += ', '
                     assets = ['{}: {}'.format(asset, self.config.format_amount(val)) for asset, val in assets.items()]
@@ -975,10 +975,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         """
 
         suffix = ''
-        if isinstance(amount_sat, RavenValue):
+        if isinstance(amount_sat, NeuraiValue):
             if amount_sat.assets:
                 suffix = f' ({len(amount_sat.assets)} asset' + ('s' if len(amount_sat.assets) > 1 else '') + ')'
-            amount_sat = amount_sat.rvn_value.value
+            amount_sat = amount_sat.xna_value.value
         text = self.config.format_amount_and_units(amount_sat)
         fiat = self.fx.format_amount_and_units(amount_sat, timestamp=timestamp) if self.fx else None
         if text and fiat:
@@ -1271,7 +1271,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                                 return
                         except Exception:
                             pass
-                        input_values.append(RavenValue(0, {a: outpoint.value}) if a else RavenValue(outpoint.value))
+                        input_values.append(NeuraiValue(0, {a: outpoint.value}) if a else NeuraiValue(outpoint.value))
                     except Exception as e:
                         self.logger.exception('')
                         input_values.append(None)
@@ -1284,7 +1284,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             output_values = []
             for output in tx.outputs():
                 a = output.asset
-                output_values.append(RavenValue(0, {a: output.value}) if a else RavenValue(output.value))
+                output_values.append(NeuraiValue(0, {a: output.value}) if a else NeuraiValue(output.value))
 
             if not all(output_values):
                 info.setStyleSheet(ColorScheme.RED.as_stylesheet())
@@ -1292,8 +1292,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                 return
                   
             self.current_swap_in = input_values
-            total_in = sum(input_values, RavenValue())
-            self.current_swap_out = total_out = sum(output_values, RavenValue())
+            total_in = sum(input_values, NeuraiValue())
+            self.current_swap_out = total_out = sum(output_values, NeuraiValue())
 
             info.setText(_(f'You will receive: {total_in}\nYou will spend: {total_out}\nYou will handle the transaction fees.'))
 
@@ -1342,7 +1342,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                 return
 
             coins = []
-            if self.current_swap_out.rvn_value != 0:
+            if self.current_swap_out.xna_value != 0:
                 coins += self.get_coins()
             for asset in self.current_swap_out.assets.keys():
                 coins += self.get_coins(asset=asset)
@@ -1356,10 +1356,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
             addr = self.wallet.get_receiving_address()
             
-            total_in = sum(self.current_swap_in, RavenValue())
+            total_in = sum(self.current_swap_in, NeuraiValue())
 
-            if total_in.rvn_value != 0:
-                outputs.append(PartialTxOutput.from_address_and_value(addr, total_in.rvn_value))
+            if total_in.xna_value != 0:
+                outputs.append(PartialTxOutput.from_address_and_value(addr, total_in.xna_value))
             for a, v in total_in.assets.items(): 
                 outputs.append(PartialTxOutput.from_address_and_value(addr, v, asset=a))
 
@@ -1412,7 +1412,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                 return
             coins = self.get_coins()
             for c in coins:
-                if c.value_sats().rvn_value == offer and self.question(
+                if c.value_sats().xna_value == offer and self.question(
                     _("You already have an unspent transaction output with this amount. "
                       "Would you like use this UTXO?"),
                     title=_("UTXO")
@@ -1444,8 +1444,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             i1.script_type = 'p2pkh'
             i2.script_type = 'p2pkh'
 
-            i1._trusted_value_sats = RavenValue(449500)
-            i2._trusted_value_sats = RavenValue(350000)
+            i1._trusted_value_sats = NeuraiValue(449500)
+            i2._trusted_value_sats = NeuraiValue(350000)
 
             self.wallet._add_input_sig_info(i1, 'RV1265roRyHUYuLerLfit8QmyiWDrZtbv2', only_der_suffix=None)
             self.wallet._add_input_sig_info(i2, 'R9TonskbB14efLXRM7ZdcCDxe7nbMM9BxK', only_der_suffix=None)
@@ -1614,7 +1614,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             return self.send_options[combo_index]
         return None
 
-    def create_and_freeze_swap(self, vin: PartialTxInput, vout: RavenValue):
+    def create_and_freeze_swap(self, vin: PartialTxInput, vout: NeuraiValue):
         self.set_frozen_state_of_coins([vin])
         self.wallet.set_label(vin.prevout.txid.hex(), _("Atomic Swap"))
         
@@ -1648,17 +1648,17 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.max_button.setChecked(True)
         amount = tx.output_value()
         __, x_fee_amount = run_hook('get_tx_extra_fee', self.wallet, tx) or (None, 0)
-        amount_after_all_fees = amount - RavenValue(x_fee_amount)
+        amount_after_all_fees = amount - NeuraiValue(x_fee_amount)
         assets = amount_after_all_fees.assets
         if len(assets) == 0:
-            to_show = amount_after_all_fees.rvn_value.value
+            to_show = amount_after_all_fees.xna_value.value
         else:
             __, v = list(assets.items())[0]
             to_show = v.value
         self.amount_e.setAmount(to_show)
         # show tooltip explaining max amount
         mining_fee = tx.get_fee()
-        mining_fee_str = self.format_amount_and_units(mining_fee.rvn_value.value)
+        mining_fee_str = self.format_amount_and_units(mining_fee.xna_value.value)
         msg = _("Mining fee: {} (can be adjusted on next screen)").format(mining_fee_str)
         if x_fee_amount:
             twofactor_fee_str = self.format_amount_and_units(x_fee_amount)
@@ -1677,13 +1677,13 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         # Don't interrupt if we don't need to
         coins = self.get_manually_selected_coins() if self.utxo_list else None
         if coins:
-            selected_value = sum((x.value_sats() for x in coins), RavenValue())
-            list_rvn = selected_value.rvn_value > 0
+            selected_value = sum((x.value_sats() for x in coins), NeuraiValue())
+            list_xna = selected_value.xna_value > 0
             selectable_assets = list(selected_value.assets.keys())
         else:
-            list_rvn, selectable_assets = self.wallet.get_non_frozen_assets()
+            list_xna, selectable_assets = self.wallet.get_non_frozen_assets()
 
-        new_send_options = ([util.decimal_point_to_base_unit_name(self.get_decimal_point())] if list_rvn else []) + \
+        new_send_options = ([util.decimal_point_to_base_unit_name(self.get_decimal_point())] if list_xna else []) + \
                             sorted(selectable_assets)
 
         if not new_send_options:
@@ -2137,8 +2137,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         console.updateNamespace(methods)
 
     def show_balance_dialog(self):
-        balance = sum(self.wallet.get_balances_for_piechart(), RavenValue())
-        if balance == RavenValue():
+        balance = sum(self.wallet.get_balances_for_piechart(), NeuraiValue())
+        if balance == NeuraiValue():
             return
         from .balance_dialog import BalanceDialog
         d = BalanceDialog(self, wallet=self.wallet)
@@ -3028,9 +3028,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
         def on_success(result):
             coins, keypairs, asset_outpoints_to_locking_scripts = result
-            total_held = sum([coin.value_sats() for coin in coins], RavenValue())
+            total_held = sum([coin.value_sats() for coin in coins], NeuraiValue())
 
-            coins_rvn = [coin for coin in coins if coin.value_sats().rvn_value.value != 0]
+            coins_xna = [coin for coin in coins if coin.value_sats().xna_value.value != 0]
             coins_assets = [coin for coin in coins if coin.value_sats().assets]
 
             self.warn_if_watching_only()
@@ -3040,10 +3040,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             outputs = []
             if total_held.assets:
                 outputs = [PartialTxOutput.from_address_and_value(addr, value='!', asset=asset) for asset in total_held.assets.keys()]
-            if total_held.rvn_value.value != 0:
+            if total_held.xna_value.value != 0:
                 outputs += [PartialTxOutput.from_address_and_value(addr, value='!')]
 
-            self.send_tab.pay_onchain_dialog(self.get_coins(), outputs, mandatory_inputs=coins_rvn + coins_assets, external_keypairs=keypairs, mixed=True,
+            self.send_tab.pay_onchain_dialog(self.get_coins(), outputs, mandatory_inputs=coins_xna + coins_assets, external_keypairs=keypairs, mixed=True,
                                         locking_script_overrides=asset_outpoints_to_locking_scripts)
 
         def on_failure(exc_info):

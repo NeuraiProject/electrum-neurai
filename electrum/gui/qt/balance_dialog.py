@@ -66,13 +66,13 @@ class PieChartObject:
         qp.setRenderHint(QPainter.Antialiasing)
         qp.setBrush(Qt.gray)
         # TODO: Only XNA
-        total = sum([x[2].rvn_value.value for x in self._list])
+        total = sum([x[2].xna_value.value for x in self._list])
         if total == 0:
             return
         alpha = 0
         s = 0
         for name, color, amount in self._list:
-            delta = int(16 * 360 * amount.rvn_value.value/total)
+            delta = int(16 * 360 * amount.xna_value.value/total)
             qp.setBrush(color)
             qp.drawPie(self.R, alpha, delta)
             alpha += delta

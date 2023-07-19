@@ -11,7 +11,7 @@ from typing import Optional, TYPE_CHECKING, Type
 import random
 import bitstring
 
-from electrum.util import Satoshis, RavenValue
+from electrum.util import Satoshis, NeuraiValue
 from .neurai import hash160_to_b58_address, b58_address_to_hash160, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
 from .segwit_addr import bech32_encode, bech32_decode, CHARSET
 from . import segwit_addr
@@ -298,11 +298,11 @@ class LnAddr(object):
             raise LnInvoiceException(f"Cannot encode {value!r}: too many decimal places")
         self._amount = value
 
-    def get_amount_sat(self) -> Optional[RavenValue]:
+    def get_amount_sat(self) -> Optional[NeuraiValue]:
         # note that this has msat resolution potentially
         if self.amount is None:
             return None
-        return RavenValue(Satoshis(self.amount * COIN))
+        return NeuraiValue(Satoshis(self.amount * COIN))
 
     def get_routing_info(self, tag):
         # note: tag will be 't' for trampoline

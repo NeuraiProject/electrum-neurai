@@ -2475,7 +2475,7 @@ class TestWalletOfflineSigning(TestCaseForTestnet):
         wallet_online.adb.receive_tx_callback(funding_txid, funding_tx, TX_HEIGHT_UNCONFIRMED)
 
         # create unsigned tx
-        outputs = [PartialTxOutput.from_address_and_value('tb1qyw3c0rvn6kk2c688y3dygvckn57525y8qnxt3a', 2500000)]
+        outputs = [PartialTxOutput.from_address_and_value('tb1qyw3c0xna6kk2c688y3dygvckn57525y8qnxt3a', 2500000)]
         tx = wallet_online.mktx(outputs=outputs, password=None, fee=5000)
         tx.set_rbf(True)
         tx.locktime = 1446655

@@ -20,7 +20,7 @@ from electrum.i18n import _
 from electrum.neurai import COIN, make_op_return
 from electrum.util import (AssetAmountModified, UserFacingException, get_asyncio_loop, bh2u,
                            InvalidBitcoinURI, maybe_extract_lightning_payment_identifier, NotEnoughFunds,
-                           NoDynamicFeeEstimates, InvoiceError, parse_max_spend, RavenValue)
+                           NoDynamicFeeEstimates, InvoiceError, parse_max_spend, NeuraiValue)
 from electrum.invoices import PR_PAID, Invoice
 from electrum.transaction import Transaction, PartialTxInput, PartialTransaction, PartialTxOutput
 from electrum.network import TxBroadcastError, BestEffortRequestFailed
@@ -299,7 +299,7 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
         self.max_button.setChecked(True)
         amount = tx.output_value()
             
-        __, x_fee_amount = run_hook('get_tx_extra_fee', self.wallet, tx) or (None, RavenValue())
+        __, x_fee_amount = run_hook('get_tx_extra_fee', self.wallet, tx) or (None, NeuraiValue())
         amount_after_all_fees = amount - x_fee_amount
 
         if amount_after_all_fees.assets:
@@ -307,15 +307,15 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
                 raise UserFacingException(_('Only one asset operation at a time is supported'))
             amount_after_all_fees = list(amount_after_all_fees.assets.values())[0].value
         else:
-            amount_after_all_fees = amount_after_all_fees.rvn_value.value
+            amount_after_all_fees = amount_after_all_fees.xna_value.value
 
         self.amount_e.setAmount(amount_after_all_fees)
         # show tooltip explaining max amount
         mining_fee = tx.get_fee()
-        # Mining fees will only be rvn
-        mining_fee_str = self.format_amount_and_units(mining_fee.rvn_value.value)
+        # Mining fees will only be xna
+        mining_fee_str = self.format_amount_and_units(mining_fee.xna_value.value)
         msg = _("Mining fee: {} (can be adjusted on next screen)").format(mining_fee_str)
-        if x_fee_amount != RavenValue():
+        if x_fee_amount != NeuraiValue():
             twofactor_fee_str = self.format_amount_and_units(x_fee_amount)
             msg += "\n" + _("2fa fee: {} (for the next batch of transactions)").format(twofactor_fee_str)
         frozen_bal = self.get_frozen_balance_str()
@@ -365,11 +365,11 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
             inputs=mandatory_inputs,
             locking_script_overrides=locking_script_overrides,
             raise_on_asset_changes=False)
-        output_values = [x.raven_value for x in outputs]
+        output_values = [x.neurai_value for x in outputs]
         if any(parse_max_spend(outval) for outval in output_values):
             output_value = '!'
         else:
-            output_value = sum(output_values, RavenValue())
+            output_value = sum(output_values, NeuraiValue())
         conf_dlg = ConfirmTxDialog(window=self.window, make_tx=make_tx, output_value=output_value, is_sweep=is_sweep)
         if conf_dlg.not_enough_funds:
             # Check if we had enough funds excluding fees,
@@ -424,8 +424,8 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
         return text
 
     def get_frozen_balance_str(self) -> Optional[str]:
-        frozen_bal = sum(self.wallet.get_frozen_balance(), RavenValue())
-        if frozen_bal == RavenValue():
+        frozen_bal = sum(self.wallet.get_frozen_balance(), NeuraiValue())
+        if frozen_bal == NeuraiValue():
             return None
         return self.format_amount_and_units(frozen_bal)
 

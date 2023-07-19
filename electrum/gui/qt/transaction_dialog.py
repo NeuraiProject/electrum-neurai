@@ -40,7 +40,7 @@ import qrcode
 from qrcode import exceptions
 
 from electrum.simple_config import SimpleConfig
-from electrum.util import parse_max_spend, quantize_feerate, convert_bytes_to_utf8_safe, RavenValue
+from electrum.util import parse_max_spend, quantize_feerate, convert_bytes_to_utf8_safe, NeuraiValue
 from electrum.neurai import base_encode, NLOCKTIME_BLOCKHEIGHT_MAX
 from electrum.assets import try_get_message_from_asset_transfer, get_asset_vout_type
 from electrum.i18n import _
@@ -445,7 +445,7 @@ class BaseTxDialog(QDialog, MessageBoxMixin):
                 and txid is not None and fx.is_enabled() and amount is not None):
             # Only normal XNA has an assignable value
             tx_item_fiat = self.wallet.get_tx_item_fiat(
-                tx_hash=txid, amount_sat=abs(amount.rvn_value.value), fx=fx, tx_fee=fee)
+                tx_hash=txid, amount_sat=abs(amount.xna_value.value), fx=fx, tx_fee=fee)
         lnworker_history = self.wallet.lnworker.get_onchain_history() if self.wallet.lnworker else {}
         if txid in lnworker_history:
             item = lnworker_history[txid]
@@ -505,11 +505,11 @@ class BaseTxDialog(QDialog, MessageBoxMixin):
         elif amount is None:
             amount_str = ''
         else:
-            rvn = amount.rvn_value.value
+            xna = amount.xna_value.value
             assets = amount.assets
             amounts = []
-            if rvn != 0:
-                amounts.append('{} {}'.format(format_amount(rvn), base_unit))
+            if xna != 0:
+                amounts.append('{} {}'.format(format_amount(xna), base_unit))
             for asset, v in assets.items():
                 amounts.append('{} {}'.format(format_amount(v.value), asset))
             amount_str = _("My amount") + ('s: ' if len(amounts) > 1 else ': ') + ', '.join(amounts)
@@ -519,7 +519,7 @@ class BaseTxDialog(QDialog, MessageBoxMixin):
                     amount_str += ' (%s)' % tx_item_fiat['fiat_value'].to_ui_string()
                 else:
                     # Fiat value only for normal XNA
-                    amount_str += ' (%s)' % format_fiat_and_units(abs(amount.rvn_value.value))
+                    amount_str += ' (%s)' % format_fiat_and_units(abs(amount.xna_value.value))
         if amount_str:
             self.amount_label.setText(amount_str)
         else:
@@ -611,12 +611,12 @@ class BaseTxDialog(QDialog, MessageBoxMixin):
                 return self.txo_color_2fa.text_char_format
             return ext
 
-        def format_amount(amt: RavenValue):
-            rvn = amt.rvn_value.value
+        def format_amount(amt: NeuraiValue):
+            xna = amt.xna_value.value
             assets = amt.assets
             amounts = []
-            if rvn != 0:
-                amounts.append(self.main_window.format_amount(rvn, whitespaces=True) + ' XNA')
+            if xna != 0:
+                amounts.append(self.main_window.format_amount(xna, whitespaces=True) + ' XNA')
             for asset, sats in assets.items():
                 amounts.append('{} {}'.format(self.main_window.format_amount(sats.value, whitespaces=True), asset))
             return ', '.join(amounts)
@@ -655,9 +655,9 @@ class BaseTxDialog(QDialog, MessageBoxMixin):
         for o in self.tx.outputs():
             addr = o.get_ui_address_str()
             if o.asset:
-                v = RavenValue(0, {o.asset: o.value})
+                v = NeuraiValue(0, {o.asset: o.value})
             else:
-                v = RavenValue(o.value)
+                v = NeuraiValue(o.value)
             cursor.insertText(addr, text_format(addr))
             cursor.insertText('\t', ext)
             cursor.insertText(format_amount(v), ext)
@@ -996,7 +996,7 @@ class PreviewTxDialog(BaseTxDialog, TxEditor):
 
         assert tx is not None
         size = tx.estimated_size()
-        fee = tx.get_fee().rvn_value.value
+        fee = tx.get_fee().xna_value.value
 
         self.size_e.setAmount(size)
         fiat_fee = self.main_window.format_fiat_and_units(fee)

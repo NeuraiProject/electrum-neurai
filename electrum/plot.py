@@ -25,7 +25,7 @@ def plot_history(history):
             continue
         if item['timestamp'] is None:
             continue
-        value = item['value'].rvn_value.value/COIN
+        value = item['value'].xna_value.value/COIN
         date = item['date']
         datenum = int(md.date2num(datetime.date(date.year, date.month, 1)))
         if value > 0:

@@ -77,11 +77,11 @@ If you would like hardware wallet support, see `this`_.
 .. _pycryptodomex: https://github.com/Legrandin/pycryptodome
 .. _cryptography: https://github.com/pyca/cryptography
 .. _this: https://github.com/spesmilo/electrum-docs/blob/master/hardware-linux.rst
-.. _here: https://github.com/Electrum-RVN-SIG/electrum-neurai/releases
+.. _here: https://github.com/NeuraiProject/electrum-neurai/releases
 .. _Discord: https://discord.gg/VuubYncHz4
 .. _article: https://support.ledger.com/hc/en-us/articles/360018969814-Receive-mining-proceeds?docs=true
-.. _releases: https://github.com/Electrum-RVN-SIG/electrum-neurai/releases
-.. _`ElectrumX Server`: https://github.com/Electrum-RVN-SIG/electrumx-neurai
+.. _releases: https://github.com/NeuraiProject/electrum-neurai/releases
+.. _`ElectrumX Server`: https://github.com/NeuraiProject/electrumx-neurai
 
 Running from tar.gz
 -------------------
@@ -109,7 +109,7 @@ Development version (git clone)
 
 Check out the code from GitHub::
 
-    git clone git://github.com/Electrum-RVN-SIG/electrum-neurai.git
+    git clone git://github.com/NeuraiProject/electrum-neurai.git
     cd electrum
     git submodule update --init
 
@@ -178,6 +178,6 @@ also welcome, but to avoid wasted effort, especially for larger changes,
 we encourage discussing these on the discord first.
 
 Besides `GitHub`_, most communication about Electrum development happens on discord, in the
-:code:`#electrum-rvn-sig` channel on discord.
+:code:`#electrum` channel on discord.
 
-.. _GitHub: https://github.com/Electrum-RVN-SIG/electrum-neurai
+.. _GitHub: https://github.com/NeuraiProject/electrum-neurai

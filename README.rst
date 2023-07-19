@@ -21,10 +21,6 @@ Getting started
 
 Contact us on `Discord`_!
 
-Want to use Ledger? Make sure ledger live is closed.
-
-Want to mine to hardware? See this `article`_. Trezor has similar problems. It is recommended that you set up a software wallet and mine to that, then send to your hardware from there.
-
 Interested in a pre-built binary? Find them `here`_. Otherwise, continue reading.
 
 Electrum Neurai is currently only supported for Qt-based software.
@@ -78,7 +74,7 @@ If you would like hardware wallet support, see `this`_.
 .. _cryptography: https://github.com/pyca/cryptography
 .. _this: https://github.com/spesmilo/electrum-docs/blob/master/hardware-linux.rst
 .. _here: https://github.com/NeuraiProject/electrum-neurai/releases
-.. _Discord: https://discord.gg/VuubYncHz4
+.. _Discord: https://discord.gg/dxJSrSeXjF
 .. _article: https://support.ledger.com/hc/en-us/articles/360018969814-Receive-mining-proceeds?docs=true
 .. _releases: https://github.com/NeuraiProject/electrum-neurai/releases
 .. _`ElectrumX Server`: https://github.com/NeuraiProject/electrumx-neurai

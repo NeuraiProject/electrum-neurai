@@ -24,33 +24,33 @@ export PATH=$PATH:~/bin
 
 
 if [ -z "$1" ]; then
-    echo "Usage: $0 Electrum-Neurai.app"
+    echo "Usage: $0 Electrum.app"
     exit -127
 fi
 
 mkdir -p ~/bin
 
 if ! which ${genisoimage} > /dev/null 2>&1; then
-	mkdir -p /tmp/electrum-neurai-macos
-	cd /tmp/electrum-neurai-macos
-	info "Downloading cdrkit $cdrkit_version"
-	wget -nc ${cdrkit_download_path}/${cdrkit_file_name}
-	tar xvf ${cdrkit_file_name}
+    mkdir -p /tmp/electrum-macos
+    cd /tmp/electrum-macos
+    info "Downloading cdrkit $cdrkit_version"
+    wget -nc ${cdrkit_download_path}/${cdrkit_file_name}
+    tar xvf ${cdrkit_file_name}
 
-	info "Patching genisoimage"
-	cd cdrkit-${cdrkit_version}
-	patch -p1 < $CONTRIB/osx/cdrkit-deterministic.patch
+    info "Patching genisoimage"
+    cd cdrkit-${cdrkit_version}
+    patch -p1 <$CONTRIB/osx/cdrkit-deterministic.patch
 
-	info "Building genisoimage"
-	cmake . -Wno-dev
-	make genisoimage
-	cp genisoimage/genisoimage ~/bin/${genisoimage}
+    info "Building genisoimage"
+    cmake . -Wno-dev
+    make genisoimage
+    cp genisoimage/genisoimage ~/bin/${genisoimage}
 fi
 
 if ! which dmg > /dev/null 2>&1; then
-    mkdir -p /tmp/electrum-neurai-macos
-	cd /tmp/electrum-neurai-macos
-	info "Downloading libdmg"
+    mkdir -p /tmp/electrum-macos
+    cd /tmp/electrum-macos
+    info "Downloading libdmg"
     LD_PRELOAD= git clone ${libdmg_url}
     cd libdmg-hfsplus
     info "Building libdmg"
@@ -60,16 +60,16 @@ if ! which dmg > /dev/null 2>&1; then
 fi
 
 ${genisoimage} -version || fail "Unable to install genisoimage"
-dmg -|| fail "Unable to install libdmg"
+dmg - || fail "Unable to install libdmg"
 
 plist=$1/Contents/Info.plist
 test -f "$plist" || fail "Info.plist not found"
-VERSION=$(grep -1 ShortVersionString $plist |tail -1|gawk 'match($0, /<string>(.*)<\/string>/, a) {print a[1]}')
+VERSION=$(grep -1 ShortVersionString $plist | tail -1 | gawk 'match($0, /<string>(.*)<\/string>/, a) {print a[1]}')
 echo $VERSION
 
-rm -rf /tmp/electrum-neurai-macos/image > /dev/null 2>&1
-mkdir /tmp/electrum-neurai-macos/image/
-cp -r $1 /tmp/electrum-neurai-macos/image/
+rm -rf /tmp/electrum-macos/image > /dev/null 2>&1
+mkdir /tmp/electrum-macos/image/
+cp -r $1 /tmp/electrum-macos/image/
 
 build_dir=$(dirname "$1")
 test -n "$build_dir" -a -d "$build_dir" || exit
@@ -80,16 +80,16 @@ ${genisoimage} \
     -D \
     -l \
     -probe \
-    -V "Electrum-Neurai" \
+    -V "Electrum" \
     -no-pad \
     -r \
     -dir-mode 0755 \
     -apple \
-    -o Electrum_Neurai_uncompressed.dmg \
+    -o Electrum_uncompressed.dmg \
     /tmp/electrum-macos/image || fail "Unable to create uncompressed dmg"
 
-dmg dmg Electrum_Neurai_uncompressed.dmg electrum-neurai-$VERSION.dmg || fail "Unable to create compressed dmg"
-rm Electrum_Neurai_uncompressed.dmg
+dmg dmg Electrum_uncompressed.dmg electrum-$VERSION.dmg || fail "Unable to create compressed dmg"
+rm Electrum_uncompressed.dmg
 
 echo "Done."
-sha256sum electrum-neurai-$VERSION.dmg
+sha256sum electrum-$VERSION.dmg

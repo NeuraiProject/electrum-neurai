@@ -20,11 +20,12 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-
-import os, sys, re, json, copy
+import binascii
+import concurrent.futures
+import os, sys, re, json
 from collections import defaultdict, OrderedDict
 from typing import (NamedTuple, Union, TYPE_CHECKING, Tuple, Optional, Callable, Any,
-                    Sequence, Dict, Generic, TypeVar, List, Iterable, Set)
+                    Sequence, Dict, Generic, TypeVar, List, Iterable, Set, Awaitable)
 from datetime import datetime
 import decimal
 from decimal import Decimal
@@ -33,19 +34,22 @@ import urllib
 import threading
 import hmac
 import stat
-from locale import localeconv
+import locale
 import asyncio
 import urllib.request, urllib.parse, urllib.error
 import builtins
 import json
 import time
+from typing import NamedTuple, Optional
 import ssl
 import ipaddress
 from ipaddress import IPv4Address, IPv6Address
 import random
 import secrets
 import functools
+from functools import partial
 from abc import abstractmethod, ABC
+import socket
 
 import attr
 import aiohttp
@@ -61,6 +65,8 @@ if TYPE_CHECKING:
     from .network import Network
     from .interface import Interface
     from .simple_config import SimpleConfig
+    from .paymentrequest import PaymentRequest
+
 
 _logger = get_logger(__name__)
 
@@ -69,21 +75,24 @@ def inv_dict(d):
     return {v: k for k, v in d.items()}
 
 
-def all_subclasses(cls) -> Set:
-    """Return all (transitive) subclasses of cls."""
-    res = set(cls.__subclasses__())
-    for sub in res.copy():
-        res |= all_subclasses(sub)
-    return res
-
-
 ca_path = certifi.where()
 
-base_units = {'XNA': 8}  # {'BTC':8, 'mBTC':5, 'bits':2, 'sat':0}
-base_units_inverse = inv_dict(base_units)
-base_units_list = ['XNA']  # list(dict) does not guarantee order
+def base_units():
+    from . import constants
+    return {constants.net.SHORT_NAME: 8}
 
-DECIMAL_POINT_DEFAULT = 8  # XNA
+def base_units_inverse():
+    return inv_dict(base_units())
+
+def base_units_list():
+    from . import constants
+    return [constants.net.SHORT_NAME]
+
+#base_units = {'RVN':8} #, 'mBTC':5, 'bits':2, 'sat':0}
+#base_units_inverse = inv_dict(base_units)
+#base_units_list = ['RVN'] #, 'mBTC', 'bits', 'sat']  # list(dict) does not guarantee order
+
+DECIMAL_POINT_DEFAULT = 8  # RVN
 
 
 class UnknownBaseUnit(Exception): pass
@@ -92,15 +101,16 @@ class UnknownBaseUnit(Exception): pass
 def decimal_point_to_base_unit_name(dp: int) -> str:
     # e.g. 8 -> "BTC"
     try:
-        return base_units_inverse[dp]
+        return base_units_inverse()[dp]
     except KeyError:
         raise UnknownBaseUnit(dp) from None
 
 
 def base_unit_name_to_decimal_point(unit_name: str) -> int:
+    """Returns the max number of digits allowed after the decimal point."""
     # e.g. "BTC" -> 8
     try:
-        return base_units[unit_name]
+        return base_units()[unit_name]
     except KeyError:
         raise UnknownBaseUnit(unit_name) from None
 
@@ -117,21 +127,6 @@ def parse_max_spend(amt: Any) -> Optional[int]:
     address2, 3!
     ```
     """
-
-    if isinstance(amt, NeuraiValue):
-        def parse_neuraivalue():
-            xna_max_spend = parse_max_spend(amt.xna_value)
-            if xna_max_spend is not None:
-                return xna_max_spend
-            
-            for _, value in amt.assets.items():
-                m_spend = parse_max_spend(value)
-                if m_spend is not None:
-                    return m_spend
-            return None
-
-        return parse_neuraivalue()
-
     if not (isinstance(amt, str) and amt and amt[-1] == '!'):
         return None
     if amt == '!':
@@ -145,6 +140,10 @@ def parse_max_spend(amt: Any) -> Optional[int]:
         return x
     return None
 
+class NoQualifiedAddress(Exception):
+    def __str__(self):
+        return _('No qualified addresses')
+
 
 class NotEnoughFunds(Exception):
     def __str__(self):
@@ -155,7 +154,8 @@ class NoDynamicFeeEstimates(Exception):
     def __str__(self):
         return _('Dynamic fee estimates not available')
 
-class AssetAmountModified(Exception):
+
+class BelowDustLimit(Exception):
     pass
 
 
@@ -195,7 +195,10 @@ class FileExportFailed(Exception):
         return _("Failed to export to file.") + "\n" + self.message
 
 
-class WalletFileException(Exception): pass
+class WalletFileException(Exception):
+    def __init__(self, message='', *, should_report_crash: bool = False):
+        Exception.__init__(self, message)
+        self.should_report_crash = should_report_crash
 
 
 class BitcoinException(Exception): pass
@@ -215,12 +218,22 @@ class UserCancelled(Exception):
     pass
 
 
+def to_decimal(x: Union[str, float, int, Decimal]) -> Decimal:
+    # helper function mainly for float->Decimal conversion, i.e.:
+    #   >>> Decimal(41754.681)
+    #   Decimal('41754.680999999996856786310672760009765625')
+    #   >>> Decimal("41754.681")
+    #   Decimal('41754.681')
+    if isinstance(x, Decimal):
+        return x
+    return Decimal(str(x))
+
+
 # note: this is not a NamedTuple as then its json encoding cannot be customized
 class Satoshis(object):
     __slots__ = ('value',)
 
     def __new__(cls, value):
-        assert isinstance(value, int)
         self = super(Satoshis, cls).__new__(cls)
         # note: 'value' sometimes has msat precision
         self.value = value
@@ -234,289 +247,13 @@ class Satoshis(object):
         return format_satoshis(self.value)
 
     def __eq__(self, other):
-        if isinstance(other, Satoshis):
-            return self.value == other.value
-        elif isinstance(other, int):
-            return self.value == other
-        else:
-            return super().__eq__(other)
+        return self.value == other.value
 
     def __ne__(self, other):
         return not (self == other)
 
     def __add__(self, other):
-        if isinstance(other, Satoshis):
-            return Satoshis(self.value + other.value)
-        elif isinstance(other, int):
-            return Satoshis(self.value + other)
-        else:
-            raise TypeError('Satoshis or int required')
-
-    def __sub__(self, other):
-        if isinstance(other, Satoshis):
-            return Satoshis(self.value - other.value)
-        elif isinstance(other, int):
-            return Satoshis(self.value - other)
-        else:
-            raise TypeError('Satoshis or int required')
-
-    def __mul__(self, other):
-        if isinstance(other, Satoshis):
-            return Satoshis(self.value * other.value)
-        elif isinstance(other, int):
-            return Satoshis(self.value * other)
-        else:
-            raise TypeError('Satoshis or int required')
-
-    def __floordiv__(self, other):
-        if isinstance(other, Satoshis):
-            return Satoshis(self.value // other.value)
-        elif isinstance(other, int):
-            return Satoshis(self.value // other)
-        else:
-            raise TypeError('Satoshis or int required')
-
-    def __truediv__(self, other):
-        if isinstance(other, Satoshis):
-            return Satoshis(self.value / other.value)
-        elif isinstance(other, int):
-            return Satoshis(self.value / other)
-        else:
-            raise TypeError('Satoshis or int required')
-
-    def __neg__(self):
-        return Satoshis(- self.value)
-
-    def __lt__(self, other):
-        if isinstance(other, Satoshis):
-            return self.value < other.value
-        elif isinstance(other, int):
-            return self.value < other
-        else:
-            raise TypeError('Satoshis or int required')
-
-    def __le__(self, other):
-        if isinstance(other, Satoshis):
-            return self.value <= other.value
-        elif isinstance(other, int):
-            return self.value <= other
-        else:
-            raise TypeError('Satoshis or int required')
-
-    def __gt__(self, other):
-        if isinstance(other, Satoshis):
-            return self.value > other.value
-        elif isinstance(other, int):
-            return self.value > other
-        else:
-            raise TypeError('Satoshis or int required')
-
-    def __ge__(self, other):
-        if isinstance(other, Satoshis):
-            return self.value >= other.value
-        elif isinstance(other, int):
-            return self.value >= other
-        else:
-            raise TypeError('Satoshis or int required')
-
-    def __hash__(self):
-        return self.value
-
-    def __int__(self):
-        return self.value
-
-    def __index__(self):
-        return self.value
-
-    def __bool__(self):
-        return bool(self.value)
-
-    def __copy__(self):
-        return Satoshis(self.value)
-
-    def __deepcopy__(self, memo):
-        return self.__copy__()
-
-    def to_bytes(self, length, byteorder, *, signed=False):
-        return self.value.to_bytes(length=length, byteorder=byteorder, signed=signed)
-
-
-class IPFSData(NamedTuple):
-    ipfs: str
-    mime_type: Optional[str]
-    byte_length: Optional[int]
-    is_cached: bool
-    #is_rip14: Optional[bool]  # true/false/unknown
-
-
-class NeuraiValue:  # The raw XNA value as well as asset values of a transaction
-    @staticmethod
-    def from_json(d: Dict):
-        if d is None:
-            return None
-        assert 'XNA' in d and 'ASSETS' in d
-        return NeuraiValue(d['XNA'], d['ASSETS'])
-
-    def __init__(self, xna: Union[int, Satoshis, str] = 0, assets=None):
-        if assets is None:
-            assets = {}
-        assert isinstance(xna, (int, Satoshis, str))
-        assert isinstance(assets, Dict)
-        if isinstance(xna, int):
-            self.__xna_value = Satoshis(xna)
-        elif isinstance(xna, Satoshis):
-            self.__xna_value = xna
-        elif isinstance(xna, str) and '!' in xna:
-            self.__xna_value = xna
-        else:
-            raise ValueError(f'Invalid xna value: {xna}')
-        
-        self.__asset_value = {}
-        for asset, value in assets.items():
-            if isinstance(value, int):
-                value = Satoshis(value)
-            elif isinstance(value, Satoshis):
-                pass
-            elif isinstance(value, str) and '!' in value:
-                pass
-            else:
-                raise ValueError(f'Invalid xna value: {xna}')
-
-            self.__asset_value[asset] = value
-
-    @property
-    def xna_value(self) -> Union[Satoshis, str]:
-        return self.__xna_value
-
-    @property
-    def assets(self) -> Dict[str, Union[Satoshis, str]]:
-        return copy.copy(self.__asset_value)
-
-    def __repr__(self):
-        return 'NeuraiValue(XNA: {}, ASSETS: {})'.format(self.__xna_value, {k: v.__str__() for k, v in self.__asset_value.items()})
-
-    def __str__(self):
-        ret = []
-        r = self.__xna_value
-        if r:
-            ret.append(f'{format_satoshis(r, num_zeros=1)} XNA')
-        for a, v in self.__asset_value.items():
-            ret.append(f'{format_satoshis(v, num_zeros=1)} {a}')
-
-        return ', '.join(ret)
-
-    def __add__(self, other):
-        if isinstance(other, NeuraiValue):
-            if '!' == self.xna_value or '!' == other.xna_value:
-                v_r = '!'
-            else:
-                v_r = self.xna_value + other.xna_value
-            v_a = self.assets
-            for k, v in other.assets.items():
-                if k in v_a:
-                    if v_a[k] == '!' or v == '!':
-                        v_a[k] = '!'
-                    else:
-                        v_a[k] += v
-                else:
-                    v_a[k] = v
-            return NeuraiValue(v_r, v_a)
-        else:
-            raise ValueError('NeuraiValue required')
-
-    def __sub__(self, other):
-        if isinstance(other, NeuraiValue):
-            v_r = self.xna_value - other.xna_value
-            v_a = self.assets
-            for k, v in other.assets.items():
-                if k in v_a:
-                    v_a[k] -= v
-                    if v_a[k] == 0:
-                        del v_a[k]
-                else:
-                    v_a[k] = -v
-            return NeuraiValue(v_r, v_a)
-        else:
-            raise ValueError('NeuraiValue required')
-
-    def __mul__(self, other):
-        if isinstance(other, int):
-            new_xna_value = Satoshis(self.__xna_value.value * other)
-            new_assets = {}
-            for asset, val in self.assets.items():
-                new_assets[asset] = val * other
-            return NeuraiValue(new_xna_value, new_assets)
-        else:
-            raise ValueError('int required')
-
-    def __floordiv__(self, other):
-        if isinstance(other, int):
-            new_v_r = self.__xna_value.value // other
-            new_xna_value = Satoshis(int(new_v_r))
-            new_assets = {}
-            for asset, val in self.assets.items():
-                new_v_a = val.value // other
-                new_assets[asset] = Satoshis(int(new_v_a))
-            return NeuraiValue(new_xna_value, new_assets)
-        else:
-            raise ValueError('int required')
-
-    def __eq__(self, other):
-        if not isinstance(other, NeuraiValue):
-            return False
-        if self.__xna_value != other.__xna_value:
-            return False
-        for asset, value in self.__asset_value.items():
-            if value != other.__asset_value.get(asset, 0):
-                return False
-        return True
-        
-    def __hash__(self):
-        k1 = hash(self.__xna_value)
-        k2 = hash(frozenset(self.__asset_value.items()))
-        return int((k1 + k2) * (k1 + k2 + 1) / 2 + k2)
-
-    def __lt__(self, other):
-        if isinstance(other, NeuraiValue):
-            o_a = other.assets
-            if len(self.__asset_value) == 0 and len(o_a) != 0:
-                return True
-            if self.__xna_value >= other.__xna_value:
-                return False
-            for asset, amt in self.__asset_value.items():
-                if asset not in o_a:
-                    return False
-                if amt >= o_a[asset]:
-                    return False
-            return True
-        else:
-            raise ValueError('NeuraiValue required')
-
-    def __ge__(self, other):
-        return not self.__lt__(other)
-
-    def __copy__(self):
-        return NeuraiValue(self.__xna_value, self.__asset_value)
-
-    def __deepcopy__(self, memo):
-        cls = self.__class__
-        result = cls.__new__(cls)
-        memo[id(self)] = result
-        for k, v in self.__dict__.items():
-            setattr(result, k, copy.deepcopy(v))
-        return result
-
-    def to_json(self):
-        d = {
-            'XNA': self.xna_value if isinstance(self.xna_value, str) else self.xna_value.value,
-            'ASSETS': {k: v if isinstance(v, str) else v.value for k, v in self.assets.items()},
-        }
-        return d
-
-    def is_incoming(self):
-        # 0 >= if receiving assets or XNA
-        # <0 for the fee spent
-        return self.xna_value >= 0
+        return Satoshis(self.value + other.value)
 
 
 # note: this is not a NamedTuple as then its json encoding cannot be customized
@@ -532,7 +269,7 @@ class Fiat(object):
         return self
 
     def __repr__(self):
-        return 'Fiat(%s)' % self.__str__()
+        return 'Fiat(%s)'% self.__str__()
 
     def __str__(self):
         if self.value is None or self.value.is_nan():
@@ -568,9 +305,6 @@ class MyEncoder(json.JSONEncoder):
     def default(self, obj):
         # note: this does not get called for namedtuples :(  https://bugs.python.org/issue30343
         from .transaction import Transaction, TxOutput
-        from .lnutil import UpdateAddHtlc
-        if isinstance(obj, UpdateAddHtlc):
-            return obj.to_tuple()
         if isinstance(obj, Transaction):
             return obj.serialize()
         if isinstance(obj, TxOutput):
@@ -585,7 +319,7 @@ class MyEncoder(json.JSONEncoder):
             return obj.isoformat(' ')[:-3]
         if isinstance(obj, set):
             return list(obj)
-        if isinstance(obj, bytes):  # for nametuples in lnchannel
+        if isinstance(obj, bytes): # for nametuples in lnchannel
             return obj.hex()
         if hasattr(obj, 'to_json') and callable(obj.to_json):
             return obj.to_json()
@@ -604,10 +338,8 @@ class ThreadJob(Logger):
         """Called periodically from the thread"""
         pass
 
-
 class DebugMem(ThreadJob):
     '''A handy class for debugging GC memory leaks'''
-
     def __init__(self, classes, interval=30):
         ThreadJob.__init__(self)
         self.next_time = 0
@@ -632,7 +364,6 @@ class DebugMem(ThreadJob):
             self.mem_stats()
             self.next_time = time.time() + self.interval
 
-
 class DaemonThread(threading.Thread, Logger):
     """ daemon thread that terminates cleanly """
 
@@ -646,7 +377,9 @@ class DaemonThread(threading.Thread, Logger):
         self.running_lock = threading.Lock()
         self.job_lock = threading.Lock()
         self.jobs = []
-        self.stopped_event = threading.Event()  # set when fully stopped
+        self.stopped_event = threading.Event()        # set when fully stopped
+        self.stopped_event_async = asyncio.Event()    # set when fully stopped
+        self.wake_up_event = threading.Event()  # for perf optimisation of polling in run()
 
     def add_jobs(self, jobs):
         with self.job_lock:
@@ -680,6 +413,8 @@ class DaemonThread(threading.Thread, Logger):
     def stop(self):
         with self.running_lock:
             self.running = False
+            self.wake_up_event.set()
+            self.wake_up_event.clear()
 
     def on_stop(self):
         if 'ANDROID_DATA' in os.environ:
@@ -688,6 +423,8 @@ class DaemonThread(threading.Thread, Logger):
             self.logger.info("jnius detach")
         self.logger.info("stopped")
         self.stopped_event.set()
+        loop = get_asyncio_loop()
+        loop.call_soon_threadsafe(self.stopped_event_async.set)
 
 
 def print_stderr(*args):
@@ -695,28 +432,24 @@ def print_stderr(*args):
     sys.stderr.write(" ".join(args) + "\n")
     sys.stderr.flush()
 
-
 def print_msg(*args):
     # Stringify args
     args = [str(item) for item in args]
     sys.stdout.write(" ".join(args) + "\n")
     sys.stdout.flush()
 
-
 def json_encode(obj):
     try:
-        s = json.dumps(obj, sort_keys=True, indent=4, cls=MyEncoder)
+        s = json.dumps(obj, sort_keys = True, indent = 4, cls=MyEncoder)
     except TypeError:
         s = repr(obj)
     return s
 
-
 def json_decode(x):
     try:
         return json.loads(x, parse_float=Decimal)
-    except:
+    except Exception:
         return x
-
 
 def json_normalize(x):
     # note: The return value of commands, when going through the JSON-RPC interface,
@@ -732,26 +465,29 @@ def constant_time_compare(val1, val2):
     return hmac.compare_digest(to_bytes(val1, 'utf8'), to_bytes(val2, 'utf8'))
 
 
-# decorator that prints execution time
 _profiler_logger = _logger.getChild('profiler')
+def profiler(func=None, *, min_threshold: Union[int, float, None] = None):
+    """Function decorator that logs execution time.
 
-
-def profiler(func):
-    def do_profile(args, kw_args):
+    min_threshold: if set, only log if time taken is higher than threshold
+    NOTE: does not work with async methods.
+    """
+    if func is None:  # to make "@profiler(...)" work. (in addition to bare "@profiler")
+        return partial(profiler, min_threshold=min_threshold)
+    def do_profile(*args, **kw_args):
         name = func.__qualname__
         t0 = time.time()
         o = func(*args, **kw_args)
         t = time.time() - t0
-        _profiler_logger.debug(f"{name} {t:,.4f} sec")
+        if min_threshold is None or t > min_threshold:
+            _profiler_logger.debug(f"{name} {t:,.4f} sec")
         return o
-
-    return lambda *args, **kw_args: do_profile(args, kw_args)
+    return do_profile
 
 
 def android_ext_dir():
     from android.storage import primary_external_storage_path
     return primary_external_storage_path()
-
 
 def android_backup_dir():
     pkgname = get_android_package_name()
@@ -760,12 +496,10 @@ def android_backup_dir():
         os.mkdir(d)
     return d
 
-
 def android_data_dir():
     import jnius
     PythonActivity = jnius.autoclass('org.kivy.android.PythonActivity')
     return PythonActivity.mActivity.getFilesDir().getPath() + '/data'
-
 
 def ensure_sparse_file(filename):
     # On modern Linux, no need to do anything.
@@ -779,13 +513,6 @@ def ensure_sparse_file(filename):
 
 def get_headers_dir(config):
     return config.path
-
-
-def get_ipfs_path(config, ipfs):
-    ipfs_dir = os.path.join(config.path, 'ipfs')
-    make_dir(ipfs_dir)
-    return os.path.join(ipfs_dir, ipfs)
-
 
 
 def assert_datadir_available(config_path):
@@ -809,12 +536,13 @@ def assert_file_in_datadir_available(path, config_path):
 
 
 def standardize_path(path):
+    # note: os.path.realpath() is not used, as on Windows it can return non-working paths (see #8495).
+    #       This means that we don't resolve symlinks!
     return os.path.normcase(
-        os.path.realpath(
-            os.path.abspath(
-                os.path.expanduser(
-                    path
-                ))))
+                os.path.abspath(
+                    os.path.expanduser(
+                        path
+    )))
 
 
 def get_new_wallet_name(wallet_folder: str) -> str:
@@ -858,7 +586,7 @@ def assert_bytes(*args):
     try:
         for x in args:
             assert isinstance(x, (bytes, bytearray))
-    except:
+    except Exception:
         print('assert bytes failed', list(map(type, args)))
         raise
 
@@ -897,25 +625,58 @@ def to_bytes(something, encoding='utf8') -> bytes:
 bfh = bytes.fromhex
 
 
-def bh2u(x: bytes) -> str:
-    """
-    str with hex representation of a bytes-like object
-
-    >>> x = bytes((1, 2, 10))
-    >>> bh2u(x)
-    '01020A'
-    """
-    return x.hex()
-
-
 def xor_bytes(a: bytes, b: bytes) -> bytes:
     size = min(len(a), len(b))
     return ((int.from_bytes(a[:size], "big") ^ int.from_bytes(b[:size], "big"))
             .to_bytes(size, "big"))
 
 
-def escape_string_for_url(s: str) -> str:
-    return s
+def user_dir():
+    if "ELECTRUMDIR" in os.environ:
+        return os.environ["ELECTRUMDIR"]
+    elif 'ANDROID_DATA' in os.environ:
+        return android_data_dir()
+    elif os.name == 'posix':
+        return os.path.join(os.environ["HOME"], ".electrum-ravencoin")
+    elif "APPDATA" in os.environ:
+        return os.path.join(os.environ["APPDATA"], "Electrum-Ravencoin")
+    elif "LOCALAPPDATA" in os.environ:
+        return os.path.join(os.environ["LOCALAPPDATA"], "Electrum-Ravencoin")
+    else:
+        #raise Exception("No home directory found in environment variables.")
+        return
+
+
+def resource_path(*parts):
+    return os.path.join(pkg_dir, *parts)
+
+
+# absolute path to python package folder of electrum ("lib")
+pkg_dir = os.path.split(os.path.realpath(__file__))[0]
+
+
+def is_valid_email(s):
+    regexp = r"[^@]+@[^@]+\.[^@]+"
+    return re.match(regexp, s) is not None
+
+
+def is_hash256_str(text: Any) -> bool:
+    if not isinstance(text, str): return False
+    if len(text) != 64: return False
+    return is_hex_str(text)
+
+
+def is_hex_str(text: Any) -> bool:
+    if not isinstance(text, str): return False
+    try:
+        b = bytes.fromhex(text)
+    except Exception:
+        return False
+    # forbid whitespaces in text:
+    if len(text) != 2 * len(b):
+        return False
+    return True
+
 
 def convert_bytes_to_utf8_safe(_bytes: bytes) -> str:
     '''Returns bytes as ascii decoded with .'s for invalid bytes'''
@@ -945,54 +706,7 @@ def convert_bytes_to_utf8_safe(_bytes: bytes) -> str:
             else:
                 ret += '.'
         return ret
-
-
-def user_dir():
-    if "ELECTRUMDIR" in os.environ:
-        return os.environ["ELECTRUMDIR"]
-    elif 'ANDROID_DATA' in os.environ:
-        return android_data_dir()
-    elif os.name == 'posix':
-        return os.path.join(os.environ["HOME"], ".electrum-neurai")
-    elif "APPDATA" in os.environ:
-        return os.path.join(os.environ["APPDATA"], "Electrum-Neurai")
-    elif "LOCALAPPDATA" in os.environ:
-        return os.path.join(os.environ["LOCALAPPDATA"], "Electrum-Neurai")
-    else:
-        # raise Exception("No home directory found in environment variables.")
-        return
-
-
-def resource_path(*parts):
-    return os.path.join(pkg_dir, *parts)
-
-
-# absolute path to python package folder of electrum ("lib")
-pkg_dir = os.path.split(os.path.realpath(__file__))[0]
-
-
-def is_valid_email(s):
-    regexp = r"[^@]+@[^@]+\.[^@]+"
-    return re.match(regexp, s) is not None
-
-
-def is_hash256_str(text: Any) -> bool:
-    if not isinstance(text, str): return False
-    if len(text) != 64: return False
-    return is_hex_str(text)
-
-
-def is_hex_str(text: Any) -> bool:
-    if not isinstance(text, str): return False
-    try:
-        b = bytes.fromhex(text)
-    except:
-        return False
-    # forbid whitespaces in text:
-    if len(text) != 2 * len(b):
-        return False
-    return True
-
+    
 
 def is_integer(val: Any) -> bool:
     return isinstance(val, int)
@@ -1043,11 +757,15 @@ def format_satoshis_plain(
 # We enforce that we have at least that available.
 assert decimal.getcontext().prec >= 28, f"PyDecimal precision too low: {decimal.getcontext().prec}"
 
-DECIMAL_POINT = localeconv()['decimal_point']  # type: str
+# DECIMAL_POINT = locale.localeconv()['decimal_point']  # type: str
+DECIMAL_POINT = "."
+THOUSANDS_SEP = " "
+assert len(DECIMAL_POINT) == 1, f"DECIMAL_POINT has unexpected len. {DECIMAL_POINT!r}"
+assert len(THOUSANDS_SEP) == 1, f"THOUSANDS_SEP has unexpected len. {THOUSANDS_SEP!r}"
 
 
 def format_satoshis(
-        x: Union[int, float, Decimal, str, None, Satoshis],  # amount in satoshis
+        x: Union[int, float, Decimal, str, None],  # amount in satoshis
         *,
         num_zeros: int = 0,
         decimal_point: int = 8,  # how much to shift decimal point to left (default: sat->BTC)
@@ -1060,8 +778,6 @@ def format_satoshis(
         return 'unknown'
     if parse_max_spend(x):
         return f'max({x})'
-    if isinstance(x, Satoshis):
-        x = x.value
     assert isinstance(x, (int, float, Decimal)), f"{x!r} should be a number"
     # lose redundant precision
     x = Decimal(x).quantize(Decimal(10) ** (-precision))
@@ -1072,7 +788,6 @@ def format_satoshis(
         decimal_format = '+' + decimal_format
     # initial result
     scale_factor = pow(10, decimal_point)
-
     result = ("{:" + decimal_format + "f}").format(x / scale_factor)
     if "." not in result: result += "."
     result = result.rstrip('0')
@@ -1085,9 +800,9 @@ def format_satoshis(
         sign = integer_part[0] if integer_part[0] in ("+", "-") else ""
         if sign == "-":
             integer_part = integer_part[1:]
-        integer_part = "{:,}".format(int(integer_part)).replace(',', " ")
+        integer_part = "{:,}".format(int(integer_part)).replace(',', THOUSANDS_SEP)
         integer_part = sign + integer_part
-        fract_part = " ".join(fract_part[i:i+3] for i in range(0, len(fract_part), 3))
+        fract_part = THOUSANDS_SEP.join(fract_part[i:i+3] for i in range(0, len(fract_part), 3))
     result = integer_part + DECIMAL_POINT + fract_part
     # add leading/trailing whitespaces so that numbers can be aligned in a column
     if whitespaces:
@@ -1122,147 +837,117 @@ def quantize_feerate(fee) -> Union[None, Decimal, int]:
     return Decimal(fee).quantize(_feerate_quanta, rounding=decimal.ROUND_HALF_DOWN)
 
 
-def timestamp_to_datetime(timestamp: Optional[int]) -> Optional[datetime]:
+def timestamp_to_datetime(timestamp: Union[int, float, None]) -> Optional[datetime]:
     if timestamp is None:
         return None
     return datetime.fromtimestamp(timestamp)
 
 
-def format_time(timestamp):
+def format_time(timestamp: Union[int, float, None]) -> str:
     date = timestamp_to_datetime(timestamp)
-    return date.isoformat(' ')[:-3] if date else _("Unknown")
+    return date.isoformat(' ', timespec="minutes") if date else _("Unknown")
 
 
-# Takes a timestamp and returns a string with the approximation of the age
-def age(from_date, since_date=None, target_tz=None, include_seconds=False):
+def age(
+    from_date: Union[int, float, None],  # POSIX timestamp
+    *,
+    since_date: datetime = None,
+    target_tz=None,
+    include_seconds: bool = False,
+) -> str:
+    """Takes a timestamp and returns a string with the approximation of the age"""
     if from_date is None:
-        return "Unknown"
+        return _("Unknown")
 
     from_date = datetime.fromtimestamp(from_date)
     if since_date is None:
         since_date = datetime.now(target_tz)
 
-    td = time_difference(from_date - since_date, include_seconds)
-    return td + " ago" if from_date < since_date else "in " + td
-
-
-def time_difference(distance_in_time, include_seconds):
-    # distance_in_time = since_date - from_date
+    distance_in_time = from_date - since_date
+    is_in_past = from_date < since_date
     distance_in_seconds = int(round(abs(distance_in_time.days * 86400 + distance_in_time.seconds)))
     distance_in_minutes = int(round(distance_in_seconds / 60))
 
     if distance_in_minutes == 0:
         if include_seconds:
-            return "%s seconds" % distance_in_seconds
+            if is_in_past:
+                return _("{} seconds ago").format(distance_in_seconds)
+            else:
+                return _("in {} seconds").format(distance_in_seconds)
         else:
-            return "less than a minute"
+            if is_in_past:
+                return _("less than a minute ago")
+            else:
+                return _("in less than a minute")
     elif distance_in_minutes < 45:
-        return "%s minutes" % distance_in_minutes
+        if is_in_past:
+            return _("about {} minutes ago").format(distance_in_minutes)
+        else:
+            return _("in about {} minutes").format(distance_in_minutes)
     elif distance_in_minutes < 90:
-        return "about 1 hour"
+        if is_in_past:
+            return _("about 1 hour ago")
+        else:
+            return _("in about 1 hour")
     elif distance_in_minutes < 1440:
-        return "about %d hours" % (round(distance_in_minutes / 60.0))
+        if is_in_past:
+            return _("about {} hours ago").format(round(distance_in_minutes / 60.0))
+        else:
+            return _("in about {} hours").format(round(distance_in_minutes / 60.0))
     elif distance_in_minutes < 2880:
-        return "1 day"
+        if is_in_past:
+            return _("about 1 day ago")
+        else:
+            return _("in about 1 day")
     elif distance_in_minutes < 43220:
-        return "%d days" % (round(distance_in_minutes / 1440))
+        if is_in_past:
+            return _("about {} days ago").format(round(distance_in_minutes / 1440))
+        else:
+            return _("in about {} days").format(round(distance_in_minutes / 1440))
     elif distance_in_minutes < 86400:
-        return "about 1 month"
+        if is_in_past:
+            return _("about 1 month ago")
+        else:
+            return _("in about 1 month")
     elif distance_in_minutes < 525600:
-        return "%d months" % (round(distance_in_minutes / 43200))
+        if is_in_past:
+            return _("about {} months ago").format(round(distance_in_minutes / 43200))
+        else:
+            return _("in about {} months").format(round(distance_in_minutes / 43200))
     elif distance_in_minutes < 1051200:
-        return "about 1 year"
+        if is_in_past:
+            return _("about 1 year ago")
+        else:
+            return _("in about 1 year")
     else:
-        return "over %d years" % (round(distance_in_minutes / 525600))
-
+        if is_in_past:
+            return _("over {} years ago").format(round(distance_in_minutes / 525600))
+        else:
+            return _("in over {} years").format(round(distance_in_minutes / 525600))
 
 mainnet_block_explorers = {
-    'neuraiexplorer.com': ('https://neuraiexplorer.com/',
-                           {'tx': 'tx/', 'addr': 'address/'}),
-    'xna.cryptoscope.io': ('https://xna.cryptoscope.io/',
-                           {'tx': 'tx/?txid=', 'addr': 'address/?address='}),
-    'blockbook.neurai.org': ('https://blockbook.neurai.org/',
-                           {'tx': 'tx/', 'addr': 'address/'}),
+    'rvn.cryptoscope.io': ('https://rvn.cryptoscope.io/',
+                        {'tx': 'tx/?txid=', 'addr': 'address/?address='}),
+    'ravencoin.network': ('https://ravencoin.network/',
+                        {'tx': 'tx/', 'addr': 'address/'}),
 }
 
 testnet_block_explorers = {
-    'testnet.neuraiexplorer.com': ('https://neuraiexplorer.com/',
-                           {'tx': 'tx/', 'addr': 'address/'}),
-}
-
-signet_block_explorers = {
-
+    'rvn.cryptoscope.io': ('https://rvnt.cryptoscope.io/',
+                        {'tx': 'tx/?txid=', 'addr': 'address/?address='}),
+    'ravencoin.network': ('https://testnet.ravencoin.network/',
+                        {'tx': 'tx/', 'addr': 'address/'}),
 }
 
 _block_explorer_default_api_loc = {'tx': 'tx/', 'addr': 'address/'}
-
-ipfs_explorers = {
-    'ipfs.scalaproject.io': ('https://ipfs.scalaproject.io/',
-                {'ipfs': 'ipfs/'}),
-    'cloudflare-ipfs.com': ('https://cloudflare-ipfs.com/',
-                {'ipfs': 'ipfs/'}),
-    'ipfs.scalaproject.io': ('https://ipfs.scalaproject.io/',
-                {'ipfs': 'ipfs/'}),
-    'nftstorage.link': ('https://nftstorage.link/',
-                {'ipfs': 'ipfs/'}),
-    'ipfs.chaintek.net': ('https://ipfs.chaintek.net/',
-                {'ipfs': 'ipfs/'})
-}
-
-_ipfs_explorer_default_api_loc = {'ipfs': 'ipfs/'}
-
-
-def ipfs_explorer_info():
-    return ipfs_explorers
-
-
-def ipfs_explorer(config: 'SimpleConfig') -> Optional[str]:
-    if config.get('ipfs_explorer_custom') is not None:
-        return None
-    default_ = 'ipfs.chaintek.net'
-    ie_key = config.get('ipfs_explorer', default_)
-    ie_tuple = ipfs_explorer_info().get(ie_key)
-    if ie_tuple is None:
-        ie_key = default_
-    assert isinstance(ie_key, str), f"{ie_key!r} should be str"
-    return ie_key
-
-
-def ipfs_explorer_tuple(config: 'SimpleConfig') -> Optional[Tuple[str, dict]]:
-    custom_ie = config.get('ipfs_explorer_custom')
-    if custom_ie:
-        if isinstance(custom_ie, str):
-            return custom_ie, _ipfs_explorer_default_api_loc
-        if isinstance(custom_ie, (tuple, list)) and len(custom_ie) == 2:
-            return tuple(custom_ie)
-        _logger.warning(f"not using 'block_explorer_custom' from config. "
-                        f"expected a str or a pair but got {custom_ie!r}")
-        return None
-    else:
-        # using one of the hardcoded block explorers
-        return ipfs_explorer_info().get(ipfs_explorer(config))
-
-
-def ipfs_explorer_URL(config: 'SimpleConfig', kind: str, item: str) -> Optional[str]:
-    ie_tuple = ipfs_explorer_tuple(config)
-    if not ie_tuple:
-        return
-    explorer_url, explorer_dict = ie_tuple
-    kind_str = explorer_dict.get(kind)
-    if kind_str is None:
-        return
-    if explorer_url[-1] != "/":
-        explorer_url += "/"
-    url_parts = [explorer_url, kind_str, item]
-    return ''.join(url_parts)
 
 
 def block_explorer_info():
     from . import constants
     if constants.net.NET_NAME == "testnet":
         return testnet_block_explorers
-    elif constants.net.NET_NAME == "signet":
-        return signet_block_explorers
+    #elif constants.net.NET_NAME == "signet":
+    #    return signet_block_explorers
     return mainnet_block_explorers
 
 
@@ -1270,25 +955,24 @@ def block_explorer(config: 'SimpleConfig') -> Optional[str]:
     """Returns name of selected block explorer,
     or None if a custom one (not among hardcoded ones) is configured.
     """
-    if config.get('block_explorer_custom') is not None:
+    if config.BLOCK_EXPLORER_CUSTOM is not None:
         return None
-    default_ = 'xna.cryptoscope.io'
-    be_key = config.get('block_explorer', default_)
+    be_key = config.BLOCK_EXPLORER
     be_tuple = block_explorer_info().get(be_key)
     if be_tuple is None:
-        be_key = default_
+        be_key = config.cv.BLOCK_EXPLORER.get_default_value()
     assert isinstance(be_key, str), f"{be_key!r} should be str"
     return be_key
 
 
 def block_explorer_tuple(config: 'SimpleConfig') -> Optional[Tuple[str, dict]]:
-    custom_be = config.get('block_explorer_custom')
+    custom_be = config.BLOCK_EXPLORER_CUSTOM
     if custom_be:
         if isinstance(custom_be, str):
             return custom_be, _block_explorer_default_api_loc
         if isinstance(custom_be, (tuple, list)) and len(custom_be) == 2:
             return tuple(custom_be)
-        _logger.warning(f"not using 'block_explorer_custom' from config. "
+        _logger.warning(f"not using {config.cv.BLOCK_EXPLORER_CUSTOM.key()!r} from config. "
                         f"expected a str or a pair but got {custom_be!r}")
         return None
     else:
@@ -1309,179 +993,93 @@ def block_explorer_URL(config: 'SimpleConfig', kind: str, item: str) -> Optional
     url_parts = [explorer_url, kind_str, item]
     return ''.join(url_parts)
 
+ipfs_explorers = {
+    'cloudflare-ipfs.com': ('https://cloudflare-ipfs.com/',
+                {'ipfs': 'ipfs/'}),
+    'dweb.link': ('https://dweb.link.com/',
+                {'ipfs': 'ipfs/'}),
+    'ipfs.io': ('https://ipfs.io/',
+                {'ipfs': 'ipfs/'}),
+    'ipfs.chaintek.net': ('https://ipfs.chaintek.net/',
+                {'ipfs': 'ipfs/'}),
+    'hardbin.com': ('https://hardbin.com/',
+                {'ipfs': 'ipfs/'}),
+    'cf-ipfs.com': ('https://cf-ipfs.com/',
+                {'ipfs': 'ipfs/'}),
+    'nftstorage.link': ('https://nftstorage.link/',
+                {'ipfs': 'ipfs/'})
+}
 
-# URL decode
-# _ud = re.compile('%([0-9a-hA-H]{2})', re.MULTILINE)
-# urldecode = lambda x: _ud.sub(lambda m: chr(int(m.group(1), 16)), x)
+_ipfs_explorer_default_api_loc = {'ipfs': 'ipfs/'}
+
+def ipfs_explorer_info():
+    return ipfs_explorers
 
 
-# note: when checking against these, use .lower() to support case-insensitivity
-BITCOIN_BIP21_URI_SCHEME = 'neurai'
-LIGHTNING_URI_SCHEME = 'lightning'
+def ipfs_explorer(config: 'SimpleConfig') -> Optional[str]:
+    """Returns name of selected ipfs explorer,
+    or None if a custom one (not among hardcoded ones) is configured.
+    """
+    if config.IPFS_EXPLORER_CUSTOM is not None:
+        return None
+    be_key = config.IPFS_EXPLORER
+    be_tuple = ipfs_explorer_info().get(be_key)
+    if be_tuple is None:
+        be_key = config.cv.IPFS_EXPLORER.get_default_value()
+    assert isinstance(be_key, str), f"{be_key!r} should be str"
+    return be_key
 
 
-class InvalidBitcoinURI(Exception): pass
-
-
-# TODO rename to parse_bip21_uri or similar
-def parse_URI(uri: str, on_pr: Callable = None, *, loop=None) -> dict:
-    """Raises InvalidBitcoinURI on malformed URI."""
-    from . import neurai
-    from .neurai import COIN, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
-    from .lnaddr import lndecode
-
-    if not isinstance(uri, str):
-        raise InvalidBitcoinURI(f"expected string, not {repr(uri)}")
-
-    if ':' not in uri:
-        if not neurai.is_address(uri):
-            raise InvalidBitcoinURI("Not a neurai address")
-        return {'address': uri}
-
-    u = urllib.parse.urlparse(uri)
-    if u.scheme.lower() != BITCOIN_BIP21_URI_SCHEME:
-        raise InvalidBitcoinURI("Not a neurai URI")
-    address = u.path
-
-    # python for android fails to parse query
-    if address.find('?') > 0:
-        address, query = u.path.split('?')
-        pq = urllib.parse.parse_qs(query)
+def ipfs_explorer_tuple(config: 'SimpleConfig') -> Optional[Tuple[str, dict]]:
+    custom_be = config.IPFS_EXPLORER_CUSTOM
+    if custom_be:
+        if isinstance(custom_be, str):
+            return custom_be, _ipfs_explorer_default_api_loc
+        if isinstance(custom_be, (tuple, list)) and len(custom_be) == 2:
+            return tuple(custom_be)
+        _logger.warning(f"not using {config.cv.IPFS_EXPLORER_CUSTOM.key()!r} from config. "
+                        f"expected a str or a pair but got {custom_be!r}")
+        return None
     else:
-        pq = urllib.parse.parse_qs(u.query)
-
-    for k, v in pq.items():
-        if len(v) != 1:
-            raise InvalidBitcoinURI(f'Duplicate Key: {repr(k)}')
-
-    out = {k: v[0] for k, v in pq.items()}
-    if address:
-        if not neurai.is_address(address):
-            raise InvalidBitcoinURI(f"Invalid bitcoin address: {address}")
-        out['address'] = address
-    if 'amount' in out:
-        am = out['amount']
-        try:
-            m = re.match(r'([0-9.]+)X([0-9])', am)
-            if m:
-                k = int(m.group(2)) - 8
-                amount = Decimal(m.group(1)) * pow(Decimal(10), k)
-            else:
-                amount = Decimal(am) * COIN
-            if amount > TOTAL_COIN_SUPPLY_LIMIT_IN_BTC * COIN:
-                raise InvalidBitcoinURI(f"amount is out-of-bounds: {amount!r} BTC")
-            out['amount'] = int(amount)
-        except Exception as e:
-            raise InvalidBitcoinURI(f"failed to parse 'amount' field: {repr(e)}") from e
-    if 'message' in out:
-        out['message'] = out['message']
-        out['memo'] = out['message']
-    if 'asset' in out:
-        pass
-        # TODO: Validate asset
-    if 'time' in out:
-        try:
-            out['time'] = int(out['time'])
-        except Exception as e:
-            raise InvalidBitcoinURI(f"failed to parse 'time' field: {repr(e)}") from e
-    if 'exp' in out:
-        try:
-            out['exp'] = int(out['exp'])
-        except Exception as e:
-            raise InvalidBitcoinURI(f"failed to parse 'exp' field: {repr(e)}") from e
-    if 'sig' in out:
-        try:
-            out['sig'] = bh2u(neurai.base_decode(out['sig'], base=58))
-        except Exception as e:
-            raise InvalidBitcoinURI(f"failed to parse 'sig' field: {repr(e)}") from e
-    if 'lightning' in out:
-        raise NotImplemented()
-        try:
-            lnaddr = lndecode(out['lightning'])
-            amount_sat = out.get('amount')
-            if amount_sat:
-                assert int(lnaddr.get_amount_sat()) == amount_sat
-            address = out.get('address')
-            if address:
-                assert lnaddr.get_fallback_address() == address
-        except Exception as e:
-            raise InvalidBitcoinURI(f"Inconsistent lightning field: {repr(e)}") from e
-
-    r = out.get('r')
-    sig = out.get('sig')
-    name = out.get('name')
-    if on_pr and (r or (name and sig)):
-        @log_exceptions
-        async def get_payment_request():
-            from . import paymentrequest as pr
-            if name and sig:
-                s = pr.serialize_request(out).SerializeToString()
-                request = pr.PaymentRequest(s)
-            else:
-                request = await pr.get_payment_request(r)
-            if on_pr:
-                on_pr(request)
-        loop = loop or get_asyncio_loop()
-        asyncio.run_coroutine_threadsafe(get_payment_request(), loop)
-
-    return out
+        # using one of the hardcoded ipfs explorers
+        return ipfs_explorer_info().get(ipfs_explorer(config))
 
 
-def create_bip21_uri(addr, amount_sat: Optional[int], message: Optional[str],
-                     *, extra_query_params: Optional[dict] = None) -> str:
-    from . import neurai
-    if not neurai.is_address(addr):
-        return ""
-    if extra_query_params is None:
-        extra_query_params = {}
-    query = []
-    if amount_sat:
-        query.append('amount=%s' % format_satoshis_plain(amount_sat))
-    if message:
-        query.append('message=%s' % urllib.parse.quote(message))
-    for k, v in extra_query_params.items():
-        if not isinstance(k, str) or k != urllib.parse.quote(k):
-            raise Exception(f"illegal key for URI: {repr(k)}")
-        v = urllib.parse.quote(v)
-        query.append(f"{k}={v}")
-    p = urllib.parse.ParseResult(
-        scheme=BITCOIN_BIP21_URI_SCHEME,
-        netloc='',
-        path=addr,
-        params='',
-        query='&'.join(query),
-        fragment='',
-    )
-    return str(urllib.parse.urlunparse(p))
+def ipfs_explorer_URL(config: 'SimpleConfig', kind: str, item: str) -> Optional[str]:
+    be_tuple = ipfs_explorer_tuple(config)
+    if not be_tuple:
+        return
+    return ipfs_url_from_tuple(be_tuple, kind, item)
+    
+def ipfs_url_from_tuple(be_tuple, kind: str, item: str) -> Optional[str]:
+    explorer_url, explorer_dict = be_tuple
+    kind_str = explorer_dict.get(kind)
+    if kind_str is None:
+        return
+    if explorer_url[-1] != "/":
+        explorer_url += "/"
+    url_parts = [explorer_url, kind_str, item]
+    return ''.join(url_parts)
 
-
-def maybe_extract_lightning_payment_identifier(data: str) -> Optional[str]:
-    data = data.strip()  # whitespaces
-    data = data.lower()
-    if data.startswith(LIGHTNING_URI_SCHEME + ':ln'):
-        cut_prefix = LIGHTNING_URI_SCHEME + ':'
-        data = data[len(cut_prefix):]
-    if data.startswith('ln'):
-        return data
-    return None
-
-
-def is_uri(data: str) -> bool:
-    data = data.lower()
-    if (data.startswith(LIGHTNING_URI_SCHEME + ":") or
-            data.startswith(BITCOIN_BIP21_URI_SCHEME + ':')):
-        return True
-    return False
-
+def ipfs_explorer_round_robin(config: 'SimpleConfig', kind: str, item: str) -> Iterable[Tuple[str, str]]:
+    be_tuple = ipfs_explorer_tuple(config)
+    current_explorer = ipfs_explorer(config)
+    if be_tuple:
+        yield current_explorer, ipfs_url_from_tuple(be_tuple, kind, item)
+    keys = [k for k in ipfs_explorer_info().keys()]
+    for k in keys:
+        if k == current_explorer: continue
+        tup = ipfs_explorer_info().get(k, None)
+        if tup:
+            yield k, ipfs_url_from_tuple(tup, kind, item)
 
 # Python bug (http://bugs.python.org/issue1927) causes raw_input
 # to be redirected improperly between stdin/stderr on Unix systems
-# TODO: py3
+#TODO: py3
 def raw_input(prompt=None):
     if prompt:
         sys.stdout.write(prompt)
     return builtin_raw_input()
-
 
 builtin_raw_input = builtins.input
 builtins.input = raw_input
@@ -1490,13 +1088,13 @@ builtins.input = raw_input
 def parse_json(message):
     # TODO: check \r\n pattern
     n = message.find(b'\n')
-    if n == -1:
+    if n==-1:
         return None, message
     try:
         j = json.loads(message[0:n].decode('utf8'))
-    except:
+    except Exception:
         j = None
-    return j, message[n + 1:]
+    return j, message[n+1:]
 
 
 def setup_thread_excepthook():
@@ -1538,7 +1136,7 @@ def read_json_file(path):
     try:
         with open(path, 'r', encoding='utf-8') as f:
             data = json.loads(f.read())
-    # backwards compatibility for JSONDecodeError
+    #backwards compatibility for JSONDecodeError
     except ValueError:
         _logger.exception('')
         raise FileImportFailed(_("Invalid JSON code."))
@@ -1557,19 +1155,41 @@ def write_json_file(path, data):
         raise FileExportFailed(e)
 
 
+def os_chmod(path, mode):
+    """os.chmod aware of tmpfs"""
+    try:
+        os.chmod(path, mode)
+    except OSError as e:
+        xdg_runtime_dir = os.environ.get("XDG_RUNTIME_DIR", None)
+        if xdg_runtime_dir and is_subpath(path, xdg_runtime_dir):
+            _logger.info(f"Tried to chmod in tmpfs. Skipping... {e!r}")
+        else:
+            raise
+
+
 def make_dir(path, allow_symlink=True):
     """Make directory if it does not yet exist."""
     if not os.path.exists(path):
         if not allow_symlink and os.path.islink(path):
             raise Exception('Dangling link: ' + path)
         os.mkdir(path)
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+        os_chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+
+def is_subpath(long_path: str, short_path: str) -> bool:
+    """Returns whether long_path is a sub-path of short_path."""
+    try:
+        common = os.path.commonpath([long_path, short_path])
+    except ValueError:
+        return False
+    short_path = standardize_path(short_path)
+    common     = standardize_path(common)
+    return short_path == common
 
 
 def log_exceptions(func):
     """Decorator to log AND re-raise exceptions."""
     assert asyncio.iscoroutinefunction(func), 'func needs to be a coroutine'
-
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         self = args[0] if len(args) > 0 else None
@@ -1584,45 +1204,115 @@ def log_exceptions(func):
             except BaseException as e2:
                 print(f"logging exception raised: {repr(e2)}... orig exc: {repr(e)} in {func.__name__}")
             raise
-
     return wrapper
 
 
 def ignore_exceptions(func):
     """Decorator to silently swallow all exceptions."""
     assert asyncio.iscoroutinefunction(func), 'func needs to be a coroutine'
-
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         try:
             return await func(*args, **kwargs)
         except Exception as e:
             pass
-
     return wrapper
 
 
 def with_lock(func):
     """Decorator to enforce a lock on a function call."""
-
     def func_wrapper(self, *args, **kwargs):
         with self.lock:
             return func(self, *args, **kwargs)
-
     return func_wrapper
 
 
 class TxMinedInfo(NamedTuple):
-    height: int  # height of block that mined tx
-    conf: Optional[int] = None  # number of confirmations, SPV verified (None means unknown)
-    timestamp: Optional[int] = None  # timestamp of block that mined tx
-    txpos: Optional[int] = None  # position of tx in serialized block
+    height: int                        # height of block that mined tx
+    conf: Optional[int] = None         # number of confirmations, SPV verified. >=0, or None (None means unknown)
+    timestamp: Optional[int] = None    # timestamp of block that mined tx
+    txpos: Optional[int] = None        # position of tx in serialized block
     header_hash: Optional[str] = None  # hash of block that mined tx
+    wanted_height: Optional[int] = None  # in case of timelock, min abs block height
+
+    def short_id(self) -> Optional[str]:
+        if self.txpos is not None and self.txpos >= 0:
+            assert self.height > 0
+            return f"{self.height}x{self.txpos}"
+        return None
+
+    def is_local_like(self) -> bool:
+        """Returns whether the tx is local-like (LOCAL/FUTURE)."""
+        from .address_synchronizer import TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT
+        if self.height > 0:
+            return False
+        if self.height in (TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT):
+            return False
+        return True
+
+
+class ShortID(bytes):
+
+    def __repr__(self):
+        return f"<ShortID: {format_short_id(self)}>"
+
+    def __str__(self):
+        return format_short_id(self)
+
+    @classmethod
+    def from_components(cls, block_height: int, tx_pos_in_block: int, output_index: int) -> 'ShortID':
+        bh = block_height.to_bytes(3, byteorder='big')
+        tpos = tx_pos_in_block.to_bytes(3, byteorder='big')
+        oi = output_index.to_bytes(2, byteorder='big')
+        return ShortID(bh + tpos + oi)
+
+    @classmethod
+    def from_str(cls, scid: str) -> 'ShortID':
+        """Parses a formatted scid str, e.g. '643920x356x0'."""
+        components = scid.split("x")
+        if len(components) != 3:
+            raise ValueError(f"failed to parse ShortID: {scid!r}")
+        try:
+            components = [int(x) for x in components]
+        except ValueError:
+            raise ValueError(f"failed to parse ShortID: {scid!r}") from None
+        return ShortID.from_components(*components)
+
+    @classmethod
+    def normalize(cls, data: Union[None, str, bytes, 'ShortID']) -> Optional['ShortID']:
+        if isinstance(data, ShortID) or data is None:
+            return data
+        if isinstance(data, str):
+            assert len(data) == 16
+            return ShortID.fromhex(data)
+        if isinstance(data, (bytes, bytearray)):
+            assert len(data) == 8
+            return ShortID(data)
+
+    @property
+    def block_height(self) -> int:
+        return int.from_bytes(self[:3], byteorder='big')
+
+    @property
+    def txpos(self) -> int:
+        return int.from_bytes(self[3:6], byteorder='big')
+
+    @property
+    def output_index(self) -> int:
+        return int.from_bytes(self[6:8], byteorder='big')
+
+
+def format_short_id(short_channel_id: Optional[bytes]):
+    if not short_channel_id:
+        return _('Not yet available')
+    return str(int.from_bytes(short_channel_id[:3], 'big')) \
+        + 'x' + str(int.from_bytes(short_channel_id[3:6], 'big')) \
+        + 'x' + str(int.from_bytes(short_channel_id[6:], 'big'))
 
 
 def make_aiohttp_session(proxy: Optional[dict], headers=None, timeout=None):
     if headers is None:
-        headers = {'User-Agent': 'Electrum-Neurai'}
+        headers = {'User-Agent': 'Electrum'}
     if timeout is None:
         # The default timeout is high intentionally.
         # DNS on some systems can be really slow, see e.g. #5337
@@ -1667,6 +1357,7 @@ class OldTaskGroup(aiorpcx.TaskGroup):
         await group.spawn(task1())
         await group.spawn(task2())
     ```
+    # TODO see if we can migrate to asyncio.timeout, introduced in python 3.11, and use stdlib instead of aiorpcx.curio...
     """
     async def join(self):
         if self._wait is all:
@@ -1703,6 +1394,7 @@ class OldTaskGroup(aiorpcx.TaskGroup):
 # see https://github.com/kyuupichan/aiorpcX/issues/44
 # see https://github.com/aio-libs/async-timeout/issues/229
 # see https://bugs.python.org/issue42130 and https://bugs.python.org/issue45098
+# TODO see if we can migrate to asyncio.timeout, introduced in python 3.11, and use stdlib instead of aiorpcx.curio...
 def _aiorpcx_monkeypatched_set_new_deadline(task, deadline):
     def timeout_task():
         task._orig_cancel()
@@ -1716,7 +1408,56 @@ def _aiorpcx_monkeypatched_set_new_deadline(task, deadline):
         task.cancel = mycancel
     task._deadline_handle = task._loop.call_at(deadline, timeout_task)
 
-aiorpcx.curio._set_new_deadline = _aiorpcx_monkeypatched_set_new_deadline
+
+def _aiorpcx_monkeypatched_set_task_deadline(task, deadline):
+    ret = _aiorpcx_orig_set_task_deadline(task, deadline)
+    task._externally_cancelled = None
+    return ret
+
+
+def _aiorpcx_monkeypatched_unset_task_deadline(task):
+    if hasattr(task, "_orig_cancel"):
+        task.cancel = task._orig_cancel
+        del task._orig_cancel
+    return _aiorpcx_orig_unset_task_deadline(task)
+
+
+_aiorpcx_orig_set_task_deadline    = aiorpcx.curio._set_task_deadline
+_aiorpcx_orig_unset_task_deadline  = aiorpcx.curio._unset_task_deadline
+
+aiorpcx.curio._set_new_deadline    = _aiorpcx_monkeypatched_set_new_deadline
+aiorpcx.curio._set_task_deadline   = _aiorpcx_monkeypatched_set_task_deadline
+aiorpcx.curio._unset_task_deadline = _aiorpcx_monkeypatched_unset_task_deadline
+
+
+async def wait_for2(fut: Awaitable, timeout: Union[int, float, None]):
+    """Replacement for asyncio.wait_for,
+     due to bugs: https://bugs.python.org/issue42130 and https://github.com/python/cpython/issues/86296 ,
+     which are only fixed in python 3.12+.
+     """
+    if sys.version_info[:3] >= (3, 12):
+        return await asyncio.wait_for(fut, timeout)
+    else:
+        async with async_timeout(timeout):
+            return await asyncio.ensure_future(fut, loop=get_running_loop())
+
+
+if hasattr(asyncio, 'timeout'):  # python 3.11+
+    async_timeout = asyncio.timeout
+else:
+    class TimeoutAfterAsynciolike(aiorpcx.curio.TimeoutAfter):
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            try:
+                await super().__aexit__(exc_type, exc_value, traceback)
+            except (aiorpcx.TaskTimeout, aiorpcx.UncaughtTimeoutError):
+                raise asyncio.TimeoutError from None
+            except aiorpcx.TimeoutCancellationError:
+                raise asyncio.CancelledError from None
+
+    def async_timeout(delay: Union[int, float, None]):
+        if delay is None:
+            return nullcontext()
+        return TimeoutAfterAsynciolike(delay)
 
 
 class NetworkJobOnDefaultServer(Logger, ABC):
@@ -1724,7 +1465,6 @@ class NetworkJobOnDefaultServer(Logger, ABC):
     interface. Every time the main interface changes, the job is
     restarted, and some of its internals are reset.
     """
-
     def __init__(self, network: 'Network'):
         Logger.__init__(self)
         self.network = network
@@ -1748,8 +1488,20 @@ class NetworkJobOnDefaultServer(Logger, ABC):
         self.reset_request_counters()
 
     async def _start(self, interface: 'Interface'):
+        self.logger.debug(f"starting. interface.server={repr(str(interface.server))}")
         self.interface = interface
-        await interface.taskgroup.spawn(self._run_tasks(taskgroup=self.taskgroup))
+
+        taskgroup = self.taskgroup
+        async def run_tasks_wrapper():
+            self.logger.debug(f"starting taskgroup ({hex(id(taskgroup))}).")
+            try:
+                await self._run_tasks(taskgroup=taskgroup)
+            except Exception as e:
+                self.logger.error(f"taskgroup died ({hex(id(taskgroup))}). exc={e!r}")
+                raise
+            finally:
+                self.logger.debug(f"taskgroup stopped ({hex(id(taskgroup))}).")
+        await interface.taskgroup.spawn(run_tasks_wrapper)
 
     @abstractmethod
     async def _run_tasks(self, *, taskgroup: OldTaskGroup) -> None:
@@ -1762,6 +1514,7 @@ class NetworkJobOnDefaultServer(Logger, ABC):
             raise asyncio.CancelledError()
 
     async def stop(self, *, full_shutdown: bool = True):
+        self.logger.debug(f"stopping. {full_shutdown=}")
         if full_shutdown:
             unregister_callback(self._restart)
         await self.taskgroup.cancel_remaining()
@@ -1791,12 +1544,47 @@ class NetworkJobOnDefaultServer(Logger, ABC):
         return s
 
 
+def detect_tor_socks_proxy() -> Optional[Tuple[str, int]]:
+    # Probable ports for Tor to listen at
+    candidates = [
+        ("127.0.0.1", 9050),
+        ("127.0.0.1", 9150),
+    ]
+    for net_addr in candidates:
+        if is_tor_socks_port(*net_addr):
+            return net_addr
+    return None
+
+
+def is_tor_socks_port(host: str, port: int) -> bool:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            s.connect((host, port))
+            # mimic "tor-resolve 0.0.0.0".
+            # see https://github.com/spesmilo/electrum/issues/7317#issuecomment-1369281075
+            # > this is a socks5 handshake, followed by a socks RESOLVE request as defined in
+            # > [tor's socks extension spec](https://github.com/torproject/torspec/blob/7116c9cdaba248aae07a3f1d0e15d9dd102f62c5/socks-extensions.txt#L63),
+            # > resolving 0.0.0.0, which being an IP, tor resolves itself without needing to ask a relay.
+            s.send(b'\x05\x01\x00\x05\xf0\x00\x03\x070.0.0.0\x00\x00')
+            if s.recv(1024) == b'\x05\x00\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00':
+                return True
+    except socket.error:
+        pass
+    return False
+
+
+AS_LIB_USER_I_WANT_TO_MANAGE_MY_OWN_ASYNCIO_LOOP = False  # used by unit tests
+
 _asyncio_event_loop = None  # type: Optional[asyncio.AbstractEventLoop]
 def get_asyncio_loop() -> asyncio.AbstractEventLoop:
     """Returns the global asyncio event loop we use."""
-    if _asyncio_event_loop is None:
-        raise Exception("event loop not created yet")
-    return _asyncio_event_loop
+    if loop := _asyncio_event_loop:
+        return loop
+    if AS_LIB_USER_I_WANT_TO_MANAGE_MY_OWN_ASYNCIO_LOOP:
+        if loop := get_running_loop():
+            return loop
+    raise Exception("event loop not created yet")
 
 
 def create_and_start_event_loop() -> Tuple[asyncio.AbstractEventLoop,
@@ -1844,13 +1632,21 @@ def create_and_start_event_loop() -> Tuple[asyncio.AbstractEventLoop,
             _asyncio_event_loop = None
 
     loop.set_exception_handler(on_exception)
-    # loop.set_debug(1)
+    # loop.set_debug(True)
     stopping_fut = loop.create_future()
     loop_thread = threading.Thread(
         target=run_event_loop,
         name='EventLoop',
     )
     loop_thread.start()
+    # Wait until the loop actually starts.
+    # On a slow PC, or with a debugger attached, this can take a few dozens of ms,
+    # and if we returned without a running loop, weird things can happen...
+    t0 = time.monotonic()
+    while not loop.is_running():
+        time.sleep(0.01)
+        if time.monotonic() - t0 > 5:
+            raise Exception("been waiting for 5 seconds but asyncio loop would not start!")
     return loop, stopping_fut, loop_thread
 
 
@@ -1981,26 +1777,28 @@ def resolve_dns_srv(host: str):
             'host': str(srv.target),
             'port': srv.port,
         }
-
     return [dict_from_srv_record(srv) for srv in srv_records]
 
 
 def randrange(bound: int) -> int:
     """Return a random integer k such that 1 <= k < bound, uniformly
-    distributed across that range."""
+    distributed across that range.
+    This is guaranteed to be cryptographically strong.
+    """
     # secrets.randbelow(bound) returns a random int: 0 <= r < bound,
     # hence transformations:
     return secrets.randbelow(bound - 1) + 1
 
 
-class CallbackManager:
+class CallbackManager(Logger):
     # callbacks set by the GUI or any thread
     # guarantee: the callbacks will always get triggered from the asyncio thread.
 
     def __init__(self):
+        Logger.__init__(self)
         self.callback_lock = threading.Lock()
-        self.callbacks = defaultdict(list)  # note: needs self.callback_lock
-        self.asyncio_loop = None
+        self.callbacks = defaultdict(list)      # note: needs self.callback_lock
+        self._running_cb_futs = set()
 
     def register_callback(self, func, events):
         with self.callback_lock:
@@ -2018,21 +1816,30 @@ class CallbackManager:
         Can be called from any thread. The callback itself will get scheduled
         on the event loop.
         """
-        if self.asyncio_loop is None:
-            self.asyncio_loop = get_asyncio_loop()
-            assert self.asyncio_loop.is_running(), "event loop not running"
+        loop = get_asyncio_loop()
+        assert loop.is_running(), "event loop not running"
         with self.callback_lock:
             callbacks = self.callbacks[event][:]
         for callback in callbacks:
-            # FIXME: if callback throws, we will lose the traceback
-            if asyncio.iscoroutinefunction(callback):
-                asyncio.run_coroutine_threadsafe(callback(*args), self.asyncio_loop)
-            elif get_running_loop() == self.asyncio_loop:
-                # run callback immediately, so that it is guaranteed
-                # to have been executed when this method returns
-                callback(*args)
-            else:
-                self.asyncio_loop.call_soon_threadsafe(callback, *args)
+            if asyncio.iscoroutinefunction(callback):  # async cb
+                fut = asyncio.run_coroutine_threadsafe(callback(*args), loop)
+                # keep strong references around to avoid GC issues:
+                self._running_cb_futs.add(fut)
+                def on_done(fut_: concurrent.futures.Future):
+                    assert fut_.done()
+                    self._running_cb_futs.remove(fut_)
+                    if exc := fut_.exception():
+                        self.logger.error(f"cb errored. {event=}. {exc=}", exc_info=exc)
+                fut.add_done_callback(on_done)
+            else:  # non-async cb
+                # note: the cb needs to run in the asyncio thread
+                if get_running_loop() == loop:
+                    # run callback immediately, so that it is guaranteed
+                    # to have been executed when this method returns
+                    callback(*args)
+                else:
+                    # note: if cb raises, asyncio will log the exception
+                    loop.call_soon_threadsafe(callback, *args)
 
 
 callback_mgr = CallbackManager()
@@ -2055,12 +1862,12 @@ class EventListener:
 
     def register_callbacks(self):
         for name, method in self._list_callbacks():
-            _logger.info(f'registering callback {method}')
+            #_logger.debug(f'registering callback {method}')
             register_callback(method, [name])
 
     def unregister_callbacks(self):
         for name, method in self._list_callbacks():
-            _logger.info(f'unregistering callback {method}')
+            #_logger.debug(f'unregistering callback {method}')
             unregister_callback(method)
 
 
@@ -2070,6 +1877,7 @@ def event_listener(func):
     classpath = f"{func.__module__}.{classname}"
     _event_listeners[classpath].add(method_name)
     return func
+
 
 _NetAddrType = TypeVar("_NetAddrType")
 
@@ -2192,12 +2000,10 @@ class JsonRPCClient:
     def add_method(self, endpoint):
         async def coro(*args):
             return await self.request(endpoint, *args)
-
         setattr(self, endpoint, coro)
 
 
 T = TypeVar('T')
-
 
 def random_shuffled_copy(x: Iterable[T]) -> List[T]:
     """Returns a shuffled copy of the input."""
@@ -2255,3 +2061,53 @@ def get_running_loop() -> Optional[asyncio.AbstractEventLoop]:
         return asyncio.get_running_loop()
     except RuntimeError:
         return None
+
+
+def error_text_str_to_safe_str(err: str) -> str:
+    """Converts an untrusted error string to a sane printable ascii str.
+    Never raises.
+    """
+    return error_text_bytes_to_safe_str(err.encode("ascii", errors='backslashreplace'))
+
+
+def error_text_bytes_to_safe_str(err: bytes) -> str:
+    """Converts an untrusted error bytes text to a sane printable ascii str.
+    Never raises.
+
+    Note that naive ascii conversion would be insufficient. Fun stuff:
+    >>> b = b"my_long_prefix_blabla" + 21 * b"\x08" + b"malicious_stuff"
+    >>> s = b.decode("ascii")
+    >>> print(s)
+    malicious_stuffblabla
+    """
+    # convert to ascii, to get rid of unicode stuff
+    ascii_text = err.decode("ascii", errors='backslashreplace')
+    # do repr to handle ascii special chars (especially when printing/logging the str)
+    return repr(ascii_text)
+
+
+class ByteReader:
+    def __init__(self, data: bytes):
+        self.data = data
+        self.cursor = 0
+
+    def read_bytes(self, length: int) -> bytes:
+        if length > len(self.data) - self.cursor: raise IndexError(f'Out of bounds {self.cursor} -> {length} ({len(self.data)})')
+        b = self.data[self.cursor: self.cursor + length]
+        self.cursor += length
+        return b
+    
+    def read_byte_as_int(self) -> int:
+        b = self.read_bytes(1)
+        return b[0]
+    
+    def can_read_amount(self, length: int) -> bool:
+        return length <= len(self.data) - self.cursor
+
+class SearchableListGrouping:
+    def __init__(self, *args):
+        self.lists = args
+    
+    def filter(self, x):
+        for _list in self.lists:
+            _list.filter(x)

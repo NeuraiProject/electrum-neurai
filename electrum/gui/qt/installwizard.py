@@ -23,10 +23,10 @@ from electrum.base_wizard import BaseWizard, HWD_SETUP_DECRYPT_WALLET, GoBack, R
 from electrum.network import Network
 from electrum.i18n import _
 
-from .seed_dialog import SeedLayout, KeysLayout, SeedLayoutDisplay, SeedConfirmDisplay
+from .seed_dialog import SeedLayout, KeysLayout
 from .network_dialog import NetworkChoiceLayout
 from .util import (MessageBoxMixin, Buttons, icon_path, ChoicesLayout, WWLabel,
-                   InfoButton, char_width_in_lineedit, PasswordLineEdit)
+                   InfoButton, char_width_in_lineedit, PasswordLineEdit, font_height)
 from .password_dialog import PasswordLayout, PasswordLayoutForHW, PW_NEW
 from .bip39_recovery_dialog import Bip39RecoveryDialog
 from electrum.plugin import run_hook, Plugins
@@ -45,10 +45,10 @@ MSG_HW_STORAGE_ENCRYPTION = _("Set wallet file encryption.") + '\n'\
                           + _("Note: If you enable this setting, you will need your hardware device to open your wallet.")
 WIF_HELP_TEXT = (_('WIF keys are typed in Electrum, based on script type.') + '\n\n' +
                  _('A few examples') + ':\n' +
-                 'p2pkh:T8vPbnoUs5Ci...       \t-> MWLEbTAW6...\n' +
-                 'p2wpkh-p2sh:T8vPbnoUs5Ci... \t-> PStEWT3Zs...\n' +
-                 'p2wpkh:T8vPbnoUs5Ci...      \t-> mona1q7cg...')
-# note: full key is T8vPbnoUs5CiEBHcnne1wXuR9V5ft16vRpuvqWTH83tFxT8Uacvn
+                 'p2pkh:KxZcY47uGp9a...       \t-> 1DckmggQM...\n' +
+                 'p2wpkh-p2sh:KxZcY47uGp9a... \t-> 3NhNeZQXF...\n' +
+                 'p2wpkh:KxZcY47uGp9a...      \t-> bc1q3fjfk...')
+# note: full key is KxZcY47uGp9aVQAb6VVvuBs8SwHKgkSR2DbZUzjDzXf2N2GPhG9n
 MSG_PASSPHRASE_WARN_ISSUE4566 = _("Warning") + ": "\
                               + _("You have multiple consecutive whitespaces or leading/trailing "
                                   "whitespaces in your passphrase.") + " " \
@@ -58,10 +58,10 @@ MSG_PASSPHRASE_WARN_ISSUE4566 = _("Warning") + ": "\
 
 
 class CosignWidget(QWidget):
-    size = 120
 
     def __init__(self, m, n):
         QWidget.__init__(self)
+        self.size = max(120, 9 * font_height())
         self.R = QRect(0, 0, self.size, self.size)
         self.setGeometry(self.R)
         self.setMinimumHeight(self.size)
@@ -156,7 +156,7 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         self.app = app
         self.config = config
         self.gui_thread = gui_object.gui_thread
-        self.setMinimumSize(600, 490)
+        self.setMinimumSize(600, 400)
         self.accept_signal.connect(self.accept)
         self.title = QLabel()
         self.main_widget = QWidget()
@@ -196,7 +196,7 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         hbox.setStretchFactor(scroll, 1)
         outer_vbox.addLayout(hbox)
         outer_vbox.addLayout(Buttons(self.back_button, self.next_button))
-        self.set_icon('electrum-neurai.png')
+        self.set_icon('electrum.png')
         self.show()
         self.raise_()
         self.refresh_gui()  # Need for QT on MacOSX.  Lame.
@@ -393,7 +393,7 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
             self.run(action)
             for k, v in self.data.items():
                 db.put(k, v)
-            db.write(storage)
+            db.write()
             return
 
         if db.requires_upgrade():
@@ -457,14 +457,15 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         self.exec_layout(slayout, title, next_enabled=False)
         return slayout.get_text()
 
-    def seed_input(self, title, message, is_seed, options, full=True):
-        slayout = SeedConfirmDisplay(
+    def seed_input(self, title, message, is_seed, options, seed_type):
+        slayout = SeedLayout(
+            seed_type=self.seed_type,
             title=message,
             is_seed=is_seed,
             options=options,
             parent=self,
             config=self.config,
-            full_check=full
+            base_seed_type=seed_type,
         )
         self.exec_layout(slayout, title, next_enabled=False)
         return slayout.get_seed(), slayout.seed_type, slayout.is_ext
@@ -490,19 +491,19 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
 
     @wizard_dialog
     def restore_seed_dialog(self, run_next, test):
-        options = []
+        options = ['auto']
         if self.opt_ext:
             options.append('ext')
         if self.opt_bip39:
             options.append('bip39')
-        #if self.opt_slip39:
-        #    options.append('slip39')
+        if self.opt_slip39:
+            options.append('slip39')
         title = _('Enter Seed')
         message = _('Please enter your seed phrase in order to restore your wallet.')
-        return self.seed_input(title, message, test, options)
+        return self.seed_input(title, message, test, options, None)
 
     @wizard_dialog
-    def confirm_seed_dialog(self, run_next, seed, test):
+    def confirm_seed_dialog(self, run_next, seed, test, seed_type):
         self.app.clipboard().clear()
         title = _('Confirm Seed')
         message = ' '.join([
@@ -510,30 +511,22 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
             _('If you lose your seed, your money will be permanently lost.'),
             _('To make sure that you have properly saved your seed, please retype it here.')
         ])
-        seed, seed_type, is_ext = self.seed_input(title, message, test, None, False)
+        seed, seed_type, is_ext = self.seed_input(title, message, test, None, seed_type)
         return seed
 
     @wizard_dialog
-    def show_seed_dialog(self, run_next, seed_text, electrum_seed_type):
+    def show_seed_dialog(self, run_next, seed_text):
         title = _("Your wallet generation seed is:")
-        slayout = SeedLayoutDisplay(
+        slayout = SeedLayout(
+            seed_type=self.seed_type,
             seed=seed_text,
             title=title,
-            options=['ext'],
             msg=True,
+            options=['ext', 'bip39'],
             config=self.config,
-            electrum_seed_type=electrum_seed_type
         )
         self.exec_layout(slayout)
-        if slayout.seed_type == 'electrum':
-            self.opt_bip39 = False  # False
-            self.opt_ext = True  # True
-        else:
-            self.opt_bip39 = True  # False
-            self.opt_ext = True  # True
-        self.seed = slayout.get_seed()
-        self.seed_type = slayout.seed_type
-        return slayout.is_ext #and slayout.seed_type == 'electrum'
+        return ' '.join(slayout.get_seed_words()), slayout.is_ext, slayout.seed_type
 
     def pw_layout(self, msg, kind, force_disable_encrypt_cb):
         pw_layout = PasswordLayout(
@@ -722,7 +715,6 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         return line.text()
 
     @wizard_dialog
-    #TODO: Implement
     def show_xpub_dialog(self, xpub, run_next):
         msg = ' '.join([
             _("Here is your master public key."),
@@ -730,7 +722,8 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         ])
         vbox = QVBoxLayout()
         layout = SeedLayout(
-            xpub,
+            seed_type=None,
+            seed=xpub,
             title=msg,
             icon=False,
             for_seed_words=False,
@@ -757,10 +750,10 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
             nlayout = NetworkChoiceLayout(network, self.config, wizard=True)
             if self.exec_layout(nlayout.layout()):
                 nlayout.accept()
-                self.config.set_key('auto_connect', network.auto_connect, True)
+                self.config.NETWORK_AUTO_CONNECT = network.auto_connect
         else:
             network.auto_connect = True
-            self.config.set_key('auto_connect', True, True)
+            self.config.NETWORK_AUTO_CONNECT = True
 
     @wizard_dialog
     def multisig_dialog(self, run_next):

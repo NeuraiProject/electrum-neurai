@@ -23,7 +23,7 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-from enum import IntEnum
+import enum
 from typing import Sequence, TYPE_CHECKING
 
 from PyQt5.QtCore import Qt, QItemSelectionModel
@@ -36,9 +36,11 @@ from electrum.util import format_time
 from electrum.invoices import Invoice, PR_UNPAID, PR_PAID, PR_INFLIGHT, PR_FAILED
 from electrum.lnutil import HtlcLog
 
-from .util import MyTreeView, read_QIcon, MySortModel, pr_icons
+from .util import read_QIcon, pr_icons
 from .util import CloseButton, Buttons
 from .util import WindowModalDialog
+
+from .my_treeview import MyTreeView, MySortModel
 
 if TYPE_CHECKING:
     from .main_window import ElectrumWindow
@@ -53,12 +55,12 @@ ROLE_SORT_ORDER = Qt.UserRole + 2
 class InvoiceList(MyTreeView):
     key_role = ROLE_REQUEST_ID
 
-    class Columns(IntEnum):
-        DATE = 0
-        DESCRIPTION = 1
-        ASSET = 2
-        AMOUNT = 3
-        STATUS = 4
+    class Columns(MyTreeView.BaseColumnsEnum):
+        DATE = enum.auto()
+        DESCRIPTION = enum.auto()
+        ASSET = enum.auto()
+        AMOUNT = enum.auto()
+        STATUS = enum.auto()
 
     headers = {
         Columns.DATE: _('Date'),
@@ -67,12 +69,14 @@ class InvoiceList(MyTreeView):
         Columns.AMOUNT: _('Amount'),
         Columns.STATUS: _('Status'),
     }
-    filter_columns = [Columns.DATE, Columns.DESCRIPTION, Columns.ASSET, Columns.AMOUNT]
+    filter_columns = [Columns.DATE, Columns.DESCRIPTION, Columns.AMOUNT, Columns.ASSET]
 
     def __init__(self, send_tab: 'SendTab'):
         window = send_tab.window
-        super().__init__(window, self.create_menu,
-                         stretch_column=self.Columns.DESCRIPTION)
+        super().__init__(
+            main_window=window,
+            stretch_columns=[self.Columns.DESCRIPTION, self.Columns.ASSET],
+        )
         self.wallet = window.wallet
         self.send_tab = send_tab
         self.std_model = QStandardItemModel(self)
@@ -81,6 +85,10 @@ class InvoiceList(MyTreeView):
         self.setModel(self.proxy)
         self.setSortingEnabled(True)
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
+
+    def on_double_click(self, idx):
+        key = idx.sibling(idx.row(), self.Columns.DATE).data(ROLE_REQUEST_ID)
+        self.show_invoice(key)
 
     def refresh_row(self, key, row):
         assert row is not None
@@ -104,28 +112,24 @@ class InvoiceList(MyTreeView):
         self.std_model.clear()
         self.update_headers(self.__class__.headers)
         for idx, item in enumerate(self.wallet.get_unpaid_invoices()):
-            key = self.wallet.get_key_for_outgoing_invoice(item)
+            key = item.get_id()
             if item.is_lightning():
                 icon_name = 'lightning.png'
             else:
-                icon_name = 'neurai.png'
+                icon_name = 'bitcoin.png'
                 if item.bip70:
                     icon_name = 'seal.png'
             status = self.wallet.get_invoice_status(item)
-            status_str = item.get_status_str(status)
-            message = item.message
             amount = item.get_amount_sat()
-            asset_str = ""
-            if amount:
-                a = amount.assets
-                if a:
-                    asset_str, amount = list(a.items())[0]
-                else:
-                    amount = amount.xna_value
+            amount_str = self.main_window.format_amount(amount, whitespaces=True) if amount else ""
+            amount_str_nots = self.main_window.format_amount(amount, whitespaces=True, add_thousands_sep=False) if amount else ""
             timestamp = item.time or 0
-            date_str = format_time(timestamp) if timestamp else _('Unknown')
-            amount_str = self.parent.format_amount(amount, whitespaces=True)
-            labels = [date_str, message, asset_str, amount_str, status_str]
+            labels = [""] * len(self.Columns)
+            labels[self.Columns.DATE] = format_time(timestamp) if timestamp else _('Unknown')
+            labels[self.Columns.ASSET] = item.get_asset() or ''
+            labels[self.Columns.DESCRIPTION] = item.message
+            labels[self.Columns.AMOUNT] = amount_str
+            labels[self.Columns.STATUS] = item.get_status_str(status)
             items = [QStandardItem(e) for e in labels]
             self.set_editability(items)
             items[self.Columns.DATE].setIcon(read_QIcon(icon_name))
@@ -133,12 +137,20 @@ class InvoiceList(MyTreeView):
             items[self.Columns.DATE].setData(key, role=ROLE_REQUEST_ID)
             #items[self.Columns.DATE].setData(item.type, role=ROLE_REQUEST_TYPE)
             items[self.Columns.DATE].setData(timestamp, role=ROLE_SORT_ORDER)
+            items[self.Columns.AMOUNT].setData(amount_str_nots.strip(), role=self.ROLE_CLIPBOARD_DATA)
             self.std_model.insertRow(idx, items)
         self.filter()
         self.proxy.setDynamicSortFilter(True)
         # sort requests by date
         self.sortByColumn(self.Columns.DATE, Qt.DescendingOrder)
         self.hide_if_empty()
+
+    def show_invoice(self, key):
+        invoice = self.wallet.get_invoice(key)
+        if invoice.is_lightning():
+            self.main_window.show_lightning_invoice(invoice)
+        else:
+            self.main_window.show_onchain_invoice(invoice)
 
     def hide_if_empty(self):
         b = self.std_model.rowCount() > 0
@@ -166,16 +178,17 @@ class InvoiceList(MyTreeView):
         key = item_col0.data(ROLE_REQUEST_ID)
         invoice = self.wallet.get_invoice(key)
         menu = QMenu(self)
-        self.add_copy_menu(menu, idx)
-        if invoice.is_lightning():
-            menu.addAction(_("Details"), lambda: self.parent.show_lightning_invoice(invoice))
-        else:
-            if len(invoice.outputs) == 1:
-                menu.addAction(_("Copy Address"), lambda: self.parent.do_copy(invoice.get_address(), title='neurai Address'))
-            menu.addAction(_("Details"), lambda: self.parent.show_onchain_invoice(invoice))
+        menu.addAction(_("Details"), lambda: self.show_invoice(key))
+        copy_menu = self.add_copy_menu(menu, idx)
+        address = invoice.get_address()
+        if address:
+            copy_menu.addAction(_("Address"), lambda: self.main_window.do_copy(invoice.get_address(), title='Bitcoin Address'))
         status = wallet.get_invoice_status(invoice)
         if status == PR_UNPAID:
-            menu.addAction(_("Pay") + "...", lambda: self.send_tab.do_pay_invoice(invoice))
+            if bool(invoice.get_amount_sat()):
+                menu.addAction(_("Pay") + "...", lambda: self.send_tab.do_pay_invoice(invoice))
+            else:
+                menu.addAction(_("Pay") + "...", lambda: self.send_tab.do_edit_invoice(invoice))
         if status == PR_FAILED:
             menu.addAction(_("Retry"), lambda: self.send_tab.do_pay_invoice(invoice))
         if self.wallet.lnworker:
@@ -203,5 +216,6 @@ class InvoiceList(MyTreeView):
 
     def delete_invoices(self, keys):
         for key in keys:
-            self.wallet.delete_invoice(key)
+            self.wallet.delete_invoice(key, write_to_disk=False)
             self.delete_item(key)
+        self.wallet.save_db()

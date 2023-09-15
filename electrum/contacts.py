@@ -21,17 +21,25 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 import re
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 import dns
 import threading
 from dns.exception import DNSException
 
-from . import neurai
+from . import bitcoin
 from . import dnssec
 from .util import read_json_file, write_json_file, to_string
-from .logging import Logger
+from .logging import Logger, get_logger
 from .util import trigger_callback
+
+
+_logger = get_logger(__name__)
+
+
+class AliasNotFoundException(Exception):
+    pass
+
 
 class Contacts(dict, Logger):
 
@@ -41,12 +49,12 @@ class Contacts(dict, Logger):
         d = self.db.get('contacts', {})
         try:
             self.update(d)
-        except:
+        except Exception:
             return
         # backward compatibility
         for k, v in self.items():
             _type, n = v
-            if _type == 'address' and neurai.is_address(n):
+            if _type == 'address' and bitcoin.is_address(n):
                 self.pop(k)
                 self[n] = ('address', k)
 
@@ -73,7 +81,7 @@ class Contacts(dict, Logger):
             return res
 
     def resolve(self, k):
-        if neurai.is_address(k):
+        if bitcoin.is_address(k):
             return {
                 'address': k,
                 'type': 'address'
@@ -85,7 +93,13 @@ class Contacts(dict, Logger):
                     'address': addr,
                     'type': 'contact'
                 }
-        out = self.resolve_openalias(k)
+        if openalias := self.resolve_openalias(k):
+            return openalias
+        raise AliasNotFoundException("Invalid Bitcoin address or alias", k)
+
+    @classmethod
+    def resolve_openalias(cls, url: str) -> Dict[str, Any]:
+        out = cls._resolve_openalias(url)
         if out:
             address, name, validated = out
             return {
@@ -94,52 +108,65 @@ class Contacts(dict, Logger):
                 'type': 'openalias',
                 'validated': validated
             }
-        raise Exception("Invalid neurai address or alias", k)
+        return {}
+
+    def by_name(self, name):
+        for k in self.keys():
+            _type, addr = self[k]
+            if addr.casefold() == name.casefold():
+                return {
+                    'name': addr,
+                    'type': _type,
+                    'address': k
+                }
+        return None
 
     def fetch_openalias(self, config):
         self.alias_info = None
-        alias = config.get('alias')
+        alias = config.OPENALIAS_ID
         if alias:
             alias = str(alias)
             def f():
-                self.alias_info = self.resolve_openalias(alias)
+                self.alias_info = self._resolve_openalias(alias)
                 trigger_callback('alias_received')
             t = threading.Thread(target=f)
             t.daemon = True
             t.start()
 
-    def resolve_openalias(self, url: str) -> Optional[Tuple[str, str, bool]]:
+    @classmethod
+    def _resolve_openalias(cls, url: str) -> Optional[Tuple[str, str, bool]]:
         # support email-style addresses, per the OA standard
         url = url.replace('@', '.')
         try:
             records, validated = dnssec.query(url, dns.rdatatype.TXT)
         except DNSException as e:
-            self.logger.info(f'Error resolving openalias: {repr(e)}')
+            _logger.info(f'Error resolving openalias: {repr(e)}')
             return None
-        prefix = 'xna'
+        prefix = 'btc'
         for record in records:
             string = to_string(record.strings[0], 'utf8')
             if string.startswith('oa1:' + prefix):
-                address = self.find_regex(string, r'recipient_address=([A-Za-z0-9]+)')
-                name = self.find_regex(string, r'recipient_name=([^;]+)')
+                address = cls.find_regex(string, r'recipient_address=([A-Za-z0-9]+)')
+                name = cls.find_regex(string, r'recipient_name=([^;]+)')
                 if not name:
                     name = address
                 if not address:
                     continue
                 return address, name, validated
 
-    def find_regex(self, haystack, needle):
+    @staticmethod
+    def find_regex(haystack, needle):
         regex = re.compile(needle)
         try:
             return regex.search(haystack).groups()[0]
         except AttributeError:
             return None
-            
+
     def _validate(self, data):
         for k, v in list(data.items()):
             if k == 'contacts':
                 return self._validate(v)
-            if not neurai.is_address(k):
+            if not bitcoin.is_address(k):
                 data.pop(k)
             else:
                 _type, _ = v

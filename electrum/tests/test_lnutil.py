@@ -1,7 +1,8 @@
 import unittest
 import json
 
-from electrum import neurai
+from electrum import bitcoin
+from electrum import ecc
 from electrum.json_db import StoredDict
 from electrum.lnutil import (RevocationStore, get_per_commitment_secret_from_seed, make_offered_htlc,
                              make_received_htlc, make_commitment, make_htlc_tx_witness, make_htlc_tx_output,
@@ -9,12 +10,15 @@ from electrum.lnutil import (RevocationStore, get_per_commitment_secret_from_see
                              derive_pubkey, make_htlc_tx, extract_ctn_from_tx, UnableToDeriveSecret,
                              get_compressed_pubkey_from_bech32, split_host_port, ConnStringFormatError,
                              ScriptHtlc, extract_nodeid, calc_fees_for_commitment_tx, UpdateAddHtlc, LnFeatures,
-                             ln_compare_features, IncompatibleLightningFeatures, ChannelType)
-from electrum.util import bh2u, bfh, MyEncoder
-from electrum.transaction import Transaction, PartialTransaction
+                             ln_compare_features, IncompatibleLightningFeatures, ChannelType,
+                             ImportedChannelBackupStorage)
+from electrum.util import bfh, MyEncoder
+from electrum.transaction import Transaction, PartialTransaction, Sighash
 from electrum.lnworker import LNWallet
+from electrum.wallet import restore_wallet_from_text, Standard_Wallet
+from electrum.simple_config import SimpleConfig
 
-from . import ElectrumTestCase
+from . import ElectrumTestCase, as_testnet
 
 
 funding_tx_id = '8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be'
@@ -447,7 +451,7 @@ class TestLNUtil(ElectrumTestCase):
             print("Passed ({})".format(test["name"]))
 
     def test_shachain_produce_consume(self):
-        seed = neurai.sha256(b"shachaintest")
+        seed = bitcoin.sha256(b"shachaintest")
         consumer = RevocationStore(StoredDict({}, None, []))
         for i in range(10000):
             secret = get_per_commitment_secret_from_seed(seed, RevocationStore.START_INDEX - i)
@@ -481,34 +485,34 @@ class TestLNUtil(ElectrumTestCase):
 
         htlc_cltv_timeout[2] = 502
         htlc_payment_preimage[2] = b"\x02" * 32
-        htlc[2] = make_offered_htlc(local_revocation_pubkey, remote_htlcpubkey, local_htlcpubkey, neurai.sha256(htlc_payment_preimage[2]))
+        htlc[2] = make_offered_htlc(local_revocation_pubkey, remote_htlcpubkey, local_htlcpubkey, bitcoin.sha256(htlc_payment_preimage[2]))
 
         htlc_cltv_timeout[3] = 503
         htlc_payment_preimage[3] = b"\x03" * 32
-        htlc[3] = make_offered_htlc(local_revocation_pubkey, remote_htlcpubkey, local_htlcpubkey, neurai.sha256(htlc_payment_preimage[3]))
+        htlc[3] = make_offered_htlc(local_revocation_pubkey, remote_htlcpubkey, local_htlcpubkey, bitcoin.sha256(htlc_payment_preimage[3]))
 
         htlc_cltv_timeout[0] = 500
         htlc_payment_preimage[0] = b"\x00" * 32
-        htlc[0] = make_received_htlc(local_revocation_pubkey, remote_htlcpubkey, local_htlcpubkey, neurai.sha256(htlc_payment_preimage[0]), htlc_cltv_timeout[0])
+        htlc[0] = make_received_htlc(local_revocation_pubkey, remote_htlcpubkey, local_htlcpubkey, bitcoin.sha256(htlc_payment_preimage[0]), htlc_cltv_timeout[0])
 
         htlc_cltv_timeout[1] = 501
         htlc_payment_preimage[1] = b"\x01" * 32
-        htlc[1] = make_received_htlc(local_revocation_pubkey, remote_htlcpubkey, local_htlcpubkey, neurai.sha256(htlc_payment_preimage[1]), htlc_cltv_timeout[1])
+        htlc[1] = make_received_htlc(local_revocation_pubkey, remote_htlcpubkey, local_htlcpubkey, bitcoin.sha256(htlc_payment_preimage[1]), htlc_cltv_timeout[1])
 
         htlc_cltv_timeout[4] = 504
         htlc_payment_preimage[4] = b"\x04" * 32
-        htlc[4] = make_received_htlc(local_revocation_pubkey, remote_htlcpubkey, local_htlcpubkey, neurai.sha256(htlc_payment_preimage[4]), htlc_cltv_timeout[4])
+        htlc[4] = make_received_htlc(local_revocation_pubkey, remote_htlcpubkey, local_htlcpubkey, bitcoin.sha256(htlc_payment_preimage[4]), htlc_cltv_timeout[4])
 
         remote_signature = "304402204fd4928835db1ccdfc40f5c78ce9bd65249b16348df81f0c44328dcdefc97d630220194d3869c38bc732dd87d13d2958015e2fc16829e74cd4377f84d215c0b70606"
         output_commit_tx = "02000000000101bef67e4e2fb9ddeeb3461973cd4c62abb35050b1add772995b820b584a488489000000000038b02b8007e80300000000000022002052bfef0479d7b293c27e0f1eb294bea154c63a3294ef092c19af51409bce0e2ad007000000000000220020403d394747cae42e98ff01734ad5c08f82ba123d3d9a620abda88989651e2ab5d007000000000000220020748eba944fedc8827f6b06bc44678f93c0f9e6078b35c6331ed31e75f8ce0c2db80b000000000000220020c20b5d1f8584fd90443e7b7b720136174fa4b9333c261d04dbbd012635c0f419a00f0000000000002200208c48d15160397c9731df9bc3b236656efb6665fbfe92b4a6878e88a499f741c4c0c62d0000000000160014ccf1af2f2aabee14bb40fa3851ab2301de843110e0a06a00000000002200204adb4e2f00643db396dd120d4e7dc17625f5f2c11a40d857accc862d6b7dd80e04004730440220275b0c325a5e9355650dc30c0eccfbc7efb23987c24b556b9dfdd40effca18d202206caceb2c067836c51f296740c7ae807ffcbfbf1dd3a0d56b6de9a5b247985f060147304402204fd4928835db1ccdfc40f5c78ce9bd65249b16348df81f0c44328dcdefc97d630220194d3869c38bc732dd87d13d2958015e2fc16829e74cd4377f84d215c0b7060601475221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae3e195220"
 
         htlc_obj = {}
         for num, msat in [(0, 1000 * 1000),
-            (2, 2000 * 1000),
-            (1, 2000 * 1000),
-            (3, 3000 * 1000),
-            (4, 4000 * 1000)]:
-            htlc_obj[num] = UpdateAddHtlc(amount_msat=msat, payment_hash=neurai.sha256(htlc_payment_preimage[num]), cltv_expiry=0, htlc_id=None, timestamp=0)
+                          (2, 2000 * 1000),
+                          (1, 2000 * 1000),
+                          (3, 3000 * 1000),
+                          (4, 4000 * 1000)]:
+            htlc_obj[num] = UpdateAddHtlc(amount_msat=msat, payment_hash=bitcoin.sha256(htlc_payment_preimage[num]), cltv_expiry=0, htlc_id=None, timestamp=0)
         htlcs = [ScriptHtlc(htlc[x], htlc_obj[x]) for x in range(5)]
 
         our_commit_tx = make_commitment(
@@ -575,7 +579,7 @@ class TestLNUtil(ElectrumTestCase):
             htlc_output_txid=our_commit_tx.txid(),
             htlc_output_index=htlc_output_index,
             amount_msat=amount_msat,
-            witness_script=bh2u(htlc))
+            witness_script=htlc.hex())
         our_htlc_tx = make_htlc_tx(
             cltv_expiry=cltv_timeout,
             inputs=our_htlc_tx_inputs,
@@ -724,8 +728,9 @@ class TestLNUtil(ElectrumTestCase):
         assert type(privkey) is bytes
         assert len(pubkey) == 33
         assert len(privkey) == 33
-        tx.sign({bh2u(pubkey): (privkey[:-1], True)})
-        tx.add_signature_to_txin(txin_idx=0, signing_pubkey=remote_pubkey.hex(), sig=remote_signature + "01")
+        tx.sign({pubkey.hex(): (privkey[:-1], True)})
+        sighash = Sighash.to_sigbytes(Sighash.ALL).hex()
+        tx.add_signature_to_txin(txin_idx=0, signing_pubkey=remote_pubkey.hex(), sig=remote_signature + sighash)
 
     def test_get_compressed_pubkey_from_bech32(self):
         self.assertEqual(b'\x03\x84\xef\x87\xd9d\xa2\xaaa7=\xff\xb8\xfe=t8[}>;\n\x13\xa8e\x8eo:\xf5Mi\xb5H',
@@ -752,11 +757,23 @@ class TestLNUtil(ElectrumTestCase):
             split_host_port("electrum.org:")
 
     def test_extract_nodeid(self):
+        pubkey1 = ecc.GENERATOR.get_public_key_bytes(compressed=True)
         with self.assertRaises(ConnStringFormatError):
             extract_nodeid("00" * 32 + "@localhost")
         with self.assertRaises(ConnStringFormatError):
             extract_nodeid("00" * 33 + "@")
+        # pubkey + host
         self.assertEqual(extract_nodeid("00" * 33 + "@localhost"), (b"\x00" * 33, "localhost"))
+        self.assertEqual(extract_nodeid(f"{pubkey1.hex()}@11.22.33.44"), (pubkey1, "11.22.33.44"))
+        self.assertEqual(extract_nodeid(f"{pubkey1.hex()}@[2001:41d0:e:734::1]"), (pubkey1, "[2001:41d0:e:734::1]"))
+        # pubkey + host + port
+        self.assertEqual(extract_nodeid(f"{pubkey1.hex()}@11.22.33.44:5555"), (pubkey1, "11.22.33.44:5555"))
+        self.assertEqual(extract_nodeid(f"{pubkey1.hex()}@[2001:41d0:e:734::1]:8888"), (pubkey1, "[2001:41d0:e:734::1]:8888"))
+        # just pubkey
+        self.assertEqual(extract_nodeid(f"{pubkey1.hex()}"), (pubkey1, None))
+        # bolt11 invoice
+        self.assertEqual(extract_nodeid("lnbc241ps9zprzpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqs9qypqszrwfgrl5k3rt4q4mclc8t00p2tcjsf9pmpcq6lu5zhmampyvk43fk30eqpdm8t5qmdpzan25aqxqaqdzmy0smrtduazjcxx975vz78ccpx0qhev"),
+                         (bfh("03e7156ae33b0a208d0744199163177e909e80176e55d97a2f221ede0f934dd9ad"), None))
 
     def test_ln_features_validate_transitive_dependencies(self):
         features = LnFeatures.OPTION_DATA_LOSS_PROTECT_REQ
@@ -869,7 +886,7 @@ class TestLNUtil(ElectrumTestCase):
         self.assertTrue(f1.supports(LnFeatures.PAYMENT_SECRET_OPT))
         self.assertTrue(f1.supports(LnFeatures.BASIC_MPP_REQ))
         self.assertFalse(f1.supports(LnFeatures.OPTION_STATIC_REMOTEKEY_OPT))
-        self.assertFalse(f1.supports(LnFeatures.OPTION_TRAMPOLINE_ROUTING_REQ))
+        self.assertFalse(f1.supports(LnFeatures.OPTION_TRAMPOLINE_ROUTING_REQ_ELECTRUM))
 
     def test_lnworker_decode_channel_update_msg(self):
         msg_without_prefix = bytes.fromhex("439b71c8ddeff63004e4ff1f9764a57dcf20232b79d9d669aef0e31c42be8e44208f7d868d0133acb334047f30e9399dece226ccd98e5df5330adf7f356290516fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d619000000000008762700054a00005ef2cf9c0101009000000000000003e80000000000000001000000002367b880")
@@ -896,9 +913,63 @@ class TestLNUtil(ElectrumTestCase):
         features = LnFeatures(LnFeatures.BASIC_MPP_OPT | LnFeatures.OPTION_STATIC_REMOTEKEY_OPT)
         self.assertTrue(ChannelType.OPTION_STATIC_REMOTEKEY.complies_with_features(features))
 
-        features = LnFeatures(LnFeatures.BASIC_MPP_OPT | LnFeatures.OPTION_TRAMPOLINE_ROUTING_OPT)
+        features = LnFeatures(LnFeatures.BASIC_MPP_OPT | LnFeatures.OPTION_TRAMPOLINE_ROUTING_OPT_ELECTRUM)
         self.assertFalse(ChannelType.OPTION_STATIC_REMOTEKEY.complies_with_features(features))
 
         # ignore unknown channel types
         channel_type = ChannelType(0b10000000001000000000010).discard_unknown_and_check()
         self.assertEqual(ChannelType(0b10000000001000000000000), channel_type)
+
+    @as_testnet
+    async def test_decode_imported_channel_backup_v0(self):
+        encrypted_cb = "channel_backup:Adn87xcGIs9H2kfp4VpsOaNKWCHX08wBoqq37l1cLYKGlJamTeoaLEwpJA81l1BXF3GP/mRxqkY+whZG9l51G8izIY/kmMSvnh0DOiZEdwaaT/1/MwEHfsEomruFqs+iW24SFJPHbMM7f80bDtIxcLfZkKmgcKBAOlcqtq+dL3U3yH74S8BDDe2L4snaxxpCjF0JjDMBx1UR/28D+QlIi+lbvv1JMaCGXf+AF1+3jLQf8+lVI+rvFdyArws6Ocsvjf+ANQeSGUwW6Nb2xICQcMRgr1DO7bO4pgGu408eYRr2v3ayJBVtnKwSwd49gF5SDSjTDAO4CCM0uj9H5RxyzH7fqotkd9J80MBr84RiBXAeXKz+Ap8608/FVqgQ9BOcn6LhuAQdE5zXpmbQyw5jUGkPvHuseR+rzthzncy01odUceqTNg=="
+        config = SimpleConfig({'electrum_path': self.electrum_path})
+        d = restore_wallet_from_text("9dk", path=None, gap_limit=2, config=config)
+        wallet1 = d['wallet']  # type: Standard_Wallet
+        decoded_cb = ImportedChannelBackupStorage.from_encrypted_str(encrypted_cb, password=wallet1.get_fingerprint())
+        self.assertEqual(
+            ImportedChannelBackupStorage(
+                funding_txid='97767fdefef3152319363b772914d71e5eb70e793b835c13dce20037d3ac13fe',
+                funding_index=1,
+                funding_address='tb1qfsxllwl2edccpar9jas9wsxd4vhcewlxqwmn0w27kurkme3jvkdqn4msdp',
+                is_initiator=True,
+                node_id=bfh('02bf82e22f99dcd7ac1de4aad5152ce48f0694c46ec582567f379e0adbf81e2d0f'),
+                privkey=bfh('7e634853dc47f0bc2f2e0d1054b302fcb414371ddbd889f29ba8aa4e8b62c772'),
+                host='lightning.electrum.org',
+                port=9739,
+                channel_seed=bfh('ce9bad44ff8521d9f57fd202ad7cdedceb934f0056f42d0f3aa7a576b505332a'),
+                local_delay=1008,
+                remote_delay=720,
+                remote_payment_pubkey=bfh('02a1bbc818e2e88847016a93c223eb4adef7bb8becb3709c75c556b6beb3afe7bd'),
+                remote_revocation_pubkey=bfh('022f28b7d8d1f05768ada3df1b0966083b8058e1e7197c57393e302ec118d7f0ae'),
+                local_payment_pubkey=None,
+            ),
+            decoded_cb,
+        )
+
+    @as_testnet
+    async def test_decode_imported_channel_backup_v1(self):
+        encrypted_cb = "channel_backup:AVYIedu0qSLfY2M2bBxF6dA4RAxcmobp+3h9mxALWWsv5X7hhNg0XYOKNd11FE6BJOZgZnIZ4CCAlHtLNj0/9S5GbNhbNZiQXxeHMwC1lHvtjawkwSejIJyOI52DkDFHBAGZRd4fJjaPJRHnUizWfySVR4zjd08lTinpoIeL7C7tXBW1N6YqceqV7RpeoywlBXJtFfCCuw0hnUKgq3SMlBKapkNAIgGrg15aIHNcYeENxCxr5FD1s7DIwFSECqsBVnu/Ogx2oii8BfuxqJq8vuGq4Ib/BVaSVtdb2E1wklAor/CG0p9Fg9mFWND98JD+64nz9n/knPFFyHxTXErn+ct3ZcStsLYynWKUIocgu38PtzCJ7r5ivqOw4O49fbbzdjcgMUGklPYxjuinETneCo+dCPa1uepOGTqeOYmnjVYtYZYXOlWV1F5OtNoM7MwwJjAbz84="
+        config = SimpleConfig({'electrum_path': self.electrum_path})
+        d = restore_wallet_from_text("9dk", path=None, gap_limit=2, config=config)
+        wallet1 = d['wallet']  # type: Standard_Wallet
+        decoded_cb = ImportedChannelBackupStorage.from_encrypted_str(encrypted_cb, password=wallet1.get_fingerprint())
+        self.assertEqual(
+            ImportedChannelBackupStorage(
+                funding_txid='97767fdefef3152319363b772914d71e5eb70e793b835c13dce20037d3ac13fe',
+                funding_index=1,
+                funding_address='tb1qfsxllwl2edccpar9jas9wsxd4vhcewlxqwmn0w27kurkme3jvkdqn4msdp',
+                is_initiator=True,
+                node_id=bfh('02bf82e22f99dcd7ac1de4aad5152ce48f0694c46ec582567f379e0adbf81e2d0f'),
+                privkey=bfh('7e634853dc47f0bc2f2e0d1054b302fcb414371ddbd889f29ba8aa4e8b62c772'),
+                host='195.201.207.61',
+                port=9739,
+                channel_seed=bfh('ce9bad44ff8521d9f57fd202ad7cdedceb934f0056f42d0f3aa7a576b505332a'),
+                local_delay=1008,
+                remote_delay=720,
+                remote_payment_pubkey=bfh('02a1bbc818e2e88847016a93c223eb4adef7bb8becb3709c75c556b6beb3afe7bd'),
+                remote_revocation_pubkey=bfh('022f28b7d8d1f05768ada3df1b0966083b8058e1e7197c57393e302ec118d7f0ae'),
+                local_payment_pubkey=bfh('0308d686712782a44b0cef220485ad83dae77853a5bf8501a92bb79056c9dcb25a'),
+            ),
+            decoded_cb,
+        )

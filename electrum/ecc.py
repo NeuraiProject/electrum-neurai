@@ -26,14 +26,13 @@
 import base64
 import hashlib
 import functools
-import traceback
 from typing import Union, Tuple, Optional
 from ctypes import (
     byref, c_byte, c_int, c_uint, c_char_p, c_size_t, c_void_p, create_string_buffer,
     CFUNCTYPE, POINTER, cast
 )
 
-from .util import bfh, bh2u, assert_bytes, to_bytes, InvalidPassword, profiler, randrange
+from .util import bfh, assert_bytes, to_bytes, InvalidPassword, profiler, randrange
 from .crypto import (sha256d, aes_encrypt_with_iv, aes_decrypt_with_iv, hmac_oneshot)
 from . import constants
 from .logging import get_logger
@@ -41,9 +40,6 @@ from .ecc_fast import _libsecp256k1, SECP256K1_EC_UNCOMPRESSED
 
 _logger = get_logger(__name__)
 
-# Some unit tests need to create ECDSA sigs without grinding the R value (and just use RFC6979).
-# see https://github.com/bitcoin/bitcoin/pull/13666
-ENABLE_ECDSA_R_VALUE_GRINDING = True
 
 # Some unit tests need to create ECDSA sigs without grinding the R value (and just use RFC6979).
 # see https://github.com/bitcoin/bitcoin/pull/13666
@@ -213,7 +209,7 @@ class ECPubkey(object):
                   + int.to_bytes(y, length=32, byteorder='big', signed=False))
         return ECPubkey(_bytes)
 
-    def get_public_key_bytes(self, compressed=True):
+    def get_public_key_bytes(self, compressed=True) -> bytes:
         if self.is_at_infinity(): raise Exception('point is at infinity')
         x = int.to_bytes(self.x(), length=32, byteorder='big', signed=False)
         y = int.to_bytes(self.y(), length=32, byteorder='big', signed=False)
@@ -224,16 +220,19 @@ class ECPubkey(object):
             header = b'\x04'
             return header + x + y
 
-    def get_public_key_hex(self, compressed=True):
-        return bh2u(self.get_public_key_bytes(compressed))
+    def get_public_key_hex(self, compressed=True) -> str:
+        return self.get_public_key_bytes(compressed).hex()
 
-    def point(self) -> Tuple[int, int]:
-        return self.x(), self.y()
+    def point(self) -> Tuple[Optional[int], Optional[int]]:
+        x = self.x()
+        y = self.y()
+        assert (x is None) == (y is None), f"either both x and y, or neither should be None. {(x, y)=}"
+        return x, y
 
-    def x(self) -> int:
+    def x(self) -> Optional[int]:
         return self._x
 
-    def y(self) -> int:
+    def y(self) -> Optional[int]:
         return self._y
 
     def _to_libsecp256k1_pubkey_ptr(self):
@@ -307,7 +306,9 @@ class ECPubkey(object):
     def __lt__(self, other):
         if not isinstance(other, ECPubkey):
             raise TypeError('comparison not defined for ECPubkey and {}'.format(type(other)))
-        return (self.x() or 0) < (other.x() or 0)
+        p1 = ((self.x() or 0), (self.y() or 0))
+        p2 = ((other.x() or 0), (other.y() or 0))
+        return p1 < p2
 
     def verify_message_for_address(self, sig65: bytes, message: bytes, algo=lambda x: sha256d(msg_magic(x))) -> bool:
         assert_bytes(message)
@@ -358,18 +359,18 @@ class ECPubkey(object):
         return base64.b64encode(encrypted + mac)
 
     @classmethod
-    def order(cls):
+    def order(cls) -> int:
         return CURVE_ORDER
 
-    def is_at_infinity(self):
+    def is_at_infinity(self) -> bool:
         return self == POINT_AT_INFINITY
 
     @classmethod
-    def is_pubkey_bytes(cls, b: bytes):
+    def is_pubkey_bytes(cls, b: bytes) -> bool:
         try:
             ECPubkey(b)
             return True
-        except:
+        except Exception:
             return False
 
 
@@ -380,9 +381,9 @@ POINT_AT_INFINITY = ECPubkey(None)
 
 
 def msg_magic(message: bytes) -> bytes:
-    from .neurai import var_int
+    from .bitcoin import var_int
     length = bfh(var_int(len(message)))
-    return b"\x17Neurai Signed Message:\n" + length + message
+    return b"\x16Raven Signed Message:\n" + length + message
 
 
 def verify_signature(pubkey: bytes, sig: bytes, h: bytes) -> bool:
@@ -390,7 +391,7 @@ def verify_signature(pubkey: bytes, sig: bytes, h: bytes) -> bool:
 
 
 def verify_message_with_address(address: str, sig65: bytes, message: bytes, *, net=None) -> bool:
-    from .neurai import pubkey_to_address
+    from .bitcoin import pubkey_to_address
     assert_bytes(sig65, message)
     if net is None: net = constants.net
     h = sha256d(msg_magic(message))
@@ -432,12 +433,12 @@ class ECPrivkey(ECPubkey):
         super().__init__(pubkey.get_public_key_bytes(compressed=False))
 
     @classmethod
-    def from_secret_scalar(cls, secret_scalar: int):
+    def from_secret_scalar(cls, secret_scalar: int) -> 'ECPrivkey':
         secret_bytes = int.to_bytes(secret_scalar, length=32, byteorder='big', signed=False)
         return ECPrivkey(secret_bytes)
 
     @classmethod
-    def from_arbitrary_size_secret(cls, privkey_bytes: bytes):
+    def from_arbitrary_size_secret(cls, privkey_bytes: bytes) -> 'ECPrivkey':
         """This method is only for legacy reasons. Do not introduce new code that uses it.
         Unlike the default constructor, this method does not require len(privkey_bytes) == 32,
         and the secret does not need to be within the curve order either.
@@ -456,7 +457,7 @@ class ECPrivkey(ECPubkey):
         return f"<ECPrivkey {self.get_public_key_hex()}>"
 
     @classmethod
-    def generate_random_key(cls):
+    def generate_random_key(cls) -> 'ECPrivkey':
         randint = randrange(CURVE_ORDER)
         ephemeral_exponent = int.to_bytes(randint, length=32, byteorder='big', signed=False)
         return ECPrivkey(ephemeral_exponent)

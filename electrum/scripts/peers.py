@@ -3,7 +3,7 @@ import asyncio
 
 from electrum.network import filter_protocol, Network
 from electrum.util import create_and_start_event_loop, log_exceptions
-from electrum.blockchain import hash_raw_header
+from electrum.blockchain import hash_raw_header_v1
 from electrum.simple_config import SimpleConfig
 
 
@@ -21,7 +21,7 @@ async def f():
         results = await network.send_multiple_requests(peers, 'blockchain.headers.subscribe', [])
         for server, header in sorted(results.items(), key=lambda x: x[1].get('height')):
             height = header.get('height')
-            blockhash = hash_raw_header(header.get('hex'))
+            blockhash = hash_raw_header_v1(header.get('hex'))
             print(server, height, blockhash)
     finally:
         stopping_fut.set_result(1)

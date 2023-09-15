@@ -3,7 +3,7 @@ from typing import Optional, Sequence, Tuple, List, Dict, TYPE_CHECKING, Set
 import threading
 
 from .lnutil import SENT, RECEIVED, LOCAL, REMOTE, HTLCOwner, UpdateAddHtlc, Direction, FeeUpdate
-from .util import bh2u, bfh, with_lock
+from .util import bfh, with_lock
 
 if TYPE_CHECKING:
     from .json_db import StoredDict
@@ -208,6 +208,7 @@ class HTLCManager:
 
         # no need to keep local update raw msgs anymore, they have just been ACKed.
         self.log[LOCAL]['unacked_updates'].pop(self.log[REMOTE]['ctn'], None)
+
     @with_lock
     def _update_maybe_active_htlc_ids(self) -> None:
         # - Loosely, we want a set that contains the htlcs that are
@@ -302,6 +303,7 @@ class HTLCManager:
     @with_lock
     def is_htlc_active_at_ctn(self, *, ctx_owner: HTLCOwner, ctn: int,
                               htlc_proposer: HTLCOwner, htlc_id: int) -> bool:
+        htlc_id = int(htlc_id)
         if htlc_id >= self.get_next_htlc_id(htlc_proposer):
             return False
         settles = self.log[htlc_proposer]['settles']

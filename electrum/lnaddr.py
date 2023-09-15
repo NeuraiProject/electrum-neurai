@@ -6,19 +6,18 @@ import time
 from hashlib import sha256
 from binascii import hexlify
 from decimal import Decimal
-from typing import Optional, TYPE_CHECKING, Type
+from typing import Optional, TYPE_CHECKING, Type, Dict, Any
 
 import random
 import bitstring
 
-from electrum.util import Satoshis, NeuraiValue
-from .neurai import hash160_to_b58_address, b58_address_to_hash160, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
+from .bitcoin import hash160_to_b58_address, b58_address_to_hash160, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
 from .segwit_addr import bech32_encode, bech32_decode, CHARSET
 from . import segwit_addr
 from . import constants
 from .constants import AbstractNet
 from . import ecc
-from .neurai import COIN
+from .bitcoin import COIN
 
 if TYPE_CHECKING:
     from .lnutil import LnFeatures
@@ -126,12 +125,8 @@ def parse_fallback(fallback, net: Type[AbstractNet]):
     return addr
 
 
-base58_prefix_map = {
-    constants.NeuraiMainnet.SEGWIT_HRP : (constants.NeuraiMainnet.ADDRTYPE_P2PKH, constants.NeuraiMainnet.ADDRTYPE_P2SH),
-    constants.NeuraiTestnet.SEGWIT_HRP : (constants.NeuraiTestnet.ADDRTYPE_P2PKH, constants.NeuraiTestnet.ADDRTYPE_P2SH)
-}
-
 BOLT11_HRP_INV_DICT = {net.BOLT11_HRP: net for net in constants.NETS_LIST}
+
 
 # Tagged field containing BitArray
 def tagged(char, l):
@@ -189,6 +184,7 @@ def lnencode(addr: 'LnAddr', privkey) -> str:
     tags_set = set()
 
     # Payment hash
+    assert addr.paymenthash is not None
     data += tagged_bytes('p', addr.paymenthash)
     tags_set.add('p')
 
@@ -201,7 +197,7 @@ def lnencode(addr: 'LnAddr', privkey) -> str:
         # BOLT #11:
         #
         # A writer MUST NOT include more than one `d`, `h`, `n` or `x` fields,
-        if k in ('d', 'h', 'n', 'x', 'p', 's'):
+        if k in ('d', 'h', 'n', 'x', 'p', 's', '9'):
             if k in tags_set:
                 raise LnEncodeException("Duplicate '{}' tag".format(k))
 
@@ -251,7 +247,7 @@ def lnencode(addr: 'LnAddr', privkey) -> str:
     # both.
     if 'd' in tags_set and 'h' in tags_set:
         raise ValueError("Cannot include both 'd' and 'h'")
-    if not 'd' in tags_set and not 'h' in tags_set:
+    if 'd' not in tags_set and 'h' not in tags_set:
         raise ValueError("Must include either 'd' or 'h'")
 
     # We actually sign the hrp, then data (padded to 8 bits with zeroes).
@@ -277,7 +273,6 @@ class LnAddr(object):
         self.pubkey = None
         self.net = constants.net if net is None else net  # type: Type[AbstractNet]
         self._amount = amount  # type: Optional[Decimal]  # in bitcoins
-        self._min_final_cltv_expiry = 18
 
     @property
     def amount(self) -> Optional[Decimal]:
@@ -298,11 +293,11 @@ class LnAddr(object):
             raise LnInvoiceException(f"Cannot encode {value!r}: too many decimal places")
         self._amount = value
 
-    def get_amount_sat(self) -> Optional[NeuraiValue]:
+    def get_amount_sat(self) -> Optional[Decimal]:
         # note that this has msat resolution potentially
         if self.amount is None:
             return None
-        return NeuraiValue(Satoshis(self.amount * COIN))
+        return self.amount * COIN
 
     def get_routing_info(self, tag):
         # note: tag will be 't' for trampoline
@@ -323,6 +318,17 @@ class LnAddr(object):
         from .lnutil import LnFeatures
         return LnFeatures(self.get_tag('9') or 0)
 
+    def validate_and_compare_features(self, myfeatures: 'LnFeatures') -> None:
+        """Raises IncompatibleOrInsaneFeatures.
+
+        note: these checks are not done by the parser (in lndecode), as then when we started requiring a new feature,
+              old saved already paid invoices could no longer be parsed.
+        """
+        from .lnutil import validate_features, ln_compare_features
+        invoice_features = self.get_features()
+        validate_features(invoice_features)
+        ln_compare_features(myfeatures.for_invoice(), invoice_features)
+
     def __str__(self):
         return "LnAddr[{}, amount={}{} tags=[{}]]".format(
             hexlify(self.pubkey.serialize()).decode('utf-8') if self.pubkey else None,
@@ -331,7 +337,10 @@ class LnAddr(object):
         )
 
     def get_min_final_cltv_expiry(self) -> int:
-        return self._min_final_cltv_expiry
+        cltv = self.get_tag('c')
+        if cltv is None:
+            return 18
+        return int(cltv)
 
     def get_tag(self, tag):
         for k, v in self.tags:
@@ -357,6 +366,25 @@ class LnAddr(object):
         # we treat it as 0 seconds here (instead of never)
         return now > self.get_expiry() + self.date
 
+    def to_debug_json(self) -> Dict[str, Any]:
+        d = {
+            'pubkey': self.pubkey.serialize().hex(),
+            'amount_BTC': str(self.amount),
+            'rhash': self.paymenthash.hex(),
+            'payment_secret': self.payment_secret.hex() if self.payment_secret else None,
+            'description': self.get_description(),
+            'exp': self.get_expiry(),
+            'time': self.date,
+            'min_final_cltv_expiry': self.get_min_final_cltv_expiry(),
+            'features': self.get_features().get_names(),
+            'tags': self.tags,
+            'unknown_tags': self.unknown_tags,
+        }
+        if ln_routing_info := self.get_routing_info('r'):
+            # show the last hop of routing hints. (our invoices only have one hop)
+            d['r_tags'] = [str((a.hex(),b.hex(),c,d,e)) for a,b,c,d,e in ln_routing_info[-1]]
+        return d
+
 
 class SerializableKey:
     def __init__(self, pubkey):
@@ -365,6 +393,9 @@ class SerializableKey:
         return self.pubkey.get_public_key_bytes(True)
 
 def lndecode(invoice: str, *, verbose=False, net=None) -> LnAddr:
+    """Parses a string into an LnAddr object.
+    Can raise LnDecodeException or IncompatibleOrInsaneFeatures.
+    """
     if net is None:
         net = constants.net
     decoded_bech32 = bech32_decode(invoice, ignore_long_length=True)
@@ -487,7 +518,7 @@ def lndecode(invoice: str, *, verbose=False, net=None) -> LnAddr:
             addr.pubkey = pubkeybytes
 
         elif tag == 'c':
-            addr._min_final_cltv_expiry = tagdata.uint
+            addr.tags.append(('c', tagdata.uint))
 
         elif tag == '9':
             features = tagdata.uint

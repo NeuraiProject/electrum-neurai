@@ -22,13 +22,13 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
-import concurrent.futures
 import os
 import re
 import ssl
 import sys
 import traceback
 import asyncio
+import socket
 from typing import Tuple, Union, List, TYPE_CHECKING, Optional, Set, NamedTuple, Any, Sequence, Dict
 from collections import defaultdict
 from ipaddress import IPv4Network, IPv6Network, ip_address, IPv6Address, IPv4Address
@@ -44,6 +44,7 @@ from aiorpcx.jsonrpc import JSONRPC, CodeMessageError
 from aiorpcx.rawsocket import RSClient
 import certifi
 
+from .asset import get_error_for_asset_name
 from .util import (ignore_exceptions, log_exceptions, bfh, MySocksProxy,
                    is_integer, is_non_negative_integer, is_hash256_str, is_hex_str,
                    is_int_or_float, is_non_negative_int_or_float, OldTaskGroup)
@@ -52,12 +53,12 @@ from . import x509
 from . import pem
 from . import version
 from . import blockchain
-from .blockchain import Blockchain, PRE_KAWPOW_HEADER_SIZE, POST_KAWPOW_HEADER_SIZE
-from . import neurai
+from .blockchain import Blockchain, HEADER_SIZE, LEGACY_HEADER_SIZE, NotEnoughHeaders
+from . import bitcoin
 from . import constants
 from .i18n import _
 from .logging import Logger
-from .transaction import Transaction, AssetMeta
+from .transaction import Transaction
 
 if TYPE_CHECKING:
     from .network import Network
@@ -67,8 +68,6 @@ if TYPE_CHECKING:
 ca_path = certifi.where()
 
 BUCKET_NAME_OF_ONION_SERVERS = 'onion'
-
-MAX_INCOMING_MSG_SIZE = 10_000_000  # in bytes
 
 _KNOWN_NETWORK_PROTOCOLS = {'t', 's'}
 PREFERRED_NETWORK_PROTOCOL = 's'
@@ -168,7 +167,7 @@ class NotificationSession(RPCSession):
         try:
             # note: RPCSession.send_request raises TaskTimeout in case of a timeout.
             # TaskTimeout is a subclass of CancelledError, which is *suppressed* in TaskGroups
-            response = await asyncio.wait_for(
+            response = await util.wait_for2(
                 super().send_request(*args, **kwargs),
                 timeout)
         except (TaskTimeout, asyncio.TimeoutError) as e:
@@ -216,8 +215,8 @@ class NotificationSession(RPCSession):
 
     def default_framer(self):
         # overridden so that max_size can be customized
-        max_size = int(self.interface.network.config.get('network_max_incoming_msg_size',
-                                                         MAX_INCOMING_MSG_SIZE))
+        max_size = self.interface.network.config.NETWORK_MAX_INCOMING_MSG_SIZE
+        assert max_size > 500_000, f"{max_size=} (< 500_000) is too small"
         return NewlineFramer(max_size=max_size)
 
     async def close(self, *, force_after: int = None):
@@ -292,6 +291,7 @@ class ServerAddr:
 
     @classmethod
     def from_str(cls, s: str) -> 'ServerAddr':
+        """Constructs a ServerAddr or raises ValueError."""
         # host might be IPv6 address, hence do rsplit:
         host, port, protocol = str(s).rsplit(':', 2)
         return ServerAddr(host=host, port=port, protocol=protocol)
@@ -299,20 +299,29 @@ class ServerAddr:
     @classmethod
     def from_str_with_inference(cls, s: str) -> Optional['ServerAddr']:
         """Construct ServerAddr from str, guessing missing details.
+        Does not raise - just returns None if guessing failed.
         Ongoing compatibility not guaranteed.
         """
         if not s:
             return None
+        host = ""
+        if s[0] == "[" and "]" in s:  # IPv6 address
+            host_end = s.index("]")
+            host = s[1:host_end]
+            s = s[host_end+1:]
         items = str(s).rsplit(':', 2)
         if len(items) < 2:
             return None  # although maybe we could guess the port too?
-        host = items[0]
+        host = host or items[0]
         port = items[1]
         if len(items) >= 3:
             protocol = items[2]
         else:
             protocol = PREFERRED_NETWORK_PROTOCOL
-        return ServerAddr(host=host, port=port, protocol=protocol)
+        try:
+            return ServerAddr(host=host, port=port, protocol=protocol)
+        except ValueError:
+            return None
 
     def to_friendly_name(self) -> str:
         # note: this method is closely linked to from_str_with_inference
@@ -370,9 +379,7 @@ class Interface(Logger):
         assert network.config.path
         self.cert_path = _get_cert_path_for_host(config=network.config, host=self.host)
         self.blockchain = None  # type: Optional[Blockchain]
-
-        self._requested_chunks = set()  # type: Set[Tuple[int, int]]
-
+        self._requested_chunks = set()  # type: Set[int]
         self.network = network
         self.session = None  # type: Optional[NotificationSession]
         self._ipaddr_bucket = None
@@ -596,7 +603,7 @@ class Interface(Logger):
 
     def _get_expected_fingerprint(self) -> Optional[str]:
         if self.is_main_server():
-            return self.network.config.get("serverfingerprint")
+            return self.network.config.NETWORK_SERVERFINGERPRINT
 
     def _verify_certificate_fingerprint(self, certificate):
         expected_fingerprint = self._get_expected_fingerprint()
@@ -621,14 +628,13 @@ class Interface(Logger):
     async def request_chunk(self, height: int, tip=None, *, can_return_early=False):
         if not is_non_negative_integer(height):
             raise Exception(f"{repr(height)} is not a block height")
-
+        
         # For chunks within DGW checkpoints, we need to reset to start of 2016 chunks
         if constants.net.DGW_CHECKPOINTS_START <= height <= constants.net.max_checkpoint():
             #print(f'interface request chunk, setting height from {height}')
             height = (height // constants.net.DGW_CHECKPOINTS_SPACING) * constants.net.DGW_CHECKPOINTS_SPACING
 
         ret = False
-
         for mi, ma in self._requested_chunks:
             if mi <= height < ma:
                 ret = True
@@ -636,31 +642,32 @@ class Interface(Logger):
 
         if can_return_early and ret:
             return
+
         self.logger.info(f"requesting chunk from height {height}")
         size = 2016
         if tip is not None:
             size = min(size, tip - height + 1)
             size = max(size, 0)
         try:
-            self._requested_chunks.add((height, height + size))
+            self._requested_chunks.add((height, height + size))            
             res = await self.session.send_request('blockchain.block.headers', [height, size])
         finally:
-            self._requested_chunks.discard((height, height + size))
+            self._requested_chunks.discard((height, height + size))        
         assert_dict_contains_field(res, field_name='count')
         assert_dict_contains_field(res, field_name='hex')
         assert_dict_contains_field(res, field_name='max')
         assert_non_negative_integer(res['count'])
         assert_non_negative_integer(res['max'])
         assert_hex_str(res['hex'])
-        if POST_KAWPOW_HEADER_SIZE * 2 * res['count'] < len(res['hex']) \
-                or len(res['hex']) < PRE_KAWPOW_HEADER_SIZE * 2 * res['count']:
+        if height + size >= constants.net.KawpowActivationHeight and len(res['hex']) != HEADER_SIZE * 2 * res['count']:
             raise RequestCorrupted('inconsistent chunk hex and count')
+        if height + size < constants.net.KawpowActivationHeight and len(res['hex']) != LEGACY_HEADER_SIZE * 2 * res['count']:
+            raise RequestCorrupted('inconsistent chunk hex and count (legacy)')
         # we never request more than 2016 headers, but we enforce those fit in a single response
         if res['max'] < 2016:
             raise RequestCorrupted(f"server uses too low 'max' count for block.headers: {res['max']} < 2016")
         if res['count'] != size:
             raise RequestCorrupted(f"expected {size} headers but only got {res['count']}")
-
         conn = await self.blockchain.connect_chunk(height, res['hex'])
 
         if not conn:
@@ -699,10 +706,14 @@ class Interface(Logger):
                     await group.spawn(self.run_fetch_blocks)
                     await group.spawn(self.monitor_connection)
             except aiorpcx.jsonrpc.RPCError as e:
-                if e.code in (JSONRPC.EXCESSIVE_RESOURCE_USAGE,
-                              JSONRPC.SERVER_BUSY,
-                              JSONRPC.METHOD_NOT_FOUND):
-                    raise GracefulDisconnect(e, log_level=logging.WARNING) from e
+                if e.code in (
+                    JSONRPC.EXCESSIVE_RESOURCE_USAGE,
+                    JSONRPC.SERVER_BUSY,
+                    JSONRPC.METHOD_NOT_FOUND,
+                    JSONRPC.INTERNAL_ERROR,
+                ):
+                    log_level = logging.WARNING if self.is_main_server() else logging.INFO
+                    raise GracefulDisconnect(e, log_level=log_level) from e
                 raise
             finally:
                 self.got_disconnected.set()  # set this ASAP, ideally before any awaits
@@ -820,6 +831,7 @@ class Interface(Logger):
             assert (prev_last, prev_height) != (last, height), 'had to prevent infinite loop in interface.sync_until'
 
         return last, height
+    
 
     async def step(self, height, header=None):
         assert 0 <= height <= self.tip, (height, self.tip)
@@ -875,7 +887,15 @@ class Interface(Logger):
                 break
 
         mock = 'mock' in bad_header and bad_header['mock']['connect'](height)
-        real = not mock and self.blockchain.can_connect(bad_header, check_height=False)
+        real = False
+        try:
+            real = not mock and self.blockchain.can_connect(bad_header, check_height=False)
+        except NotEnoughHeaders:
+            if height <= constants.net.max_checkpoint():
+                self.logger.info('not enough headers; requesting chunk')
+                real, count = await self.request_chunk(height)
+                assert count == constants.net.DGW_CHECKPOINTS_SPACING, 'Bad initial header request'
+            
         if not real and not mock:
             raise Exception('unexpected bad header during binary: {}'.format(bad_header))
         _assert_header_does_not_check_against_any_chain(bad_header)
@@ -910,16 +930,23 @@ class Interface(Logger):
         async def iterate():
             nonlocal height, header
             checkp = False
-            if height <= 0:
-                height = 0
+            if height <= constants.net.max_checkpoint():
+                height = constants.net.max_checkpoint()
                 checkp = True
             header = await self.get_block_header(height, 'backward')
             chain = blockchain.check_header(header) if 'mock' not in header else header['mock']['check'](header)
-            can_connect = blockchain.can_connect(header) if 'mock' not in header else header['mock']['connect'](height)
+            can_connect = False
+            try:
+                can_connect = blockchain.can_connect(header) if 'mock' not in header else header['mock']['connect'](height)
+            except NotEnoughHeaders:
+                if height <= constants.net.max_checkpoint():
+                    self.logger.info('not enough headers; requesting chunk')
+                    can_connect, count = await self.request_chunk(height)
+                    assert count == constants.net.DGW_CHECKPOINTS_SPACING, 'Bad initial header request'
             if chain or can_connect:
                 return False
             if checkp:
-                raise GracefulDisconnect("server chain is invalid")
+                raise GracefulDisconnect("server chain conflicts with checkpoints")
             return True
 
         bad, bad_header = height, header
@@ -1039,11 +1066,11 @@ class Interface(Logger):
             raise RequestCorrupted(f"server history has non-unique txids for sh={sh}")
         return res
 
-    async def listunspent_for_scripthash(self, sh: str) -> List[dict]:
+    async def listunspent_for_scripthash(self, sh: str, asset) -> List[dict]:
         if not is_hash256_str(sh):
             raise Exception(f"{repr(sh)} is not a scripthash")
         # do request
-        res = await self.session.send_request('blockchain.scripthash.listunspent', [sh])
+        res = await self.session.send_request('blockchain.scripthash.listunspent', [sh, asset])
         # check response
         assert_list_or_tuple(res)
         for utxo_item in res:
@@ -1051,25 +1078,6 @@ class Interface(Logger):
             assert_dict_contains_field(utxo_item, field_name='value')
             assert_dict_contains_field(utxo_item, field_name='tx_hash')
             assert_dict_contains_field(utxo_item, field_name='height')
-            assert_non_negative_integer(utxo_item['tx_pos'])
-            assert_non_negative_integer(utxo_item['value'])
-            assert_non_negative_integer(utxo_item['height'])
-            assert_hash256_str(utxo_item['tx_hash'])
-        return res
-
-    async def listunspentassets_for_scripthash(self, sh: str) -> List[dict]:
-        if not is_hash256_str(sh):
-            raise Exception(f"{repr(sh)} is not a scripthash")
-        # do request
-        res = await self.session.send_request('blockchain.scripthash.listassets', [sh])
-        # check response
-        assert_list_or_tuple(res)
-        for utxo_item in res:
-            assert_dict_contains_field(utxo_item, field_name='tx_pos')
-            assert_dict_contains_field(utxo_item, field_name='value')
-            assert_dict_contains_field(utxo_item, field_name='tx_hash')
-            assert_dict_contains_field(utxo_item, field_name='height')
-            assert_dict_contains_field(utxo_item, field_name='name')
             assert_non_negative_integer(utxo_item['tx_pos'])
             assert_non_negative_integer(utxo_item['value'])
             assert_non_negative_integer(utxo_item['height'])
@@ -1138,9 +1146,9 @@ class Interface(Logger):
         # check response
         if not res:  # ignore empty string
             return ''
-        if not neurai.is_address(res):
+        if not bitcoin.is_address(res):
             # note: do not hard-fail -- allow server to use future-type
-            #       neurai address we do not recognize
+            #       bitcoin address we do not recognize
             self.logger.info(f"invalid donation address from server: {repr(res)}")
             res = ''
         return res
@@ -1151,24 +1159,88 @@ class Interface(Logger):
         res = await self.session.send_request('blockchain.relayfee')
         # check response
         assert_non_negative_int_or_float(res)
-        relayfee = int(res * neurai.COIN)
+        relayfee = int(res * bitcoin.COIN)
         relayfee = max(0, relayfee)
         return relayfee
 
     async def get_estimatefee(self, num_blocks: int) -> int:
         """Returns a feerate estimate for getting confirmed within
         num_blocks blocks, in sat/kbyte.
+        Returns -1 if the server could not provide an estimate.
         """
         if not is_non_negative_integer(num_blocks):
             raise Exception(f"{repr(num_blocks)} is not a num_blocks")
         # do request
-        res = await self.session.send_request('blockchain.estimatefee', [num_blocks])
+        try:
+            res = await self.session.send_request('blockchain.estimatefee', [num_blocks])
+        except aiorpcx.jsonrpc.ProtocolError as e:
+            # The protocol spec says the server itself should already have returned -1
+            # if it cannot provide an estimate, however apparently "electrs" does not conform
+            # and sends an error instead. Convert it here:
+            if "cannot estimate fee" in e.message:
+                res = -1
+            else:
+                raise
+        except aiorpcx.jsonrpc.RPCError as e:
+            # The protocol spec says the server itself should already have returned -1
+            # if it cannot provide an estimate. "Fulcrum" often sends:
+            #   aiorpcx.jsonrpc.RPCError: (-32603, 'internal error: bitcoind request timed out')
+            if e.code == JSONRPC.INTERNAL_ERROR:
+                res = -1
+            else:
+                raise
         # check response
         if res != -1:
             assert_non_negative_int_or_float(res)
-            res = int(res * neurai.COIN)
+            res = int(res * bitcoin.COIN)
         return res
 
+    async def get_asset_metadata(self, asset: str) -> dict:
+        assert isinstance(asset, str)
+        error = get_error_for_asset_name(asset)
+        if error:
+            raise Exception(f'bad asset: {error}')
+        res = await self.session.send_request('blockchain.asset.get_meta', [asset])
+        return res
+
+    async def get_tags_for_qualifier(self, asset: str) -> dict:
+        assert isinstance(asset, str)
+        error = get_error_for_asset_name(asset)
+        if error:
+            raise Exception(f'bad asset: {error}')
+        res = await self.session.send_request('blockchain.tag.qualifier.list', [asset])
+        return res
+    
+    async def get_tags_for_h160(self, h160: str, *, include_mempool=True) -> dict:
+        assert isinstance(h160, str)
+        res = await self.session.send_request('blockchain.tag.h160.list', [h160, include_mempool])
+        return res
+
+    async def get_broadcasts_for_asset(self, asset: str) -> dict:
+        assert isinstance(asset, str)
+        res = await self.session.send_request('blockchain.asset.broadcasts', [asset])
+        return res
+
+    async def get_verifier_string_for_restricted_asset(self, asset: str) -> dict:
+        assert isinstance(asset, str)
+        res = await self.session.send_request('blockchain.asset.verifier_string', [asset])
+        return res
+
+    async def get_freeze_status_for_restricted_asset(self, asset: str) -> dict:
+        assert isinstance(asset, str)
+        res = await self.session.send_request('blockchain.asset.is_frozen', [asset])
+        return res
+
+    async def check_tag_for_h160(self, asset: str, h160: str) -> dict:
+        assert isinstance(h160, str)
+        assert isinstance(asset, str)
+        if asset[0] != '#':
+            raise Exception(f'{asset} is not a qualifier')
+        error = get_error_for_asset_name(asset)
+        if error:
+            raise Exception(f'bad asset: {error}')
+        res = await self.session.send_request('blockchain.asset.check_tag', [h160, asset])
+        return res
 
 def _assert_header_does_not_check_against_any_chain(header: dict) -> None:
     chain_bad = blockchain.check_header(header) if 'mock' not in header else header['mock']['check'](header)
@@ -1180,14 +1252,14 @@ def check_cert(host, cert):
     try:
         b = pem.dePem(cert, 'CERTIFICATE')
         x = x509.X509(b)
-    except:
+    except Exception:
         traceback.print_exc(file=sys.stdout)
         return
 
     try:
         x.check_date()
         expired = False
-    except:
+    except Exception:
         expired = True
 
     m = "host: %s\n"%host

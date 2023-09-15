@@ -30,7 +30,7 @@ from functools import partial
 from electrum.plugin import (BasePlugin, hook, Device, DeviceMgr, DeviceInfo,
                              assert_runs_in_hwd_thread, runs_in_hwd_thread)
 from electrum.i18n import _
-from electrum.neurai import is_address, opcodes
+from electrum.bitcoin import is_address, opcodes
 from electrum.util import bfh, versiontuple, UserFacingException
 from electrum.transaction import TxOutput, Transaction, PartialTransaction, PartialTxInput, PartialTxOutput
 from electrum.bip32 import BIP32Node
@@ -86,7 +86,7 @@ class HW_PluginBase(BasePlugin):
     def close_wallet(self, wallet: 'Abstract_Wallet'):
         for keystore in wallet.get_keystores():
             if isinstance(keystore, self.keystore_class):
-                self.device_manager().unpair_xpub(keystore.xpub)
+                self.device_manager().unpair_pairing_code(keystore.pairing_code())
                 if keystore.thread:
                     keystore.thread.stop()
 
@@ -157,7 +157,11 @@ class HW_PluginBase(BasePlugin):
                     or versiontuple(library_version) < self.minimum_library
                     or versiontuple(library_version) >= self.maximum_library):
                 raise LibraryFoundButUnusable(library_version=library_version)
-        except ImportError:
+        except ImportError as e:
+            self.libraries_available_message = (
+                _("Missing libraries for {}.").format(self.name)
+                + f"\n    {e!r}"
+            )
             return False
         except LibraryFoundButUnusable as e:
             library_version = e.library_version
@@ -244,8 +248,8 @@ class HardwareClientBase:
         during USB device enumeration (called for each unpaired device).
         Stored in the wallet file.
         """
-        # This functionality is optional. If not implemented just return None:
-        return None
+        root_fp = self.request_root_fingerprint_from_device()
+        return root_fp
 
     def has_usable_connection_with_device(self) -> bool:
         raise NotImplementedError()
@@ -348,25 +352,6 @@ def validate_op_return_output(output: TxOutput, *, max_size: int = None) -> None
                                   + f"(scriptpubkey size {len(script)} > {max_size})"))
     if output.value != 0:
         raise UserFacingException(_("Amount for OP_RETURN output must be zero."))
-
-
-def get_xpubs_and_der_suffixes_from_txinout(tx: PartialTransaction,
-                                            txinout: Union[PartialTxInput, PartialTxOutput]) \
-        -> List[Tuple[str, List[int]]]:
-    xfp_to_xpub_map = {xfp: bip32node for bip32node, (xfp, path)
-                       in tx.xpubs.items()}  # type: Dict[bytes, BIP32Node]
-    xfps = [txinout.bip32_paths[pubkey][0] for pubkey in txinout.pubkeys]
-    try:
-        xpubs = [xfp_to_xpub_map[xfp] for xfp in xfps]
-    except KeyError as e:
-        raise Exception(f"Partial transaction is missing global xpub for "
-                        f"fingerprint ({str(e)}) in input/output") from e
-    xpubs_and_deriv_suffixes = []
-    for bip32node, pubkey in zip(xpubs, txinout.pubkeys):
-        xfp, path = txinout.bip32_paths[pubkey]
-        der_suffix = list(path)[bip32node.depth:]
-        xpubs_and_deriv_suffixes.append((bip32node.to_xpub(), der_suffix))
-    return xpubs_and_deriv_suffixes
 
 
 def only_hook_if_libraries_available(func):

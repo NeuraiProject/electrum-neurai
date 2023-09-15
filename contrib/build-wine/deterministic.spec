@@ -2,12 +2,10 @@
 
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_dynamic_libs
 
-import sys
-for i, x in enumerate(sys.argv):
-    if x == '--name':
-        cmdline_name = sys.argv[i+1]
-        break
-else:
+import sys, os
+
+cmdline_name = os.environ.get("ELECTRUM_CMDLINE_NAME")
+if not cmdline_name:
     raise Exception('no name')
 
 home = 'C:\\electrum\\'
@@ -17,11 +15,14 @@ hiddenimports = []
 hiddenimports += collect_submodules('pkg_resources')  # workaround for https://github.com/pypa/setuptools/issues/1963
 hiddenimports += collect_submodules('trezorlib')
 hiddenimports += collect_submodules('safetlib')
-hiddenimports += collect_submodules('btchip')
+hiddenimports += collect_submodules('btchip')          # device plugin: ledger
+hiddenimports += collect_submodules('ledger_bitcoin')  # device plugin: ledger
 hiddenimports += collect_submodules('keepkeylib')
 hiddenimports += collect_submodules('websocket')
 hiddenimports += collect_submodules('ckcc')
 hiddenimports += collect_submodules('bitbox02')
+hiddenimports += ['electrum.plugins.jade.jade']
+hiddenimports += ['electrum.plugins.jade.jadepy.jade']
 hiddenimports += ['PyQt5.QtPrintSupport']  # needed by Revealer
 
 
@@ -30,7 +31,7 @@ binaries = []
 # Workaround for "Retro Look":
 binaries += [b for b in collect_dynamic_libs('PyQt5') if 'qwindowsvista' in b[0]]
 
-binaries += [('C:/tmp/libsecp256k1-0.dll', '.')]
+binaries += [('C:/tmp/libsecp256k1-2.dll', '.')]
 binaries += [('C:/tmp/libusb-1.0.dll', '.')]
 binaries += [('C:/tmp/libzbar-0.dll', '.')]
 
@@ -57,15 +58,11 @@ a = Analysis([home+'run_electrum',
               home+'electrum/util.py',
               home+'electrum/wallet.py',
               home+'electrum/simple_config.py',
-              home+'electrum/neurai.py',
+              home+'electrum/bitcoin.py',
               home+'electrum/dnssec.py',
               home+'electrum/commands.py',
               home+'electrum/plugins/trezor/qt.py',
-              #home+'electrum/plugins/safe_t/client.py',
-              #home+'electrum/plugins/safe_t/qt.py',
-              #home+'electrum/plugins/keepkey/qt.py',
               home+'electrum/plugins/ledger/qt.py',
-              #home+'electrum/plugins/coldcard/qt.py',
               #home+'packages/requests/utils.py'
               ],
              binaries=binaries,
@@ -125,7 +122,7 @@ exe_standalone = EXE(
     debug=False,
     strip=None,
     upx=False,
-    icon=home+'electrum/gui/icons/electrum-neurai.ico',
+    icon=home+'electrum/gui/icons/electrum.ico',
     console=False)
     # console=True makes an annoying black box pop up, but it does make Electrum output command line commands, with this turned off no output will be given but commands can still be used
 
@@ -138,7 +135,7 @@ exe_portable = EXE(
     debug=False,
     strip=None,
     upx=False,
-    icon=home+'electrum/gui/icons/electrum-neurai.ico',
+    icon=home+'electrum/gui/icons/electrum.ico',
     console=False)
 
 #####
@@ -152,7 +149,7 @@ exe_inside_setup_noconsole = EXE(
     debug=False,
     strip=None,
     upx=False,
-    icon=home+'electrum/gui/icons/electrum-neurai.ico',
+    icon=home+'electrum/gui/icons/electrum.ico',
     console=False)
 
 exe_inside_setup_console = EXE(
@@ -163,7 +160,7 @@ exe_inside_setup_console = EXE(
     debug=False,
     strip=None,
     upx=False,
-    icon=home+'electrum/gui/icons/electrum-neurai.ico',
+    icon=home+'electrum/gui/icons/electrum.ico',
     console=True)
 
 coll = COLLECT(
@@ -175,6 +172,6 @@ coll = COLLECT(
     strip=None,
     upx=True,
     debug=False,
-    icon=home+'electrum/gui/icons/electrum-neurai.ico',
+    icon=home+'electrum/gui/icons/electrum.ico',
     console=False,
     name=os.path.join('dist', 'electrum'))

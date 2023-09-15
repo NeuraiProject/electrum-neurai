@@ -29,10 +29,10 @@ from typing import TYPE_CHECKING, Dict, Set
 
 import aiorpcx
 
-from . import neurai
+from . import bitcoin
 from . import ecc
 from . import constants
-from .util import bh2u, bfh, NetworkJobOnDefaultServer
+from .util import bfh, NetworkJobOnDefaultServer
 from .lnutil import funding_output_script_from_keys, ShortChannelID
 from .verifier import verify_tx_is_in_block, MerkleVerificationFailure
 from .transaction import Transaction
@@ -105,7 +105,7 @@ class LNChannelVerifier(NetworkJobOnDefaultServer):
                 continue
             self.started_verifying_channel.add(short_channel_id)
             await self.taskgroup.spawn(self.verify_channel(block_height, short_channel_id))
-            #self.logger.info(f'requested short_channel_id {bh2u(short_channel_id)}')
+            #self.logger.info(f'requested short_channel_id {short_channel_id.hex()}')
 
     async def verify_channel(self, block_height: int, short_channel_id: ShortChannelID):
         # we are verifying channel announcements as they are from untrusted ln peers.
@@ -151,8 +151,8 @@ class LNChannelVerifier(NetworkJobOnDefaultServer):
             return
         # check funding output
         chan_ann_msg = self.unverified_channel_info[short_channel_id]
-        redeem_script = funding_output_script_from_keys(chan_ann_msg['neurai_key_1'], chan_ann_msg['neurai_key_2'])
-        expected_address = neurai.redeem_script_to_address('p2wsh', redeem_script)
+        redeem_script = funding_output_script_from_keys(chan_ann_msg['bitcoin_key_1'], chan_ann_msg['bitcoin_key_2'])
+        expected_address = bitcoin.redeem_script_to_address('p2wsh', redeem_script)
         try:
             actual_output = tx.outputs()[short_channel_id.output_index]
         except IndexError:

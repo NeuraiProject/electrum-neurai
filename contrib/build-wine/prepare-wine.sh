@@ -1,15 +1,11 @@
 #!/bin/bash
 
-# Please update these carefully, some versions won't work under Wine
-NSIS_FILENAME=nsis-3.08-setup.exe
-NSIS_URL=https://downloads.sourceforge.net/project/nsis/NSIS%203/3.08/$NSIS_FILENAME
-NSIS_SHA256=bbc76be36ecb2fc00d493c91befdaf71654226ad8a4fc4dc338458916bf224d0
-
 PYINSTALLER_REPO="https://github.com/pyinstaller/pyinstaller.git"
-PYINSTALLER_COMMIT="0fe956a2c6157e1b276819de1a050c242de70a29"
-# ^ latest commit from "v4" branch, somewhat after "4.10" tag
+PYINSTALLER_COMMIT="413cce49ff28d87fad4472f4953489226ec90c84"
+# ^ tag "v5.11.0"
 
-PYTHON_VERSION=3.9.11
+PYTHON_VERSION=3.10.11
+
 
 # Let's begin!
 set -e
@@ -52,16 +48,12 @@ break_legacy_easy_install
 info "Installing build dependencies."
 $WINE_PYTHON -m pip install --no-build-isolation --no-dependencies --no-warn-script-location \
     --cache-dir "$WINE_PIP_CACHE_DIR" -r "$CONTRIB"/deterministic-build/requirements-build-base.txt
-$WINE_PYTHON -m pip install --no-build-isolation --no-dependencies --no-warn-script-location \
+$WINE_PYTHON -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
     --cache-dir "$WINE_PIP_CACHE_DIR" -r "$CONTRIB"/deterministic-build/requirements-build-wine.txt
 
-info "Installing NSIS."
-download_if_not_exist "$CACHEDIR/$NSIS_FILENAME" "$NSIS_URL"
-verify_hash "$CACHEDIR/$NSIS_FILENAME" "$NSIS_SHA256"
-wine "$CACHEDIR/$NSIS_FILENAME" /S
 
 # copy already built DLLs
-cp "$DLL_TARGET_DIR/libsecp256k1-0.dll" $WINEPREFIX/drive_c/tmp/ || fail "Could not copy libsecp to its destination"
+cp "$DLL_TARGET_DIR"/libsecp256k1-*.dll $WINEPREFIX/drive_c/tmp/ || fail "Could not copy libsecp to its destination"
 cp "$DLL_TARGET_DIR/libzbar-0.dll" $WINEPREFIX/drive_c/tmp/ || fail "Could not copy libzbar to its destination"
 cp "$DLL_TARGET_DIR/libusb-1.0.dll" $WINEPREFIX/drive_c/tmp/ || fail "Could not copy libusb to its destination"
 
@@ -77,7 +69,7 @@ info "Building PyInstaller."
     else
         fail "unexpected WIN_ARCH: $WIN_ARCH"
     fi
-    if [ -f "$CACHEDIR/pyinstaller/PyInstaller/bootloader/Windows-$PYINST_ARCH/runw.exe" ]; then
+    if [ -f "$CACHEDIR/pyinstaller/PyInstaller/bootloader/Windows-$PYINST_ARCH-intel/runw.exe" ]; then
         info "pyinstaller already built, skipping"
         exit 0
     fi
@@ -102,7 +94,7 @@ info "Building PyInstaller."
                       CFLAGS="-static"
     popd
     # sanity check bootloader is there:
-    [[ -e "PyInstaller/bootloader/Windows-$PYINST_ARCH/runw.exe" ]] || fail "Could not find runw.exe in target dir!"
+    [[ -e "PyInstaller/bootloader/Windows-$PYINST_ARCH-intel/runw.exe" ]] || fail "Could not find runw.exe in target dir!"
 ) || fail "PyInstaller build failed"
 info "Installing PyInstaller."
 $WINE_PYTHON -m pip install --no-build-isolation --no-dependencies --no-warn-script-location ./pyinstaller

@@ -25,9 +25,14 @@
 import threading
 import copy
 import json
+from typing import TYPE_CHECKING
 
 from . import util
+from .util import WalletFileException, profiler
 from .logging import Logger
+
+if TYPE_CHECKING:
+    from .storage import WalletStorage
 
 JsonDBJsonEncoder = util.MyEncoder
 
@@ -43,6 +48,39 @@ def locked(func):
         with self.lock:
             return func(self, *args, **kwargs)
     return wrapper
+
+
+registered_names = {}
+registered_dicts = {}
+registered_dict_keys = {}
+registered_parent_keys = {}
+
+def register_dict(name, method, _type):
+    registered_dicts[name] = method, _type
+
+def register_name(name, method, _type):
+    registered_names[name] = method, _type
+
+def register_dict_key(name, method):
+    registered_dict_keys[name] = method
+
+def register_parent_key(name, method):
+    registered_parent_keys[name] = method
+
+def stored_as(name, _type=dict):
+    """ decorator that indicates the storage key of a stored object"""
+    def decorator(func):
+        registered_names[name] = func, _type
+        return func
+    return decorator
+
+def stored_in(name, _type=dict):
+    """ decorator that indicates the storage key of an element in a StoredDict"""
+    def decorator(func):
+        registered_dicts[name] = func, _type
+        return func
+    return decorator
+
 
 
 class StoredObject:
@@ -98,7 +136,7 @@ class StoredDict(dict):
             if not self.db or self.db._should_convert_to_stored_dict(key):
                 v = StoredDict(v, self.db, self.path + [key])
         # convert_value is called depth-first
-        if isinstance(v, dict) or isinstance(v, str) or isinstance(v, int):
+        if isinstance(v, dict) or isinstance(v, str) or isinstance(v, int) or isinstance(v, list):
             if self.db:
                 v = self.db._convert_value(self.path, key, v)
         # set parent of StoredObject
@@ -126,13 +164,28 @@ class StoredDict(dict):
         return r
 
 
+
+
 class JsonDB(Logger):
 
-    def __init__(self, data):
+    def __init__(self, data, storage=None):
         Logger.__init__(self)
         self.lock = threading.RLock()
-        self.data = data
+        self.storage = storage
         self._modified = False
+        # load data
+        if data:
+            self.load_data(data)
+        else:
+            self.data = {}
+
+    def load_data(self, s):
+        try:
+            self.data = json.loads(s)
+        except Exception:
+            raise WalletFileException("Cannot read wallet file. (parsing failed)")
+        if not isinstance(self.data, dict):
+            raise WalletFileException("Malformed wallet file (not dict)")
 
     def set_modified(self, b):
         with self.lock:
@@ -153,7 +206,7 @@ class JsonDB(Logger):
         try:
             json.dumps(key, cls=JsonDBJsonEncoder)
             json.dumps(value, cls=JsonDBJsonEncoder)
-        except:
+        except Exception:
             self.logger.info(f"json error: cannot save {repr(key)} ({repr(value)})")
             return False
         if value is not None:
@@ -166,11 +219,18 @@ class JsonDB(Logger):
         return False
 
     @locked
+    def get_dict(self, name) -> dict:
+        # Warning: interacts un-intuitively with 'put': certain parts
+        # of 'data' will have pointers saved as separate variables.
+        if name not in self.data:
+            self.data[name] = {}
+        return self.data[name]
+
+    @locked
     def dump(self, *, human_readable: bool = True) -> str:
         """Serializes the DB as a string.
         'human_readable': makes the json indented and sorted, but this is ~2x slower
         """
-
         return json.dumps(
             self.data,
             indent=4 if human_readable else None,
@@ -180,3 +240,46 @@ class JsonDB(Logger):
 
     def _should_convert_to_stored_dict(self, key) -> bool:
         return True
+
+    def _convert_dict(self, path, key, v):
+        if key in registered_dicts:
+            constructor, _type = registered_dicts[key]
+            if _type == dict:
+                v = dict((k, constructor(**x)) for k, x in v.items())
+            elif _type == tuple:
+                v = dict((k, constructor(*x)) for k, x in v.items())
+            else:
+                v = dict((k, constructor(x)) for k, x in v.items())
+        if key in registered_dict_keys:
+            convert_key = registered_dict_keys[key]
+        elif path and path[-1] in registered_parent_keys:
+            convert_key = registered_parent_keys.get(path[-1])
+        else:
+            convert_key = None
+        if convert_key:
+            v = dict((convert_key(k), x) for k, x in v.items())
+        return v
+
+    def _convert_value(self, path, key, v):
+        if key in registered_names:
+            constructor, _type = registered_names[key]
+            if _type == dict:
+                v = constructor(**v)
+            else:
+                v = constructor(v)
+        return v
+
+    def write(self):
+        with self.lock:
+            self._write()
+
+    @profiler
+    def _write(self):
+        if threading.current_thread().daemon:
+            self.logger.warning('daemon thread cannot write db')
+            return
+        if not self.modified():
+            return
+        json_str = self.dump(human_readable=not self.storage.is_encrypted())
+        self.storage.write(json_str)
+        self.set_modified(False)

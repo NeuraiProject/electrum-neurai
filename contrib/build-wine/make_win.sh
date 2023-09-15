@@ -23,17 +23,19 @@ export GCC_STRIP_BINARIES="1"
 
 export CONTRIB="$here/.."
 export PROJECT_ROOT="$CONTRIB/.."
-export CACHEDIR="$here/.cache/$WIN_ARCH"
-export PIP_CACHE_DIR="$CACHEDIR/wine_pip_cache"
+export CACHEDIR="$here/.cache/$WIN_ARCH/build"
+export PIP_CACHE_DIR="$here/.cache/$WIN_ARCH/wine_pip_cache"
 export WINE_PIP_CACHE_DIR="c:/electrum/contrib/build-wine/.cache/$WIN_ARCH/wine_pip_cache"
 export DLL_TARGET_DIR="$CACHEDIR/dlls"
 
 export WINEPREFIX="/opt/wine64"
 export WINEDEBUG=-all
 export WINE_PYHOME="c:/python3"
-export WINE_PYTHON="wine $WINE_PYHOME/python.exe -OO -B"
+export WINE_PYTHON="wine $WINE_PYHOME/python.exe -B"
 
 . "$CONTRIB"/build_tools_util.sh
+
+git -C "$PROJECT_ROOT" rev-parse 2>/dev/null || fail "Building outside a git clone is not supported."
 
 info "Clearing $here/build and $here/dist..."
 rm "$here"/build/* -rf
@@ -41,7 +43,7 @@ rm "$here"/dist/* -rf
 
 mkdir -p "$CACHEDIR" "$DLL_TARGET_DIR" "$PIP_CACHE_DIR"
 
-if [ -f "$DLL_TARGET_DIR/libsecp256k1-0.dll" ]; then
+if [ -f "$DLL_TARGET_DIR/libsecp256k1-2.dll" ]; then
     info "libsecp256k1 already built, skipping"
 else
     "$CONTRIB"/make_libsecp256k1.sh || fail "Could not build libsecp"
@@ -50,6 +52,30 @@ fi
 if [ -f "$DLL_TARGET_DIR/libzbar-0.dll" ]; then
     info "libzbar already built, skipping"
 else
+    (
+        # As debian bullseye doesn't provide win-iconv-mingw-w64-dev, we need to build it:
+        WIN_ICONV_COMMIT="9f98392dfecadffd62572e73e9aba878e03496c4"
+        # ^ tag "v0.0.8"
+        info "Building win-iconv..."
+        cd "$CACHEDIR"
+        if [ ! -d win-iconv ]; then
+            git clone https://github.com/win-iconv/win-iconv.git
+        fi
+        cd win-iconv
+        if ! $(git cat-file -e ${WIN_ICONV_COMMIT}) ; then
+            info "Could not find requested version $WIN_ICONV_COMMIT in local clone; fetching..."
+            git fetch --all
+        fi
+        git reset --hard
+        git clean -dfxq
+        git checkout "${WIN_ICONV_COMMIT}^{commit}"
+
+        # note: "-j1" as parallel jobs lead to non-reproducibility seemingly due to ordering issues
+        #       see https://github.com/win-iconv/win-iconv/issues/42
+        CC="${GCC_TRIPLET_HOST}-gcc" make -j1 || fail "Could not build win-iconv"
+        # FIXME avoid using sudo
+        sudo make install prefix="/usr/${GCC_TRIPLET_HOST}"  || fail "Could not install win-iconv"
+    )
     "$CONTRIB"/make_zbar.sh || fail "Could not build zbar"
 fi
 

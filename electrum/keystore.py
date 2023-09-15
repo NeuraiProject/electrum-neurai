@@ -31,18 +31,20 @@ from typing import Tuple, TYPE_CHECKING, Union, Sequence, Optional, Dict, List, 
 from functools import lru_cache, wraps
 from abc import ABC, abstractmethod
 
-from . import neurai, ecc, constants, bip32
-from .neurai import deserialize_privkey, serialize_privkey, BaseDecodeError
+from . import bitcoin, ecc, constants, bip32
+from .bitcoin import deserialize_privkey, serialize_privkey, BaseDecodeError
 from .transaction import Transaction, PartialTransaction, PartialTxInput, PartialTxOutput, TxInput
-from .bip32 import (convert_bip32_path_to_list_of_uint32, BIP32_PRIME,
+from .bip32 import (convert_bip32_strpath_to_intpath, BIP32_PRIME,
                     is_xpub, is_xprv, BIP32Node, normalize_bip32_derivation,
-                    convert_bip32_intpath_to_strpath, is_xkey_consistent_with_key_origin_info)
+                    convert_bip32_intpath_to_strpath, is_xkey_consistent_with_key_origin_info,
+                    KeyOriginInfo)
+from .descriptor import PubkeyProvider
 from .ecc import string_to_number
 from .crypto import (pw_decode, pw_encode, sha256, sha256d, PW_HASH_VERSION_LATEST,
                      SUPPORTED_PW_HASH_VERSIONS, UnsupportedPasswordHashVersion, hash_160,
                      CiphertextFormatError)
 from .util import (InvalidPassword, WalletFileException,
-                   BitcoinException, bh2u, bfh, inv_dict, is_hex_str)
+                   BitcoinException, bfh, inv_dict, is_hex_str)
 from .mnemonic import Mnemonic, Wordlist, seed_type, is_seed
 from .plugin import run_hook
 from .logging import Logger
@@ -52,6 +54,7 @@ if TYPE_CHECKING:
     from .plugins.hw_wallet import HW_PluginBase, HardwareClientBase, HardwareHandlerBase
     from .wallet_db import WalletDB
     from .plugin import Device
+    from .wallet import Abstract_Wallet
 
 
 class CannotDerivePubkey(Exception): pass
@@ -165,7 +168,7 @@ class KeyStore(Logger, ABC):
         pass
 
     @abstractmethod
-    def sign_transaction(self, tx: 'PartialTransaction', password) -> None:
+    def sign_transaction(self, tx: 'PartialTransaction', password, wallet: 'Abstract_Wallet') -> None:
         pass
 
     @abstractmethod
@@ -177,6 +180,10 @@ class KeyStore(Logger, ABC):
         the pubkey itself (hex) if the pubkey belongs to the keystore but not HD derived,
         or None if the pubkey is unrelated.
         """
+        pass
+
+    @abstractmethod
+    def get_pubkey_provider(self, sequence: 'AddressIndexGeneric') -> Optional[PubkeyProvider]:
         pass
 
     def find_my_pubkey_in_txinout(
@@ -216,7 +223,7 @@ class Software_KeyStore(KeyStore):
         decrypted = ec.decrypt_message(message)
         return decrypted
 
-    def sign_transaction(self, tx, password):
+    def sign_transaction(self, tx, password, wallet: 'Abstract_Wallet'):
         if self.is_watching_only():
             return
         # Raise if password is not correct.
@@ -227,7 +234,7 @@ class Software_KeyStore(KeyStore):
             keypairs[k] = self.get_private_key(v, password)
         # Sign
         if keypairs:
-            tx.sign(keypairs)
+            tx.sign(keypairs, wallet)
 
     @abstractmethod
     def update_password(self, old_password, new_password):
@@ -302,6 +309,15 @@ class Imported_KeyStore(Software_KeyStore):
             return pubkey.hex()
         return None
 
+    def get_pubkey_provider(self, sequence: 'AddressIndexGeneric') -> Optional[PubkeyProvider]:
+        if sequence in self.keypairs:
+            return PubkeyProvider(
+                origin=None,
+                pubkey=sequence,
+                deriv_path=None,
+            )
+        return None
+
     def update_password(self, old_password, new_password):
         self.check_password(old_password)
         if new_password == '':
@@ -341,7 +357,7 @@ class Deterministic_KeyStore(Software_KeyStore):
         return bool(self.seed)
 
     def get_seed_type(self) -> Optional[str]:
-        return self._seed_type + ' electrum' if self._seed_type else 'BIP39'
+        return self._seed_type
 
     def is_watching_only(self):
         return not self.has_seed()
@@ -354,12 +370,7 @@ class Deterministic_KeyStore(Software_KeyStore):
         if self.seed:
             raise Exception("a seed exists")
         self.seed = self.format_seed(seed)
-        self._seed_type = seed_type(seed) or None
-
-    def add_passphrase(self, passphrase):
-        if self.passphrase:
-            raise Exception("a passphrase exists")
-        self.passphrase = passphrase
+        self._seed_type = seed_type(seed) or 'bip39'
 
     def get_seed(self, password):
         if not self.has_seed():
@@ -371,7 +382,6 @@ class Deterministic_KeyStore(Software_KeyStore):
             return pw_decode(self.passphrase, password, version=self.pw_hash_version)
         else:
             return ''
-
 
 class MasterPublicKeyMixin(ABC):
 
@@ -408,6 +418,9 @@ class MasterPublicKeyMixin(ABC):
         """
         pass
 
+    def get_key_origin_info(self) -> Optional[KeyOriginInfo]:
+        return None
+
     @abstractmethod
     def derive_pubkey(self, for_change: int, n: int) -> bytes:
         """Returns pubkey at given path.
@@ -441,7 +454,7 @@ class MasterPublicKeyMixin(ABC):
         # 1. try fp against our root
         ks_root_fingerprint_hex = self.get_root_fingerprint()
         ks_der_prefix_str = self.get_derivation_prefix()
-        ks_der_prefix = convert_bip32_path_to_list_of_uint32(ks_der_prefix_str) if ks_der_prefix_str else None
+        ks_der_prefix = convert_bip32_strpath_to_intpath(ks_der_prefix_str) if ks_der_prefix_str else None
         if (ks_root_fingerprint_hex is not None and ks_der_prefix is not None and
                 fp_found.hex() == ks_root_fingerprint_hex):
             if path_found[:len(ks_der_prefix)] == ks_der_prefix:
@@ -495,7 +508,9 @@ class Xpub(MasterPublicKeyMixin):
         return self._xpub_bip32_node
 
     def get_derivation_prefix(self) -> Optional[str]:
-        return self._derivation_prefix
+        if self._derivation_prefix is None:
+            return None
+        return normalize_bip32_derivation(self._derivation_prefix)
 
     def get_root_fingerprint(self) -> Optional[str]:
         return self._root_fingerprint
@@ -511,11 +526,11 @@ class Xpub(MasterPublicKeyMixin):
         if not only_der_suffix and fingerprint_hex is not None and der_prefix_str is not None:
             # use root fp, and true full path
             fingerprint_bytes = bfh(fingerprint_hex)
-            der_prefix_ints = convert_bip32_path_to_list_of_uint32(der_prefix_str)
+            der_prefix_ints = convert_bip32_strpath_to_intpath(der_prefix_str)
         else:
             # use intermediate fp, and claim der suffix is the full path
             fingerprint_bytes = self.get_bip32_node_for_xpub().calc_fingerprint_of_this_node()
-            der_prefix_ints = convert_bip32_path_to_list_of_uint32('m')
+            der_prefix_ints = convert_bip32_strpath_to_intpath('m')
         der_full = der_prefix_ints + list(der_suffix)
         return fingerprint_bytes, der_full
 
@@ -528,10 +543,30 @@ class Xpub(MasterPublicKeyMixin):
         child_number_int = der_full[-1] if len(der_full) >= 1 else 0
         child_number_bytes = child_number_int.to_bytes(length=4, byteorder="big")
         fingerprint = bytes(4) if depth == 0 else bip32node.fingerprint
-        bip32node = bip32node._replace(depth=depth,
-                                       fingerprint=fingerprint,
-                                       child_number=child_number_bytes)
+        bip32node = bip32node._replace(
+            depth=depth,
+            fingerprint=fingerprint,
+            child_number=child_number_bytes,
+            # only put plain xpubs (not ypub/zpub) in PSBTs:
+            xtype="standard",
+        )
         return bip32node.to_xpub()
+
+    def get_key_origin_info(self) -> Optional[KeyOriginInfo]:
+        fp_bytes, der_full = self.get_fp_and_derivation_to_be_used_in_partial_tx(
+            der_suffix=[], only_der_suffix=False)
+        origin = KeyOriginInfo(fingerprint=fp_bytes, path=der_full)
+        return origin
+
+    def get_pubkey_provider(self, sequence: 'AddressIndexGeneric') -> Optional[PubkeyProvider]:
+        strpath = convert_bip32_intpath_to_strpath(sequence)
+        strpath = strpath[1:]  # cut leading "m"
+        bip32node = self.get_bip32_node_for_xpub()
+        return PubkeyProvider(
+            origin=self.get_key_origin_info(),
+            pubkey=bip32node._replace(xtype="standard").to_xkey(),
+            deriv_path=strpath,
+        )
 
     def add_key_origin_from_root_node(self, *, derivation_prefix: str, root_node: BIP32Node):
         assert self.xpub
@@ -644,16 +679,12 @@ class BIP32_KeyStore(Xpub, Deterministic_KeyStore):
         self.xprv = xprv
         self.add_xpub(bip32.xpub_from_xprv(xprv))
 
-    def add_xprv_from_seed(self, bip32_seed, xtype, derivation, *, seed=None, passphrase=None):
+    def add_xprv_from_seed(self, bip32_seed, xtype, derivation):
         rootnode = BIP32Node.from_rootseed(bip32_seed, xtype=xtype)
         node = rootnode.subkey_at_private_derivation(derivation)
         self.add_xprv(node.to_xprv())
         self.add_key_origin_from_root_node(derivation_prefix=derivation, root_node=rootnode)
-        if seed:
-            Deterministic_KeyStore.add_seed(self, seed)
-        if passphrase:
-            Deterministic_KeyStore.add_passphrase(self, passphrase)
-
+        
     def get_private_key(self, sequence: Sequence[int], password):
         xprv = self.get_master_private_key(password)
         node = BIP32Node.from_xkey(xprv).subkey_at_private_derivation(sequence)
@@ -666,7 +697,7 @@ class BIP32_KeyStore(Xpub, Deterministic_KeyStore):
         return cK, k
 
     def can_have_deterministic_lightning_xprv(self):
-        if (self._seed_type == 'segwit'
+        if (self.get_seed_type() == 'segwit'
                 and self.get_bip32_node_for_xpub().xtype == 'p2wpkh'):
             return True
         return False
@@ -803,9 +834,16 @@ class Old_KeyStore(MasterPublicKeyMixin, Deterministic_KeyStore):
         fingerprint_hex = self.get_root_fingerprint()
         der_prefix_str = self.get_derivation_prefix()
         fingerprint_bytes = bfh(fingerprint_hex)
-        der_prefix_ints = convert_bip32_path_to_list_of_uint32(der_prefix_str)
+        der_prefix_ints = convert_bip32_strpath_to_intpath(der_prefix_str)
         der_full = der_prefix_ints + list(der_suffix)
         return fingerprint_bytes, der_full
+
+    def get_pubkey_provider(self, sequence: 'AddressIndexGeneric') -> Optional[PubkeyProvider]:
+        return PubkeyProvider(
+            origin=None,
+            pubkey=self.derive_pubkey(*sequence).hex(),
+            deriv_path=None,
+        )
 
     def update_password(self, old_password, new_password):
         self.check_password(old_password)
@@ -920,6 +958,12 @@ class Hardware_KeyStore(Xpub, KeyStore):
             self.soft_device_id = client.get_soft_device_id()
             self.is_requesting_to_be_rewritten_to_wallet_file = True
 
+    def pairing_code(self) -> Optional[str]:
+        """Used by the DeviceMgr to keep track of paired hw devices."""
+        if not self.soft_device_id:
+            return None
+        return f"{self.plugin.name}/{self.soft_device_id}"
+
 
 KeyStoreWithMPK = Union[KeyStore, MasterPublicKeyMixin]  # intersection really...
 AddressIndexGeneric = Union[Sequence[int], str]  # can be hex pubkey str
@@ -971,11 +1015,15 @@ def bip39_is_checksum_valid(
     return checksum == calculated_checksum, True
 
 
-def from_bip43_rootseed(root_seed, derivation, xtype=None, *, seed=None, passphrase=None):
+def from_bip43_rootseed(root_seed, derivation, xtype=None, seed=None, passphrase=None):
     k = BIP32_KeyStore({})
     if xtype is None:
         xtype = xtype_from_derivation(derivation)
-    k.add_xprv_from_seed(root_seed, xtype, derivation, seed=seed, passphrase=passphrase)
+    k.add_xprv_from_seed(root_seed, xtype, derivation)
+    if seed:
+        k.add_seed(seed)
+    if passphrase:
+        k.passphrase = passphrase
     return k
 
 
@@ -988,7 +1036,7 @@ PURPOSE48_SCRIPT_TYPES_INV = inv_dict(PURPOSE48_SCRIPT_TYPES)
 
 def xtype_from_derivation(derivation: str) -> str:
     """Returns the script type to be used for this derivation."""
-    bip32_indices = convert_bip32_path_to_list_of_uint32(derivation)
+    bip32_indices = convert_bip32_strpath_to_intpath(derivation)
     if len(bip32_indices) >= 1:
         if bip32_indices[0] == 84 + BIP32_PRIME:
             return 'p2wpkh'
@@ -1042,20 +1090,20 @@ def load_keystore(db: 'WalletDB', name: str) -> KeyStore:
 def is_old_mpk(mpk: str) -> bool:
     try:
         int(mpk, 16)  # test if hex string
-    except:
+    except Exception:
         return False
     if len(mpk) != 128:
         return False
     try:
         ecc.ECPubkey(bfh('04' + mpk))
-    except:
+    except Exception:
         return False
     return True
 
 
 def is_address_list(text):
     parts = text.split()
-    return bool(parts) and all(neurai.is_address(x) for x in parts)
+    return bool(parts) and all(bitcoin.is_address(x) for x in parts)
 
 
 def get_private_keys(text, *, allow_spaces_inside_key=True, raise_on_error=False):
@@ -1065,7 +1113,7 @@ def get_private_keys(text, *, allow_spaces_inside_key=True, raise_on_error=False
         parts = list(filter(bool, parts))
     else:
         parts = text.split()
-    if bool(parts) and all(neurai.is_private_key(x, raise_on_error=raise_on_error) for x in parts):
+    if bool(parts) and all(bitcoin.is_private_key(x, raise_on_error=raise_on_error) for x in parts):
         return parts
 
 

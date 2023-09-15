@@ -26,14 +26,13 @@
 
 
 # Note: The deserialization code originally comes from ABE.
-import enum
-import logging
+
 import struct
 import traceback
 import sys
 import io
 import base64
-from typing import (Sequence, Union, NamedTuple, Tuple, Optional, Iterable,
+from typing import (Sequence, Union, NamedTuple, Tuple, Optional, Iterable, Mapping,
                     Callable, List, Dict, Set, TYPE_CHECKING)
 from collections import defaultdict
 from enum import IntEnum
@@ -41,25 +40,31 @@ import itertools
 import binascii
 import copy
 
-from . import ecc, neurai, constants, segwit_addr, bip32, assets
-from .assets import guess_asset_script_for_vin
-from .bip32 import UINT32_MAX, BIP32Node
-from .util import NeuraiValue, parse_max_spend, to_bytes, bh2u, bfh, chunks, is_hex_str, Satoshis, format_satoshis
-from .neurai import (TYPE_ADDRESS, TYPE_SCRIPT, hash_160,
-                        hash160_to_p2sh, hash160_to_p2pkh, hash_to_segwit_addr,
-                        var_int, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, COIN,
-                        int_to_hex, push_script, b58_address_to_hash160,
-                        opcodes, add_number_to_script, base_decode, is_segwit_script_type,
-                        base_encode, construct_witness, construct_script)
+from . import ecc, bitcoin, constants, segwit_addr, bip32
+from .bip32 import BIP32Node
+from .util import profiler, to_bytes, bfh, chunks, is_hex_str, parse_max_spend
+from .bitcoin import (TYPE_ADDRESS, TYPE_SCRIPT, hash_160,
+                      hash160_to_p2sh, hash160_to_p2pkh, hash_to_segwit_addr,
+                      var_int, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC, COIN,
+                      int_to_hex, push_script, b58_address_to_hash160,
+                      opcodes, add_number_to_script, base_decode,
+                      base_encode, construct_witness, construct_script)
 from .crypto import sha256d
 from .logging import get_logger
+from .util import ShortID, OldTaskGroup, convert_bytes_to_utf8_safe
+from .descriptor import Descriptor, MissingSolutionPiece, create_dummy_descriptor_from_address
+from .json_db import stored_in
 
 if TYPE_CHECKING:
     from .wallet import Abstract_Wallet
+    from .network import Network
 
 
 _logger = get_logger(__name__)
 DEBUG_PSBT_PARSING = False
+
+
+_NEEDS_RECALC = ...  # sentinel value
 
 
 class SerializationError(Exception):
@@ -90,60 +95,78 @@ class MissingTxInputAmount(Exception):
     pass
 
 
-class SIGHASH(IntEnum):
-    ALL = 0x01
-    NONE = 0x02
-    SINGLE = 0x03
+class TxinDataFetchProgress(NamedTuple):
+    num_tasks_done: int
+    num_tasks_total: int
+    has_errored: bool
+    has_finished: bool
+
+
+class Sighash(IntEnum):
+    # note: this is not an IntFlag, as ALL|NONE != SINGLE
+
+    ALL = 1
+    NONE = 2
+    SINGLE = 3
     ANYONECANPAY = 0x80
-    ALL_ANYONECANPAY = ALL + ANYONECANPAY
-    NONE_ANYONECANPAY = NONE + ANYONECANPAY
-    SINGLE_ANYONECANPAY = SINGLE + ANYONECANPAY
+
+    @classmethod
+    def is_valid(cls, sighash: int) -> bool:
+        for flag in Sighash:
+            for base_flag in [Sighash.ALL, Sighash.NONE, Sighash.SINGLE]:
+                if (flag & ~0x1f | base_flag) == sighash:
+                    return True
+        return False
+
+    @classmethod
+    def to_sigbytes(cls, sighash: int) -> bytes:
+        return sighash.to_bytes(length=1, byteorder="big")
 
 
 class TxOutput:
     scriptpubkey: bytes
-    _value: Union[int, str]
-    asset: Optional[str]
+    value: Union[int, str]
 
-    def __init__(self, *, scriptpubkey: bytes, value: int, asset: str = None):
-        assert isinstance(scriptpubkey, bytes)
-        if isinstance(value, Satoshis):
-            value = value.value
-        assert isinstance(value, (str, int))
+    def __init__(self, *, scriptpubkey: bytes, value: Union[int, str]):
+        self.scriptpubkey = scriptpubkey
         if not (isinstance(value, int) or parse_max_spend(value) is not None):
             raise ValueError(f"bad txout value: {value!r}")
-        self.scriptpubkey = scriptpubkey
-        self._value = value
-        self.asset = asset
+        self.value = value  # int in satoshis; or spend-max-like str
 
     @property
-    def neurai_value(self) -> NeuraiValue:
-        return NeuraiValue(0, {self.asset: self._value}) if self.asset else NeuraiValue(self._value)
+    def asset(self):
+        if self._asset == _NEEDS_RECALC:
+            from .asset import get_asset_info_from_script
+            asset_data = get_asset_info_from_script(self.scriptpubkey)
+            if asset_data.is_transferable():
+                self._asset = asset_data.asset
+            else:
+                self._asset = None
+        return self._asset
 
-    @property
-    def value(self) -> Union[int, str]:
-        return self._value
-
-    @value.setter
-    def value(self, value):
-        assert isinstance(value, int) or parse_max_spend(value) is not None
-        self._value = value
+    def asset_aware_value(self):
+        if self._asset_value == _NEEDS_RECALC:
+            from .asset import get_asset_info_from_script
+            asset_data = get_asset_info_from_script(self.scriptpubkey)
+            if asset_data.is_transferable():
+                self._asset_value = asset_data.amount
+            else:
+                self._asset_value = self.value
+        return self._asset_value
 
     @classmethod
-    def from_address_and_value(cls, address: str, value: Union[int, str], asset: str = None) -> Union['TxOutput', 'PartialTxOutput']:
-        script = bfh(neurai.address_to_script(address))
+    def from_address_and_value(cls, address: str, value: Union[int, str], *, asset: str = None, memo = None) -> Union['TxOutput', 'PartialTxOutput']:
         if asset:
-            script = assets.create_transfer_asset_script(script, asset, value)
-
-        return cls(scriptpubkey=script,
-                   value=value,
-                   asset=asset)
+            from .asset import generate_transfer_script_from_base
+            assert isinstance(value, int)
+            return cls(scriptpubkey=bfh(generate_transfer_script_from_base(asset, value, bitcoin.address_to_script(address), memo=memo)),
+                       value=0)
+        else:
+            return cls(scriptpubkey=bfh(bitcoin.address_to_script(address)),
+                    value=value)
 
     def serialize_to_network(self) -> bytes:
-        if self.asset:
-            buf = bytes(8)
-        else:
-            buf = self.value.to_bytes(8, byteorder="little", signed=False)
+        buf = int.to_bytes(self.value, 8, byteorder="little", signed=False)
         script = self.scriptpubkey
         buf += bfh(var_int(len(script.hex()) // 2))
         buf += script
@@ -158,42 +181,35 @@ class TxOutput:
             raise SerializationError('extra junk at the end of TxOutput bytes')
         return txout
 
-    def to_legacy_tuple(self) -> Tuple[int, str, NeuraiValue]:
-        if self.asset:
-            value = NeuraiValue(0, {self.asset: self.value})
-        else:
-            value = NeuraiValue(self.value)
-        if self.address:
-            return TYPE_ADDRESS, self.address, value
-        return TYPE_SCRIPT, self.scriptpubkey.hex(), value
+    def to_legacy_tuple(self) -> Tuple[int, str, Union[int, str]]:
+        if self.address and not self.asset:
+            return TYPE_ADDRESS, self.address, self.value
+        return TYPE_SCRIPT, self.scriptpubkey.hex(), self.value
 
     @classmethod
-    def from_legacy_tuple(cls, _type: int, addr: str, val) -> Union['TxOutput', 'PartialTxOutput']:
-
-        if isinstance(val, Dict):
-            val = NeuraiValue.from_json(val)
-        if isinstance(val, int):
-            val = NeuraiValue(val)
-
-        asset_d = val.assets
-        asset = None
-        if asset_d:
-            asset, value = list(val.assets.items())[0]
-        else:
-            value = val.xna_value
-
+    def from_legacy_tuple(cls, _type: int, addr: str, val: Union[int, str]) -> Union['TxOutput', 'PartialTxOutput']:
         if _type == TYPE_ADDRESS:
-            return cls.from_address_and_value(addr, value, asset)
+            return cls.from_address_and_value(addr, val)
         if _type == TYPE_SCRIPT:
-            script = bfh(addr)
-            if asset:
-                script = assets.create_transfer_asset_script(script, asset, value)
-            return cls(scriptpubkey=script, value=value, asset=asset)
+            return cls(scriptpubkey=bfh(addr), value=val)
         raise Exception(f"unexpected legacy address type: {_type}")
-    
+
+    @property
+    def scriptpubkey(self) -> bytes:
+        return self._scriptpubkey
+
+    @scriptpubkey.setter
+    def scriptpubkey(self, scriptpubkey: bytes):
+        self._scriptpubkey = scriptpubkey
+        self._address = _NEEDS_RECALC
+        self._asset_value = _NEEDS_RECALC
+        self._asset = _NEEDS_RECALC
+
     @property
     def address(self) -> Optional[str]:
-        return get_address_from_output_script(self.scriptpubkey)  # TODO cache this?
+        if self._address is _NEEDS_RECALC:
+            self._address = get_address_from_output_script(self._scriptpubkey)
+        return self._address
 
     def get_ui_address_str(self) -> str:
         addr = self.address
@@ -202,7 +218,7 @@ class TxOutput:
         return f"SCRIPT {self.scriptpubkey.hex()}"
 
     def __repr__(self):
-        return f"<TxOutput script={self.scriptpubkey.hex()} address={self.address} asset={self.asset} value={self.value}>"
+        return f"<TxOutput script={self.scriptpubkey.hex()} address={self.address} value={self.value}>"
 
     def __eq__(self, other):
         if not isinstance(other, TxOutput):
@@ -213,14 +229,10 @@ class TxOutput:
         return not (self == other)
 
     def to_json(self):
-        if self.asset:
-            value = NeuraiValue(0, {self.asset: self.value})
-        else:
-            value = NeuraiValue(self.value)
         d = {
             'scriptpubkey': self.scriptpubkey.hex(),
             'address': self.address,
-            'value_sats': value
+            'value_sats': self.value,
         }
         return d
 
@@ -242,6 +254,15 @@ class TxOutpoint(NamedTuple):
         return TxOutpoint(txid=bfh(hash_str),
                           out_idx=int(idx_str))
 
+    @classmethod
+    def from_json(cls, d) -> 'TxOutpoint':
+        assert isinstance(d, Sequence)
+        assert len(d) == 2
+        assert isinstance(d[1], int)
+        _txid = bytes.fromhex(d[0])
+        assert len(_txid) == 32, f'{_txid} should be a sha256 hash'
+        return cls(txid=_txid, out_idx=d[1])
+
     def __str__(self) -> str:
         return f"""TxOutpoint("{self.to_str()}")"""
 
@@ -260,22 +281,8 @@ class TxOutpoint(NamedTuple):
     def is_coinbase(self) -> bool:
         return self.txid == bytes(32)
 
-
-class AssetMeta(NamedTuple):
-    name: str
-    circulation: int
-    is_owner: bool
-    is_reissuable: bool
-    divisions: int
-    has_ipfs: bool
-    ipfs_str: Optional[str]
-    height: int
-    div_height: Optional[int]
-    ipfs_height: Optional[int]
-    source_type: str  #q, r, o
-    source_outpoint: TxOutpoint
-    source_divisions: Optional[TxOutpoint]
-    source_ipfs: Optional[TxOutpoint]
+    def short_name(self):
+        return f"{self.txid.hex()[0:10]}:{self.out_idx}"
 
 
 class TxInput:
@@ -284,33 +291,67 @@ class TxInput:
     nsequence: int
     witness: Optional[bytes]
     _is_coinbase_output: bool
-    sighash: Optional[int]
 
     def __init__(self, *,
                  prevout: TxOutpoint,
                  script_sig: bytes = None,
                  nsequence: int = 0xffffffff - 1,
                  witness: bytes = None,
-                 is_coinbase_output: bool = False,
-                 sighash: Optional[int] = None):
+                 is_coinbase_output: bool = False):
         self.prevout = prevout
         self.script_sig = script_sig
         self.nsequence = nsequence
         self.witness = witness
         self._is_coinbase_output = is_coinbase_output
-        self.sighash = sighash
+        # blockchain fields
+        self.block_height = None  # type: Optional[int]  # height at which the TXO is mined; None means unknown. not SPV-ed.
+        self.block_txpos = None  # type: Optional[int]  # position of tx in block, if TXO is mined; otherwise None or -1
+        self.spent_height = None  # type: Optional[int]  # height at which the TXO got spent
+        self.spent_txid = None  # type: Optional[str]  # txid of the spender
+        self._utxo = None  # type: Optional[Transaction]
+        self.__scriptpubkey = None  # type: Optional[bytes]
+        self.__address = None  # type: Optional[str]
+        self.__asset = None  # type: Optional[str]
+        self.__value_sats = None  # type: Optional[int]
+        self.__asset_value_sats = None  # type: Optional[int]
 
     @property
-    def nsequence(self):
-        return self._nsequence
+    def short_id(self):
+        if self.block_txpos is not None and self.block_txpos >= 0:
+            return ShortID.from_components(self.block_height, self.block_txpos, self.prevout.out_idx)
+        else:
+            return self.prevout.short_name()
 
-    @nsequence.setter
-    def nsequence(self, sig):
-        #if self.prevout.txid.hex() == 'f619e4425cafe9e4aa211beb8c08f6529535cf37f94929c990e6366ce8dea799':
-        #    traceback.print_stack()
-        #    print(sig)
-        
-        self._nsequence = sig
+    @property
+    def utxo(self):
+        return self._utxo
+
+    @utxo.setter
+    def utxo(self, tx: Optional['Transaction']):
+        if tx is None:
+            return
+        # note that tx might be a PartialTransaction
+        # serialize and de-serialize tx now. this might e.g. convert a complete PartialTx to a Tx
+        tx = tx_from_any(str(tx))
+        # 'utxo' field should not be a PSBT:
+        if not tx.is_complete():
+            return
+        self.validate_data(utxo=tx)
+        self._utxo = tx
+        # update derived fields
+        out_idx = self.prevout.out_idx
+        self.__scriptpubkey = self._utxo.outputs()[out_idx].scriptpubkey
+        self.__address = _NEEDS_RECALC
+        self.__asset_value_sats = _NEEDS_RECALC
+        self.__asset = _NEEDS_RECALC
+        self.__value_sats = self._utxo.outputs()[out_idx].value
+
+    def validate_data(self, *, utxo: Optional['Transaction'] = None, **kwargs) -> None:
+        utxo = utxo or self.utxo
+        if utxo:
+            if self.prevout.txid.hex() != utxo.txid():
+                raise PSBTInputConsistencyFailure(f"PSBT input validation: "
+                                                  f"If a non-witness UTXO is provided, its hash must match the hash specified in the prevout")
 
     def is_coinbase_input(self) -> bool:
         """Whether this is the input of a coinbase tx."""
@@ -318,12 +359,42 @@ class TxInput:
 
     def is_coinbase_output(self) -> bool:
         """Whether the coin being spent is an output of a coinbase tx.
-        This matters for coin maturity.
+        This matters for coin maturity (and pretty much only for that!).
         """
         return self._is_coinbase_output
 
-    def value_sats(self) -> Optional[NeuraiValue]:
-        return None
+    def value_sats(self, *, asset_aware=False) -> Optional[int]:
+        if asset_aware:
+            if self.__asset_value_sats is _NEEDS_RECALC:
+                from .asset import get_asset_info_from_script
+                asset_data = get_asset_info_from_script(self.scriptpubkey)
+                if asset_data.is_transferable():
+                    self.__asset_value_sats = asset_data.amount
+                else:
+                    self.__asset_value_sats = self.__value_sats
+            return self.__asset_value_sats
+        return self.__value_sats
+
+    @property
+    def address(self) -> Optional[str]:
+        if self.__address is _NEEDS_RECALC:
+            self.__address = get_address_from_output_script(self.__scriptpubkey)
+        return self.__address
+
+    @property
+    def asset(self) -> Optional[str]:
+        if self.__asset is _NEEDS_RECALC:
+            from .asset import get_asset_info_from_script
+            asset_data = get_asset_info_from_script(self.scriptpubkey)
+            if asset_data.is_transferable():
+                self.__asset = asset_data.asset
+            else:
+                self.__asset = None
+        return self.__asset
+
+    @property
+    def scriptpubkey(self) -> Optional[bytes]:
+        return self.__scriptpubkey
 
     def to_json(self):
         d = {
@@ -338,7 +409,18 @@ class TxInput:
             d['witness'] = self.witness.hex()
         return d
 
-    def witness_elements(self)-> Sequence[bytes]:
+    def serialize_to_network(self, *, script_sig: bytes = None) -> bytes:
+        if script_sig is None:
+            script_sig = self.script_sig
+        # Prev hash and index
+        s = self.prevout.serialize_to_network()
+        # Script length, script, sequence
+        s += bytes.fromhex(var_int(len(script_sig)))
+        s += script_sig
+        s += bytes.fromhex(int_to_hex(self.nsequence, 4))
+        return s
+
+    def witness_elements(self) -> Sequence[bytes]:
         if not self.witness:
             return []
         vds = BCDataStream()
@@ -350,6 +432,37 @@ class TxInput:
         if self.witness not in (b'\x00', b'', None):
             return True
         return False
+
+    async def add_info_from_network(
+            self,
+            network: Optional['Network'],
+            *,
+            ignore_network_issues: bool = True,
+            timeout=None,
+    ) -> bool:
+        """Returns True iff successful."""
+        from .network import NetworkException
+        async def fetch_from_network(txid) -> Optional[Transaction]:
+            tx = None
+            if network and network.has_internet_connection():
+                try:
+                    raw_tx = await network.get_transaction(txid, timeout=timeout)
+                except NetworkException as e:
+                    _logger.info(f'got network error getting input txn. err: {repr(e)}. txid: {txid}. '
+                                 f'if you are intentionally offline, consider using the --offline flag')
+                    if not ignore_network_issues:
+                        raise e
+                else:
+                    tx = Transaction(raw_tx)
+            if not tx and not ignore_network_issues:
+                raise NetworkException('failed to get prev tx from network')
+            return tx
+
+        if self.utxo is None:
+            if self.prevout.txid == b'\0' * 32:
+                return False
+            self.utxo = await fetch_from_network(txid=self.prevout.txid.hex())
+        return self.utxo is not None
 
 
 class BCDataStream(object):
@@ -518,20 +631,6 @@ class OPPushDataGeneric:
         return isinstance(item, cls) \
                or (isinstance(item, type) and issubclass(item, cls))
 
-class OPGeneric:
-    def __init__(self, matcher: Callable=None):
-        if matcher is not None:
-            self.matcher = matcher
-
-    def match(self, op) -> bool:
-        return self.matcher(op)
-
-    @classmethod
-    def is_instance(cls, item):
-        # accept objects that are instances of this class
-        # or other classes that are subclasses
-        return isinstance(item, cls) \
-               or (isinstance(item, type) and issubclass(item, cls))
 
 class OPGeneric:
     def __init__(self, matcher: Callable=None):
@@ -551,7 +650,6 @@ class OPGeneric:
 OPPushDataPubkey = OPPushDataGeneric(lambda x: x in (33, 65))
 OP_ANYSEGWIT_VERSION = OPGeneric(lambda x: x in list(range(opcodes.OP_1, opcodes.OP_16 + 1)))
 
-SCRIPTPUBKEY_TEMPLATE_P2PK = [OPPushDataGeneric(lambda x: x in (33, 65)), opcodes.OP_CHECKSIG]
 SCRIPTPUBKEY_TEMPLATE_P2PKH = [opcodes.OP_DUP, opcodes.OP_HASH160,
                                OPPushDataGeneric(lambda x: x == 20),
                                opcodes.OP_EQUALVERIFY, opcodes.OP_CHECKSIG]
@@ -561,15 +659,18 @@ SCRIPTPUBKEY_TEMPLATE_P2WPKH = [opcodes.OP_0, OPPushDataGeneric(lambda x: x == 2
 SCRIPTPUBKEY_TEMPLATE_P2WSH = [opcodes.OP_0, OPPushDataGeneric(lambda x: x == 32)]
 SCRIPTPUBKEY_TEMPLATE_ANYSEGWIT = [OP_ANYSEGWIT_VERSION, OPPushDataGeneric(lambda x: x in list(range(2, 40 + 1)))]
 
+
 def check_scriptpubkey_template_and_dust(scriptpubkey, amount: Optional[int]):
     if match_script_against_template(scriptpubkey, SCRIPTPUBKEY_TEMPLATE_P2PKH):
-        dust_limit = neurai.DUST_LIMIT_P2PKH
+        dust_limit = bitcoin.DUST_LIMIT_P2PKH
     elif match_script_against_template(scriptpubkey, SCRIPTPUBKEY_TEMPLATE_P2SH):
-        dust_limit = neurai.DUST_LIMIT_P2SH
+        dust_limit = bitcoin.DUST_LIMIT_P2SH
     elif match_script_against_template(scriptpubkey, SCRIPTPUBKEY_TEMPLATE_P2WSH):
-        dust_limit = neurai.DUST_LIMIT_P2WSH
+        dust_limit = bitcoin.DUST_LIMIT_P2WSH
     elif match_script_against_template(scriptpubkey, SCRIPTPUBKEY_TEMPLATE_P2WPKH):
-        dust_limit = neurai.DUST_LIMIT_P2WPKH
+        dust_limit = bitcoin.DUST_LIMIT_P2WPKH
+    elif match_script_against_template(scriptpubkey, SCRIPTPUBKEY_TEMPLATE_ANYSEGWIT):
+        dust_limit = bitcoin.DUST_LIMIT_UNKNOWN_SEGWIT
     else:
         raise Exception(f'scriptpubkey does not conform to any template: {scriptpubkey.hex()}')
     if amount < dust_limit:
@@ -588,16 +689,6 @@ def match_script_against_template(script, template, debug=False) -> bool:
             if debug:
                 _logger.debug(f"malformed script")
             return False
-
-    # Chop off assets
-    op_xna_asset = len(script)
-    for i in range(len(script)):
-        # print(f'Checking OPCODE {script_item[0]} {int(opcodes.OP_XNA_ASSET)}')
-        if script[i][0] == int(opcodes.OP_XNA_ASSET): # Don't check past op XNA asset
-            op_xna_asset = i
-            break
-    script = script[:op_xna_asset]
-    
     if debug:
         _logger.debug(f"match script against template: {script}")
     if len(script) != len(template):
@@ -607,7 +698,6 @@ def match_script_against_template(script, template, debug=False) -> bool:
     for i in range(len(script)):
         template_item = template[i]
         script_item = script[i]
-       
         if OPPushDataGeneric.is_instance(template_item) and template_item.check_data_len(script_item[0]):
             continue
         if OPGeneric.is_instance(template_item) and template_item.match(script_item[0]):
@@ -617,7 +707,6 @@ def match_script_against_template(script, template, debug=False) -> bool:
                 _logger.debug(f"item mismatch at position {i}: {template_item} != {script_item[0]}")
             return False
     return True
-
 
 def get_script_type_from_output_script(_bytes: bytes) -> Optional[str]:
     if _bytes is None:
@@ -634,92 +723,18 @@ def get_script_type_from_output_script(_bytes: bytes) -> Optional[str]:
         return 'p2wpkh'
     if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_P2WSH):
         return 'p2wsh'
-    if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_P2PK):
-        return 'p2pk'
     return None
-
-
-def is_output_script_p2pk(_bytes: bytes) -> bool:
-    try:
-        raw_decoded = [x for x in script_GetOp(_bytes)]
-    except MalformedBitcoinScript:
-        return False
-
-    decoded = []
-    for tup in raw_decoded:
-        if tup[0] == opcodes.OP_XNA_ASSET:
-            break
-        decoded.append(tup)
-
-    # p2pk (deprecated)
-    if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_P2PK):
-        return True
-    return False
-
-
-def is_asset_output_script_malformed_or_non_standard(_bytes: bytes) -> bool:
-    try:
-        raw_decoded = [x for x in script_GetOp(_bytes)]
-    except MalformedBitcoinScript:
-        return True
-
-    decoded = []
-    record = False
-    for tup in raw_decoded:
-        if tup[0] == opcodes.OP_XNA_ASSET:
-            record = True
-        if record:
-            decoded.append(tup)
-
-    asset_portion = BCDataStream()
-    try:
-        asset_portion.write(decoded[1][1])
-        assert asset_portion.read_bytes(3) == b'xna'
-        script_type = asset_portion.read_bytes(1)
-        asset_name_len = asset_portion.read_bytes(1)[0]
-        asset_name = asset_portion.read_bytes(asset_name_len)
-        assert len(asset_name) == asset_name_len
-        if script_type != b'o':
-            asset_portion.read_int64()
-            # We store reissues & restricted assets
-            if script_type == b'q':
-                if asset_portion.read_bytes(3)[2] == 1:
-                    asset_portion.read_bytes(34)
-            elif script_type == b'r':
-                asset_portion.read_bytes(2)
-                if asset_portion.can_read_more():
-                    asset_portion.read_bytes(34)
-            elif script_type == b't':
-                pass
-                # We cannot know what the ipfs message is
-                # if asset_portion.can_read_more():
-                #    asset_portion.read_bytes(34)
-            else:
-                return True
-        if asset_portion.can_read_more():
-            return True
-    except:
-        return True
-    return False
-
 
 def get_address_from_output_script(_bytes: bytes, *, net=None) -> Optional[str]:
     try:
-        raw_decoded = [x for x in script_GetOp(_bytes)]
+        decoded = [x for x in script_GetOp(_bytes)]
     except MalformedBitcoinScript:
         return None
 
-    decoded = []
-    for tup in raw_decoded:
-        if tup[0] == opcodes.OP_XNA_ASSET:
+    for i, (op, _, _) in enumerate(decoded):
+        if op == opcodes.OP_ASSET:
+            decoded = decoded[:i]
             break
-        decoded.append(tup)
-
-    # p2pk (deprecated)
-    if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_P2PK):
-        pubkey_bytes = decoded[0][1]
-        h160 = hash_160(pubkey_bytes)
-        return hash160_to_p2pkh(h160, net=net)
 
     # p2pkh
     if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_P2PKH):
@@ -749,19 +764,7 @@ def parse_input(vds: BCDataStream) -> TxInput:
     prevout = TxOutpoint(txid=prevout_hash, out_idx=prevout_n)
     script_sig = vds.read_bytes(vds.read_compact_size())
     nsequence = vds.read_uint32()
-
-    # Calculate the sig hash type
-
-    sigtype = None
-    try:
-        # Theoretically the script_sig is the very end of the first stack push
-        sigtype = next(iter(script_GetOp(script_sig)))[1][-1]
-        if sigtype not in list(map(int, SIGHASH)):
-            raise Exception("invalid sighash: {}".format(sigtype))
-    except Exception:
-        sigtype = None
-
-    return TxInput(prevout=prevout, script_sig=script_sig, nsequence=nsequence, sighash=sigtype)
+    return TxInput(prevout=prevout, script_sig=script_sig, nsequence=nsequence)
 
 
 def parse_witness(vds: BCDataStream, txin: TxInput) -> None:
@@ -770,51 +773,14 @@ def parse_witness(vds: BCDataStream, txin: TxInput) -> None:
     txin.witness = bfh(construct_witness(witness_elements))
 
 
-def get_assets_from_script(script: bytes) -> Dict[str, int]:
-
-    # TODO: Generalize
-
-    def search_for_xna(b: bytes, start: int) -> int:
-        index = -1
-        if b[start:start+3] == b'xna':
-            index = start+3
-        elif b[start+1:start+4] == b'xna':
-            index = start+4
-        return index
-
-    if script[0] == 0xA9 and script[1] == 0x14 and script[22] == 0x87:  # Script hash
-        index = search_for_xna(script, 25)
-    else:  # Assumed Pubkey hash
-        index = search_for_xna(script, 27)
-
-    if index > 0:
-        type = script[index]
-        asset_name_len = script[index+1]
-        asset_name = script[index+2:index+2+asset_name_len]
-        if type != b'o'[0]:
-            sat_amt = int.from_bytes(script[index+2+asset_name_len:index+10+asset_name_len], byteorder='little')
-        else:  # Give a value of '1' to ownership tokens
-            sat_amt = 100_000_000
-        name = asset_name.decode('ascii')
-        return {name: sat_amt}
-    else:
-        return {}
-
-
 def parse_output(vds: BCDataStream) -> TxOutput:
     value = vds.read_int64()
     if value > TOTAL_COIN_SUPPLY_LIMIT_IN_BTC * COIN:
         raise SerializationError('invalid output amount (too large)')
     if value < 0:
         raise SerializationError('invalid output amount (negative)')
-    value = Satoshis(value)
     scriptpubkey = vds.read_bytes(vds.read_compact_size())
-    assets = get_assets_from_script(scriptpubkey)
-    asset = None
-    if assets:
-        asset, value = list(assets.items())[0]
-
-    return TxOutput(value=value, asset=asset, scriptpubkey=scriptpubkey)
+    return TxOutput(value=value, scriptpubkey=scriptpubkey)
 
 
 # pay & redeem scripts
@@ -825,33 +791,22 @@ def multisig_script(public_keys: Sequence[str], m: int) -> str:
     return construct_script([m, *public_keys, n, opcodes.OP_CHECKMULTISIG])
 
 
+
+
 class Transaction:
     _cached_network_ser: Optional[str]
-    for_swap = False
 
     def __str__(self):
         return self.serialize()
 
-    def __deepcopy__(self, memo):
-        cls = self.__class__
-        result = cls.__new__(cls)
-        memo[id(self)] = result
-        for k, v in self.__dict__.items():
-            if k != '_wallet':
-                setattr(result, k, copy.deepcopy(v))
-            else:
-                setattr(result, k, v)
-        return result
-
-    def __init__(self, raw, wallet: 'Abstract_Wallet' = None):
-        self._wallet = wallet
+    def __init__(self, raw):
         if raw is None:
             self._cached_network_ser = None
         elif isinstance(raw, str):
             self._cached_network_ser = raw.strip() if raw else None
             assert is_hex_str(self._cached_network_ser)
         elif isinstance(raw, (bytes, bytearray)):
-            self._cached_network_ser = bh2u(raw)
+            self._cached_network_ser = raw.hex()
         else:
             raise Exception(f"cannot initialize transaction from {raw}")
         self._inputs = None  # type: List[TxInput]
@@ -869,12 +824,6 @@ class Transaction:
     @locktime.setter
     def locktime(self, value: int):
         assert isinstance(value, int), f"locktime must be int, not {value!r}"
-        # Assume we have the correct locktime for SIGHASH_SINGLE
-        if self.for_swap:
-            return
-        #if value != 0:
-        #    traceback.print_stack()
-        #    print(value)
         self._locktime = value
         self.invalidate_ser_cache()
 
@@ -894,7 +843,6 @@ class Transaction:
             'locktime': self.locktime,
             'inputs': [txin.to_json() for txin in self.inputs()],
             'outputs': [txout.to_json() for txout in self.outputs()],
-            'swap': self.for_swap
         }
         return d
 
@@ -941,33 +889,6 @@ class Transaction:
             raise SerializationError('extra junk at the end')
 
     @classmethod
-    def get_siglist(self, txin: 'PartialTxInput', *, estimate_size=False):
-        if txin.is_coinbase_input():
-            return [], []
-
-        if estimate_size:
-            try:
-                pubkey_size = len(txin.pubkeys[0])
-            except IndexError:
-                pubkey_size = 33  # guess it is compressed
-            num_pubkeys = max(1, len(txin.pubkeys))
-            pk_list = ["00" * pubkey_size] * num_pubkeys
-            num_sig = max(1, txin.num_sig)
-            # we guess that signatures will be 72 bytes long
-            # note: DER-encoded ECDSA signatures are 71 or 72 bytes in practice
-            #       See https://bitcoin.stackexchange.com/questions/77191/what-is-the-maximum-size-of-a-der-encoded-ecdsa-signature
-            #       We assume low S (as that is a bitcoin standardness rule).
-            #       We do not assume low R (even though the sigs we create conform), as external sigs,
-            #       e.g. from a hw signer cannot be expected to have a low R.
-            sig_list = ["00" * 72] * num_sig
-        else:
-            pk_list = [pubkey.hex() for pubkey in txin.pubkeys]
-            sig_list = [txin.part_sigs.get(pubkey, b'').hex() for pubkey in txin.pubkeys]
-            if txin.is_complete():
-                sig_list = [sig for sig in sig_list if sig]
-        return pk_list, sig_list
-
-    @classmethod
     def serialize_witness(cls, txin: TxInput, *, estimate_size=False) -> str:
         if txin.witness is not None:
             return txin.witness.hex()
@@ -975,51 +896,24 @@ class Transaction:
             return ''
         assert isinstance(txin, PartialTxInput)
 
-        _type = txin.script_type
         if not txin.is_segwit():
             return construct_witness([])
 
         if estimate_size and txin.witness_sizehint is not None:
             return '00' * txin.witness_sizehint
-        if _type in ('address', 'unknown') and estimate_size:
-            _type = cls.guess_txintype_from_address(txin.address)
-        pubkeys, sig_list = cls.get_siglist(txin, estimate_size=estimate_size)
-        if _type in ['p2wpkh', 'p2wpkh-p2sh']:
-            return construct_witness([sig_list[0], pubkeys[0]])
-        elif _type in ['p2wsh', 'p2wsh-p2sh']:
-            witness_script = multisig_script(pubkeys, txin.num_sig)
-            return construct_witness([0, *sig_list, witness_script])
-        elif _type in ['p2pk', 'p2pkh', 'p2sh']:
-            return construct_witness([])
-        raise UnknownTxinType(f'cannot construct witness for txin_type: {_type}')
 
-    @classmethod
-    def guess_txintype_from_address(cls, addr: Optional[str]) -> str:
-        # It's not possible to tell the script type in general
-        # just from an address.
-        # - "1" addresses are of course p2pkh
-        # - "3" addresses are p2sh but we don't know the redeem script..
-        # - "bc1" addresses (if they are 42-long) are p2wpkh
-        # - "bc1" addresses that are 62-long are p2wsh but we don't know the script..
-        # If we don't know the script, we _guess_ it is pubkeyhash.
-        # As this method is used e.g. for tx size estimation,
-        # the estimation will not be precise.
-        if addr is None:
-            return 'p2wpkh'
-        witver, witprog = segwit_addr.decode_segwit_address(constants.net.SEGWIT_HRP, addr)
-        if witprog is not None:
-            return 'p2wpkh'
-        addrtype, hash_160_ = b58_address_to_hash160(addr)
-        if addrtype == constants.net.ADDRTYPE_P2PKH:
-            return 'p2pkh'
-        elif addrtype == constants.net.ADDRTYPE_P2SH:
-            return 'p2wpkh-p2sh'
-        raise Exception(f'unrecognized address: {repr(addr)}')
+        dummy_desc = None
+        if estimate_size:
+            dummy_desc = create_dummy_descriptor_from_address(txin.address)
+        if desc := (txin.script_descriptor or dummy_desc):
+            sol = desc.satisfy(allow_dummy=estimate_size, sigdata=txin.part_sigs)
+            if sol.witness is not None:
+                return sol.witness.hex()
+            return construct_witness([])
+        raise UnknownTxinType("cannot construct witness")
 
     @classmethod
     def input_script(self, txin: TxInput, *, estimate_size=False) -> str:
-        # This is for the hashs; don't need to calculate asset outs here
-
         if txin.script_sig is not None:
             return txin.script_sig.hex()
         if txin.is_coinbase_input():
@@ -1031,90 +925,64 @@ class Transaction:
         if txin.is_native_segwit():
             return ''
 
-        _type = txin.script_type
-        pubkeys, sig_list = self.get_siglist(txin, estimate_size=estimate_size)
-        if _type in ('address', 'unknown') and estimate_size:
-            _type = self.guess_txintype_from_address(txin.address)
-        if _type == 'p2pk':
-            script = construct_script([sig_list[0]])
-        elif _type == 'p2sh':
-            # put op_0 before script
-            redeem_script = multisig_script(pubkeys, txin.num_sig)
-            script =  construct_script([0, *sig_list, redeem_script])
-        elif _type == 'p2pkh':
-            script = construct_script([sig_list[0], pubkeys[0]])
-        elif _type in ['p2wpkh', 'p2wsh']:
-            script = ''
-        elif _type == 'p2wpkh-p2sh':
-            raise NotImplementedError()
-            redeem_script = neurai.p2wpkh_nested_script(pubkeys[0])
-            script = construct_script([redeem_script])
-        elif _type == 'p2wsh-p2sh':
-            raise NotImplementedError()
-            if estimate_size:
-                witness_script = ''
-            else:
-                witness_script = self.get_preimage_script(txin)
-            redeem_script = neurai.p2wsh_nested_script(witness_script)
-            script = construct_script([redeem_script])
-        else:
-            raise UnknownTxinType(f'cannot construct scriptSig for txin_type: {_type} {txin.scriptpubkey}')
-
-        return script
+        dummy_desc = None
+        if estimate_size:
+            dummy_desc = create_dummy_descriptor_from_address(txin.address)
+        if desc := (txin.script_descriptor or dummy_desc):
+            if desc.is_segwit():
+                if redeem_script := desc.expand().redeem_script:
+                    return construct_script([redeem_script])
+                return ""
+            sol = desc.satisfy(allow_dummy=estimate_size, sigdata=txin.part_sigs)
+            if sol.script_sig is not None:
+                return sol.script_sig.hex()
+            return ""
+        raise UnknownTxinType("cannot construct scriptSig")
 
     @classmethod
-    def get_preimage_script(cls, txin: 'PartialTxInput', wallet: 'Abstract_Wallet' = None, txin_locking_script_overrides: Dict = None) -> str:
+    def get_preimage_script(cls, txin: 'PartialTxInput', wallet: 'Abstract_Wallet', *, locking_script_overrides = None) -> str:
+        if locking_script_overrides and txin.prevout.to_str() in locking_script_overrides:
+            return locking_script_overrides[txin.prevout.to_str()]
+        if wallet is not None and wallet.db.is_non_deterministic_txo_lockingscript(txin.prevout):
+            vout = wallet.db.get_transaction(txin.prevout.txid.hex()).outputs()[txin.prevout.out_idx]
+            if vout is not None:
+                get_logger('get_preimage_script').info(f'non deterministic script found: {txin.prevout.to_str()}')
+                return vout.scriptpubkey.hex()
         if txin.witness_script:
             if opcodes.OP_CODESEPARATOR in [x[0] for x in script_GetOp(txin.witness_script)]:
                 raise Exception('OP_CODESEPARATOR black magic is not supported')
-            raise NotImplementedError()
-            # return txin.witness_script.hex()
+            return txin.witness_script.hex()
         if not txin.is_segwit() and txin.redeem_script:
             if opcodes.OP_CODESEPARATOR in [x[0] for x in script_GetOp(txin.redeem_script)]:
                 raise Exception('OP_CODESEPARATOR black magic is not supported')
             return txin.redeem_script.hex()
 
-        pubkeys = [pk.hex() for pk in txin.pubkeys]
-        if txin.script_type in ['p2sh', 'p2wsh', 'p2wsh-p2sh']:
-            script = multisig_script(pubkeys, txin.num_sig)
-        elif txin.script_type in ['p2pkh', 'p2wpkh', 'p2wpkh-p2sh']:
-            pubkey = pubkeys[0]
-            pkh = bh2u(hash_160(bfh(pubkey)))
-            script = neurai.pubkeyhash_to_p2pkh_script(pkh)
-        elif txin.script_type == 'p2pk':
-            pubkey = pubkeys[0]
-            script = neurai.public_key_to_p2pk_script(pubkey)
-        else:
-            raise UnknownTxinType(f'cannot construct preimage_script for txin_type: {txin.script_type}')
-
-        a = txin.value_sats().assets
-        if a:
-            asset, amt = list(a.items())[0]
-            script = guess_asset_script_for_vin(bfh(script), asset, amt, txin, wallet)
-        if wallet:
-            script = wallet.adb.get_nonstandard_outpoints().get(txin.prevout.to_str(), script)
-        if txin_locking_script_overrides:
-            _logger.debug('Trying to override')
-            script = txin_locking_script_overrides.get(txin.prevout.to_str(), script)
-
-        return script
-
-    @classmethod
-    def serialize_input(self, txin: TxInput, script: str) -> str:
-        # Prev hash and index
-        s = txin.prevout.serialize_to_network().hex()
-        # Script length, script, sequence
-        s += var_int(len(script)//2)
-        s += script
-        s += int_to_hex(txin.nsequence, 4)
-        return s
+        if desc := txin.script_descriptor:
+            sc = desc.expand()
+            if script := sc.scriptcode_for_sighash:
+                if txin.asset is not None:
+                    if wallet and txin.asset[-1] == '!':
+                        # If no wallet, guess that it is a transfer
+                        asset_source_outpoint = wallet.adb.get_asset_metadata_outpoint(txin.asset)
+                        if asset_source_outpoint is not None:
+                            if txin.prevout == asset_source_outpoint:
+                                get_logger('get_preimage_script').info(f'ownership creation script identified: {txin.prevout.to_str()}')
+                                from .asset import generate_owner_script_from_base
+                                asset_script = generate_owner_script_from_base(txin.asset, script.hex())
+                                return asset_script
+                    from .asset import generate_transfer_script_from_base
+                    asset_script = generate_transfer_script_from_base(txin.asset, txin.value_sats(asset_aware=True), script.hex())
+                    return asset_script
+                return script.hex()
+            raise Exception(f"don't know scriptcode for descriptor: {desc.to_string()}")
+        raise UnknownTxinType(f'cannot construct preimage_script')
 
     def _calc_bip143_shared_txdigest_fields(self) -> BIP143SharedTxDigestFields:
         inputs = self.inputs()
         outputs = self.outputs()
-        hashPrevouts = bh2u(sha256d(b''.join(txin.prevout.serialize_to_network() for txin in inputs)))
-        hashSequence = bh2u(sha256d(bfh(''.join(int_to_hex(txin.nsequence, 4) for txin in inputs))))
-        hashOutputs = bh2u(sha256d(bfh(''.join(o.serialize_to_network().hex() for o in outputs))))
+        hashPrevouts = sha256d(b''.join(txin.prevout.serialize_to_network() for txin in inputs)).hex()
+        hashSequence = sha256d(bfh(''.join(int_to_hex(txin.nsequence, 4) for txin in inputs))).hex()
+        hashOutputs = sha256d(bfh(''.join(o.serialize_to_network().hex() for o in outputs))).hex()
         return BIP143SharedTxDigestFields(hashPrevouts=hashPrevouts,
                                           hashSequence=hashSequence,
                                           hashOutputs=hashOutputs)
@@ -1147,11 +1015,12 @@ class Transaction:
         inputs = self.inputs()
         outputs = self.outputs()
 
-        def create_script_sig(txin: TxInput) -> str:
+        def create_script_sig(txin: TxInput) -> bytes:
             if include_sigs:
-                return self.input_script(txin, estimate_size=estimate_size)
-            return ''
-        txins = var_int(len(inputs)) + ''.join(self.serialize_input(txin, create_script_sig(txin))
+                script_sig = self.input_script(txin, estimate_size=estimate_size)
+                return bytes.fromhex(script_sig)
+            return b""
+        txins = var_int(len(inputs)) + ''.join(txin.serialize_to_network(script_sig=create_script_sig(txin)).hex()
                                                for txin in inputs)
         txouts = var_int(len(outputs)) + ''.join(o.serialize_to_network().hex() for o in outputs)
 
@@ -1166,14 +1035,19 @@ class Transaction:
         else:
             return nVersion + txins + txouts + nLocktime
 
-    def to_qr_data(self) -> str:
-        """Returns tx as data to be put into a QR code. No side-effects."""
+    def to_qr_data(self) -> Tuple[str, bool]:
+        """Returns (serialized_tx, is_complete). The tx is serialized to be put inside a QR code. No side-effects.
+        As space in a QR code is limited, some data might have to be omitted. This is signalled via is_complete=False.
+        """
+        is_complete = True
         tx = copy.deepcopy(self)  # make copy as we mutate tx
         if isinstance(tx, PartialTransaction):
             # this makes QR codes a lot smaller (or just possible in the first place!)
+            # note: will not apply if all inputs are taproot, due to new sighash.
             tx.convert_all_utxos_to_witness_utxos()
+            is_complete = False
         tx_bytes = tx.serialize_as_bytes()
-        return base_encode(tx_bytes, base=43)
+        return base_encode(tx_bytes, base=43), is_complete
 
     def txid(self) -> Optional[str]:
         if self._cached_txid is None:
@@ -1186,7 +1060,7 @@ class Transaction:
             except UnknownTxinType:
                 # we might not know how to construct scriptSig for some scripts
                 return None
-            self._cached_txid = bh2u(sha256d(bfh(ser))[::-1])
+            self._cached_txid = sha256d(bfh(ser))[::-1].hex()
         return self._cached_txid
 
     def wtxid(self) -> Optional[str]:
@@ -1198,10 +1072,78 @@ class Transaction:
         except UnknownTxinType:
             # we might not know how to construct scriptSig/witness for some scripts
             return None
-        return bh2u(sha256d(bfh(ser))[::-1])
+        return sha256d(bfh(ser))[::-1].hex()
 
     def add_info_from_wallet(self, wallet: 'Abstract_Wallet', **kwargs) -> None:
-        return  # no-op
+        # populate prev_txs
+        for txin in self.inputs():
+            wallet.add_input_info(txin)
+
+    async def add_info_from_network(
+        self,
+        network: Optional['Network'],
+        *,
+        ignore_network_issues: bool = True,
+        progress_cb: Callable[[TxinDataFetchProgress], None] = None,
+        timeout=None,
+    ) -> None:
+        """note: it is recommended to call add_info_from_wallet first, as this can save some network requests"""
+        if not self.is_missing_info_from_network():
+            return
+        if progress_cb is None:
+            progress_cb = lambda *args, **kwargs: None
+        num_tasks_done = 0
+        num_tasks_total = 0
+        has_errored = False
+        has_finished = False
+        async def add_info_to_txin(txin: TxInput):
+            nonlocal num_tasks_done, has_errored
+            progress_cb(TxinDataFetchProgress(num_tasks_done, num_tasks_total, has_errored, has_finished))
+            success = await txin.add_info_from_network(
+                network=network,
+                ignore_network_issues=ignore_network_issues,
+                timeout=timeout,
+            )
+            if success:
+                num_tasks_done += 1
+            else:
+                has_errored = True
+            progress_cb(TxinDataFetchProgress(num_tasks_done, num_tasks_total, has_errored, has_finished))
+        # schedule a network task for each txin
+        try:
+            async with OldTaskGroup() as group:
+                for txin in self.inputs():
+                    if txin.utxo is None:
+                        num_tasks_total += 1
+                        await group.spawn(add_info_to_txin(txin=txin))
+        except Exception as e:
+            has_errored = True
+            _logger.error(f"tx.add_info_from_network() got exc: {e!r}")
+        finally:
+            has_finished = True
+            progress_cb(TxinDataFetchProgress(num_tasks_done, num_tasks_total, has_errored, has_finished))
+
+    def is_missing_info_from_network(self) -> bool:
+        return any(txin.utxo is None for txin in self.inputs())
+
+    def add_info_from_wallet_and_network(
+        self, *, wallet: 'Abstract_Wallet', show_error: Callable[[str], None],
+    ) -> bool:
+        """Returns whether successful.
+        note: This is sort of a legacy hack... doing network requests in non-async code.
+              Relatedly, this should *not* be called from the network thread.
+        """
+        # note side-effect: tx is being mutated
+        from .network import NetworkException, Network
+        self.add_info_from_wallet(wallet)
+        try:
+            if self.is_missing_info_from_network():
+                Network.run_from_another_thread(
+                    self.add_info_from_network(wallet.network, ignore_network_issues=False))
+        except NetworkException as e:
+            show_error(repr(e))
+            return False
+        return True
 
     def is_final(self) -> bool:
         """Whether RBF is disabled."""
@@ -1217,21 +1159,11 @@ class Transaction:
         weight = self.estimated_weight()
         return self.virtual_size_from_weight(weight)
 
-    def has_unbalanced_assets(self) -> bool:
-        try:
-            difference: NeuraiValue = sum((x.value_sats() for x in self.inputs()), NeuraiValue()) - sum((x.neurai_value for x in self.outputs()), NeuraiValue())
-        except ValueError:
-            return False
-        for val in difference.assets.values():
-            if val > 0:
-                return True
-        return False
-
     @classmethod
-    def estimated_input_weight(cls, txin, is_segwit_tx):
+    def estimated_input_weight(cls, txin: TxInput, is_segwit_tx: bool):
         '''Return an estimate of serialized input weight in weight units.'''
-        script = cls.input_script(txin, estimate_size=True)
-        input_size = len(cls.serialize_input(txin, script)) // 2
+        script_sig = cls.input_script(txin, estimate_size=True)
+        input_size = len(txin.serialize_to_network(script_sig=bytes.fromhex(script_sig)))
 
         if txin.is_segwit(guess_for_address=True):
             witness_size = len(cls.serialize_witness(txin, estimate_size=True)) // 2
@@ -1243,17 +1175,8 @@ class Transaction:
     @classmethod
     def estimated_output_size_for_address(cls, address: str) -> int:
         """Return an estimate of serialized output size in bytes."""
-        script = neurai.address_to_script(address)
+        script = bitcoin.address_to_script(address)
         return cls.estimated_output_size_for_script(script)
-
-    @classmethod
-    def estimated_additional_size_for_asset(cls, base_size: int, asset: str) -> int:
-        old_var_int_len = len(var_int(base_size)) // 2
-        # type (t)ransfer for change
-        # change addresses internal length is always < 0x4c
-        additional_bytes = len(b'\xc00xnat0%b00000000\x75' % asset.encode('ascii'))
-        new_var_int_len = len(var_int(base_size + additional_bytes)) // 2
-        return new_var_int_len - old_var_int_len + additional_bytes
 
     @classmethod
     def estimated_output_size_for_script(cls, script: str) -> int:
@@ -1318,7 +1241,7 @@ class Transaction:
         return set(self._script_to_output_idx[script])  # copy
 
     def get_output_idxs_from_address(self, addr: str) -> Set[int]:
-        script = neurai.address_to_script(addr)
+        script = bitcoin.address_to_script(addr)
         return self.get_output_idxs_from_scriptpubkey(script)
 
     def output_value_for_address(self, addr):
@@ -1328,6 +1251,35 @@ class Transaction:
                 return o.value
         else:
             raise Exception('output not found', addr)
+
+    def input_value(self, *, asset_aware=False) -> Union[int, Mapping[Optional[str], int]]:
+        if asset_aware:
+            input_values = [(txin.asset, txin.value_sats(asset_aware=True)) for txin in self.inputs()]
+            if any(val is None for asset, val in input_values):
+                raise MissingTxInputAmount()
+            ret_val = defaultdict(int)
+            for asset, val in input_values:
+                ret_val[asset] += val
+            return ret_val
+        
+        input_values = [txin.value_sats() for txin in self.inputs()]
+        if any([val is None for val in input_values]):
+            raise MissingTxInputAmount()
+        return sum(input_values)
+
+    def output_value(self, *, asset_aware=False) -> Union[int, Mapping[Optional[str], int]]:
+        if asset_aware:
+            ret_val = defaultdict(int)
+            for o in self.outputs():
+                ret_val[o.asset] += o.asset_aware_value()
+            return ret_val
+        return sum(o.value for o in self.outputs())
+
+    def get_fee(self) -> Optional[int]:
+        try:
+            return self.input_value() - self.output_value()
+        except MissingTxInputAmount:
+            return None
 
     def get_input_idx_that_spent_prevout(self, prevout: TxOutpoint) -> Optional[int]:
         # build cache if there isn't one yet
@@ -1354,18 +1306,18 @@ def convert_raw_tx_to_hex(raw: Union[str, bytes]) -> str:
     # try hex
     try:
         return binascii.unhexlify(raw).hex()
-    except:
+    except Exception:
         pass
     # try base43
     try:
         return base_decode(raw, base=43).hex()
-    except:
+    except Exception:
         pass
     # try base64
     if raw[0:6] in ('cHNidP', b'cHNidP'):  # base64 psbt
         try:
             return base64.b64decode(raw).hex()
-        except:
+        except Exception:
             pass
     # raw bytes (do not strip whitespaces in this case)
     if isinstance(raw_unstripped, bytes):
@@ -1502,52 +1454,23 @@ class PSBTSection:
 class PartialTxInput(TxInput, PSBTSection):
     def __init__(self, *args, **kwargs):
         TxInput.__init__(self, *args, **kwargs)
-        self._utxo = None  # type: Optional[Transaction]
         self._witness_utxo = None  # type: Optional[TxOutput]
         self.part_sigs = {}  # type: Dict[bytes, bytes]  # pubkey -> sig
+        self.sighash = None  # type: Optional[int]
         self.bip32_paths = {}  # type: Dict[bytes, Tuple[bytes, Sequence[int]]]  # pubkey -> (xpub_fingerprint, path)
         self.redeem_script = None  # type: Optional[bytes]
         self.witness_script = None  # type: Optional[bytes]
         self._unknown = {}  # type: Dict[bytes, bytes]
 
-        self.script_type = 'unknown'
-        self.num_sig = 0  # type: int  # num req sigs for multisig
-        self.pubkeys = []  # type: List[bytes]  # note: order matters
-        self.__trusted_value_sats = None  # type: Optional[NeuraiValue]
+        self._script_descriptor = None  # type: Optional[Descriptor]
+        self._trusted_value_sats = None  # type: Optional[int]
+        self._trusted_asset = None  # type: Optional[str]
         self._trusted_address = None  # type: Optional[str]
-        self.block_height = None  # type: Optional[int]  # height at which the TXO is mined; None means unknown
-        self.spent_height = None  # type: Optional[int]  # height at which the TXO got spent
-        self.spent_txid = None  # type: Optional[str]  # txid of the spender
         self._is_p2sh_segwit = None  # type: Optional[bool]  # None means unknown
         self._is_native_segwit = None  # type: Optional[bool]  # None means unknown
         self.witness_sizehint = None  # type: Optional[int]  # byte size of serialized complete witness, for tx size est
 
-    @property
-    def _trusted_value_sats(self):
-        return self.__trusted_value_sats
-
-    @_trusted_value_sats.setter
-    def _trusted_value_sats(self, v):
-        assert isinstance(v, NeuraiValue)
-        self.__trusted_value_sats = v
-
-    @property
-    def utxo(self):
-        return self._utxo
-
-    @utxo.setter
-    def utxo(self, tx: Optional[Transaction]):
-        if tx is None:
-            return
-        # note that tx might be a PartialTransaction
-        # serialize and de-serialize tx now. this might e.g. convert a complete PartialTx to a Tx
-        tx = tx_from_any(str(tx))
-        # 'utxo' field in PSBT cannot be another PSBT:
-        if not tx.is_complete():
-            return
-        self._utxo = tx
-        self.validate_data()
-        self.ensure_there_is_only_one_utxo()
+        self._fixed_nsequence = False
 
     @property
     def witness_utxo(self):
@@ -1555,9 +1478,27 @@ class PartialTxInput(TxInput, PSBTSection):
 
     @witness_utxo.setter
     def witness_utxo(self, value: Optional[TxOutput]):
+        self.validate_data(witness_utxo=value)
         self._witness_utxo = value
-        self.validate_data()
-        self.ensure_there_is_only_one_utxo()
+
+    @property
+    def pubkeys(self) -> Set[bytes]:
+        if desc := self.script_descriptor:
+            return desc.get_all_pubkeys()
+        return set()
+
+    @property
+    def script_descriptor(self):
+        return self._script_descriptor
+
+    @script_descriptor.setter
+    def script_descriptor(self, desc: Optional[Descriptor]):
+        self._script_descriptor = desc
+        if desc:
+            if self.redeem_script is None:
+                self.redeem_script = desc.expand().redeem_script
+            if self.witness_script is None:
+                self.witness_script = desc.expand().witness_script
 
     def to_json(self):
         d = super().to_json()
@@ -1565,10 +1506,10 @@ class PartialTxInput(TxInput, PSBTSection):
             'height': self.block_height,
             'value_sats': self.value_sats(),
             'address': self.address,
+            'desc': self.script_descriptor.to_string() if self.script_descriptor else None,
             'utxo': str(self.utxo) if self.utxo else None,
             'witness_utxo': self.witness_utxo.serialize_to_network().hex() if self.witness_utxo else None,
             'sighash': self.sighash,
-            'script_sig': self.script_sig,
             'redeem_script': self.redeem_script.hex() if self.redeem_script else None,
             'witness_script': self.witness_script.hex() if self.witness_script else None,
             'part_sigs': {pubkey.hex(): sig.hex() for pubkey, sig in self.part_sigs.items()},
@@ -1588,24 +1529,33 @@ class PartialTxInput(TxInput, PSBTSection):
                              script_sig=None if strip_witness else txin.script_sig,
                              nsequence=txin.nsequence,
                              witness=None if strip_witness else txin.witness,
-                             is_coinbase_output=txin.is_coinbase_output(),
-                             sighash=txin.sighash)
+                             is_coinbase_output=txin.is_coinbase_output())
+        res.utxo = txin.utxo
         return res
 
-    def validate_data(self, *, for_signing=False) -> None:
-        if self.utxo:
-            if self.prevout.txid.hex() != self.utxo.txid():
+    def validate_data(
+        self,
+        *,
+        for_signing=False,
+        # allow passing provisional fields for 'self', before setting them:
+        utxo: Optional[Transaction] = None,
+        witness_utxo: Optional[TxOutput] = None,
+    ) -> None:
+        utxo = utxo or self.utxo
+        witness_utxo = witness_utxo or self.witness_utxo
+        if utxo:
+            if self.prevout.txid.hex() != utxo.txid():
                 raise PSBTInputConsistencyFailure(f"PSBT input validation: "
                                                   f"If a non-witness UTXO is provided, its hash must match the hash specified in the prevout")
-            if self.witness_utxo:
-                if self.utxo.outputs()[self.prevout.out_idx] != self.witness_utxo:
+            if witness_utxo:
+                if utxo.outputs()[self.prevout.out_idx] != witness_utxo:
                     raise PSBTInputConsistencyFailure(f"PSBT input validation: "
                                                       f"If both non-witness UTXO and witness UTXO are provided, they must be consistent")
         # The following test is disabled, so we are willing to sign non-segwit inputs
         # without verifying the input amount. This means, given a maliciously modified PSBT,
         # for non-segwit inputs, we might end up burning coins as miner fees.
         if for_signing and False:
-            if not self.is_segwit() and self.witness_utxo:
+            if not self.is_segwit() and witness_utxo:
                 raise PSBTInputConsistencyFailure(f"PSBT input validation: "
                                                   f"If a witness UTXO is provided, no non-witness signature may be created")
         if self.redeem_script and self.address:
@@ -1615,11 +1565,11 @@ class PartialTxInput(TxInput, PSBTSection):
                                                   f"If a redeemScript is provided, the scriptPubKey must be for that redeemScript")
         if self.witness_script:
             if self.redeem_script:
-                if self.redeem_script != bfh(neurai.p2wsh_nested_script(self.witness_script.hex())):
+                if self.redeem_script != bfh(bitcoin.p2wsh_nested_script(self.witness_script.hex())):
                     raise PSBTInputConsistencyFailure(f"PSBT input validation: "
                                                       f"If a witnessScript is provided, the redeemScript must be for that witnessScript")
             elif self.address:
-                if self.address != neurai.script_to_p2wsh(self.witness_script.hex()):
+                if self.address != bitcoin.script_to_p2wsh(self.witness_script.hex()):
                     raise PSBTInputConsistencyFailure(f"PSBT input validation: "
                                                       f"If a witnessScript is provided, the scriptPubKey must be for that witnessScript")
 
@@ -1686,7 +1636,6 @@ class PartialTxInput(TxInput, PSBTSection):
             self._unknown[full_key] = val
 
     def serialize_psbt_section_kvs(self, wr):
-        self.ensure_there_is_only_one_utxo()
         if self.witness_utxo:
             wr(PSBTInputType.WITNESS_UTXO, self.witness_utxo.serialize_to_network())
         if self.utxo:
@@ -1710,66 +1659,40 @@ class PartialTxInput(TxInput, PSBTSection):
             key_type, key = self.get_keytype_and_key_from_fullkey(full_key)
             wr(key_type, val, key=key)
 
-    def value_sats(self) -> Optional[NeuraiValue]:
+    def value_sats(self, *, asset_aware=False) -> Optional[int]:
+        if (val := super().value_sats(asset_aware=asset_aware)) is not None:
+            return val
+        if not asset_aware and self._trusted_asset:
+            return 0
         if self._trusted_value_sats is not None:
             return self._trusted_value_sats
-        if self.utxo:
-            out_idx = self.prevout.out_idx
-            outpoint = self.utxo.outputs()[out_idx]
-            if outpoint.asset:
-                value = NeuraiValue(0, {outpoint.asset: outpoint.value})
-            else:
-                value = NeuraiValue(outpoint.value)
-            return value
         if self.witness_utxo:
-            outpoint = self.witness_utxo
-            if outpoint.asset:
-                value = NeuraiValue(0, {outpoint.asset: outpoint.value})
-            else:
-                value = NeuraiValue(outpoint.value)
-            return value
+            return self.witness_utxo.value
         return None
 
     @property
+    def asset(self) -> Optional[str]:
+        return super().asset or self._trusted_asset
+
+    @property
     def address(self) -> Optional[str]:
+        if (addr := super().address) is not None:
+            return addr
         if self._trusted_address is not None:
             return self._trusted_address
-        scriptpubkey = self.scriptpubkey
-        if scriptpubkey:
-            return get_address_from_output_script(scriptpubkey)
+        if self.witness_utxo:
+            return self.witness_utxo.address
         return None
 
     @property
     def scriptpubkey(self) -> Optional[bytes]:
+        if (spk := super().scriptpubkey) is not None:
+            return spk
         if self._trusted_address is not None:
-            a = self.value_sats().assets
-            script = bfh(neurai.address_to_script(self._trusted_address))
-            #if a:
-            #    asset, amt = list(a.items())[0]
-            #    script = assets.create_transfer_asset_script(script, asset, amt)
-            return script
-        if self.utxo:
-            out_idx = self.prevout.out_idx
-            return self.utxo.outputs()[out_idx].scriptpubkey
+            return bfh(bitcoin.address_to_script(self._trusted_address))
         if self.witness_utxo:
             return self.witness_utxo.scriptpubkey
         return None
-
-    def set_script_type(self) -> None:
-        if self.scriptpubkey is None:
-            return
-        type = get_script_type_from_output_script(self.scriptpubkey)
-        inner_type = None
-        if type is not None:
-            if type == 'p2sh':
-                inner_type = get_script_type_from_output_script(self.redeem_script)
-            elif type == 'p2wsh':
-                inner_type = get_script_type_from_output_script(self.witness_script)
-            if inner_type is not None:
-                type = inner_type + '-' + type
-            if type in ('p2pkh', 'p2wpkh-p2sh', 'p2wpkh', 'p2pk'):
-                self.script_type = type
-        return
 
     def is_complete(self) -> bool:
         if self.script_sig is not None and self.witness is not None:
@@ -1778,25 +1701,26 @@ class PartialTxInput(TxInput, PSBTSection):
             return True
         if self.script_sig is not None and not self.is_segwit():
             return True
-        signatures = list(self.part_sigs.values())
-        s = len(signatures)
-        # note: The 'script_type' field is currently only set by the wallet,
-        #       for its own addresses. This means we can only finalize inputs
-        #       that are related to the wallet.
-        #       The 'fix' would be adding extra logic that matches on templates,
-        #       and figures out the script_type from available fields.
-        if self.script_type in ('p2pk', 'p2pkh', 'p2wpkh', 'p2wpkh-p2sh'):
-            return s >= 1
-        if self.script_type in ('p2sh', 'p2wsh', 'p2wsh-p2sh'):
-            return s >= self.num_sig
+        if desc := self.script_descriptor:
+            try:
+                desc.satisfy(allow_dummy=False, sigdata=self.part_sigs)
+            except MissingSolutionPiece:
+                pass
+            else:
+                return True
         return False
+
+    def get_satisfaction_progress(self) -> Tuple[int, int]:
+        if desc := self.script_descriptor:
+            return desc.get_satisfaction_progress(sigdata=self.part_sigs)
+        return 0, 0
 
     def finalize(self) -> None:
         def clear_fields_when_finalized():
             # BIP-174: "All other data except the UTXO and unknown fields in the
             #           input key-value map should be cleared from the PSBT"
             self.part_sigs = {}
-            #self.sighash = None
+            self.sighash = None
             self.bip32_paths = {}
             self.redeem_script = None
             self.witness_script = None
@@ -1829,15 +1753,9 @@ class PartialTxInput(TxInput, PSBTSection):
             if other_txin.witness_script is not None:
                 self.witness_script = other_txin.witness_script
             self._unknown.update(other_txin._unknown)
-        self.ensure_there_is_only_one_utxo()
+        self.validate_data()
         # try to finalize now
         self.finalize()
-
-    def ensure_there_is_only_one_utxo(self):
-        # we prefer having the full previous tx, even for segwit inputs. see #6198
-        # for witness v1, witness_utxo will be enough though
-        if self.utxo is not None and self.witness_utxo is not None:
-            self.witness_utxo = None
 
     def convert_utxo_to_witness_utxo(self) -> None:
         if self.utxo:
@@ -1848,7 +1766,7 @@ class PartialTxInput(TxInput, PSBTSection):
         """Whether this input is native segwit. None means inconclusive."""
         if self._is_native_segwit is None:
             if self.address:
-                self._is_native_segwit = neurai.is_segwit_address(self.address)
+                self._is_native_segwit = bitcoin.is_segwit_address(self.address)
         return self._is_native_segwit
 
     def is_p2sh_segwit(self) -> Optional[bool]:
@@ -1857,7 +1775,7 @@ class PartialTxInput(TxInput, PSBTSection):
             def calc_if_p2sh_segwit_now():
                 if not (self.address and self.redeem_script):
                     return None
-                if self.address != neurai.hash160_to_p2sh(hash_160(self.redeem_script)):
+                if self.address != bitcoin.hash160_to_p2sh(hash_160(self.redeem_script)):
                     # not p2sh address
                     return False
                 try:
@@ -1887,10 +1805,12 @@ class PartialTxInput(TxInput, PSBTSection):
             return False
         if self.witness_script:
             return True
-        _type = self.script_type
-        if _type == 'address' and guess_for_address:
-            _type = Transaction.guess_txintype_from_address(self.address)
-        return is_segwit_script_type(_type)
+        if desc := self.script_descriptor:
+            return desc.is_segwit()
+        if guess_for_address:
+            dummy_desc = create_dummy_descriptor_from_address(self.address)
+            return dummy_desc.is_segwit()
+        return False  # can be false-negative
 
     def already_has_some_signatures(self) -> bool:
         """Returns whether progress has been made towards completing this input."""
@@ -1907,15 +1827,33 @@ class PartialTxOutput(TxOutput, PSBTSection):
         self.bip32_paths = {}  # type: Dict[bytes, Tuple[bytes, Sequence[int]]]  # pubkey -> (xpub_fingerprint, path)
         self._unknown = {}  # type: Dict[bytes, bytes]
 
-        self.script_type = 'unknown'
-        self.num_sig = 0  # num req sigs for multisig
-        self.pubkeys = []  # type: List[bytes]  # note: order matters
+        self._script_descriptor = None  # type: Optional[Descriptor]
         self.is_mine = False  # type: bool  # whether the wallet considers the output to be ismine
         self.is_change = False  # type: bool  # whether the wallet considers the output to be change
+
+    @property
+    def pubkeys(self) -> Set[bytes]:
+        if desc := self.script_descriptor:
+            return desc.get_all_pubkeys()
+        return set()
+
+    @property
+    def script_descriptor(self):
+        return self._script_descriptor
+
+    @script_descriptor.setter
+    def script_descriptor(self, desc: Optional[Descriptor]):
+        self._script_descriptor = desc
+        if desc:
+            if self.redeem_script is None:
+                self.redeem_script = desc.expand().redeem_script
+            if self.witness_script is None:
+                self.witness_script = desc.expand().witness_script
 
     def to_json(self):
         d = super().to_json()
         d.update({
+            'desc': self.script_descriptor.to_string() if self.script_descriptor else None,
             'redeem_script': self.redeem_script.hex() if self.redeem_script else None,
             'witness_script': self.witness_script.hex() if self.witness_script else None,
             'bip32_paths': {pubkey.hex(): (xfp.hex(), bip32.convert_bip32_intpath_to_strpath(path))
@@ -1927,8 +1865,7 @@ class PartialTxOutput(TxOutput, PSBTSection):
     @classmethod
     def from_txout(cls, txout: TxOutput) -> 'PartialTxOutput':
         res = PartialTxOutput(scriptpubkey=txout.scriptpubkey,
-                              value=txout.value,
-                              asset=txout.asset)
+                              value=txout.value)
         return res
 
     def parse_psbt_section_kv(self, kt, key, val):
@@ -1991,7 +1928,7 @@ class PartialTransaction(Transaction):
         self._inputs = []  # type: List[PartialTxInput]
         self._outputs = []  # type: List[PartialTxOutput]
         self._unknown = {}  # type: Dict[bytes, bytes]
-        self._prevout_overrides = {}  # type: Dict[str, bytes]
+        self.rbf_merge_txid = None
 
     def to_json(self) -> dict:
         d = super().to_json()
@@ -2003,14 +1940,13 @@ class PartialTransaction(Transaction):
         return d
 
     @classmethod
-    def from_tx(cls, tx: Transaction, strip = True) -> 'PartialTransaction':
+    def from_tx(cls, tx: Transaction) -> 'PartialTransaction':
         res = cls()
-        res._inputs = [PartialTxInput.from_txin(txin, strip_witness=strip)
+        res._inputs = [PartialTxInput.from_txin(txin, strip_witness=True)
                        for txin in tx.inputs()]
         res._outputs = [PartialTxOutput.from_txout(txout) for txout in tx.outputs()]
         res.version = tx.version
         res.locktime = tx.locktime
-        res.for_swap = tx.for_swap
         return res
 
     @classmethod
@@ -2111,17 +2047,15 @@ class PartialTransaction(Transaction):
         return tx
 
     @classmethod
-    def from_io(cls, inputs: Sequence[PartialTxInput], outputs: Sequence[PartialTxOutput], *, wallet = None,
-                locktime: int = None, version: int = None, BIP69_sort: bool = True, for_swap = False):
+    def from_io(cls, inputs: Sequence[PartialTxInput], outputs: Sequence[PartialTxOutput], *,
+                locktime: int = None, version: int = None, BIP69_sort: bool = True):
         self = cls()
         self._inputs = list(inputs)
         self._outputs = list(outputs)
-        self._wallet = wallet
         if locktime is not None:
             self.locktime = locktime
         if version is not None:
             self.version = version
-        self.for_swap = for_swap
         if BIP69_sort:
             self.BIP69_sort()
         return self
@@ -2201,118 +2135,54 @@ class PartialTransaction(Transaction):
         self.BIP69_sort(outputs=False)
         self.invalidate_ser_cache()
 
-    def add_outputs(self, outputs: List[PartialTxOutput]) -> None:
+    def add_outputs(self, outputs: List[PartialTxOutput], *, do_sort=True) -> None:
         self._outputs.extend(outputs)
-        self.BIP69_sort(inputs=False)
+        self.BIP69_sort(inputs=False, outputs=do_sort)
         self.invalidate_ser_cache()
 
     def set_rbf(self, rbf: bool) -> None:
         nSequence = 0xffffffff - (2 if rbf else 1)
         for txin in self.inputs():
-            # Ensure 0 for SIGHASH_SINGLE
-            if self.for_swap and txin.sighash and txin.sighash & SIGHASH.SINGLE != 0:
-                continue
+            if txin._fixed_nsequence: continue
             txin.nsequence = nSequence
         self.invalidate_ser_cache()
 
     def BIP69_sort(self, inputs=True, outputs=True):
-        # Do not change the ordering for SIGHASH_SINGLE
-        if self.for_swap:
-            return
         # NOTE: other parts of the code rely on these sorts being *stable* sorts
         if inputs:
             self._inputs.sort(key = lambda i: (i.prevout.txid, i.prevout.out_idx))
         if outputs:
             self._outputs.sort(key = lambda o: (o.value, o.scriptpubkey))
-
-            # Assets need a certain order:
-            # Burn, {whatever}, parent, new owner, new
-            burn_vout = None
-            parent_owner_vout = None
-            asset_owner_vout = None
-            asset_create_vout = None
-            for o in iter(self._outputs):
-                if o.address in constants.net.BURN_ADDRESSES:
-                    burn_vout = o
-                elif o.asset:
-                    asset = o.asset
-                    if asset[-1] == '!':
-                        if asset_create_vout:
-                            # We know what the asset owner looks like
-                            if asset[:-1] == asset_create_vout.asset:
-                                t = asset_owner_vout
-                                asset_owner_vout = o
-                                if not parent_owner_vout:
-                                    parent_owner_vout = t
-                            else:
-                                parent_owner_vout = o
-                        else:
-                            # Just put it somewhere
-                            if asset_owner_vout:
-                                parent_owner_vout = o
-                            else:
-                                asset_owner_vout = o
-                    else:
-                        asset_create_vout = o
-                        if asset_owner_vout and asset_owner_vout.asset[:-1] != asset:
-                            # Swap asset owner and parent owner positions
-                            t = parent_owner_vout
-                            parent_owner_vout = asset_owner_vout
-                            asset_owner_vout = t
-            if burn_vout and asset_create_vout:
-                new_outs = [o for o in self._outputs if o not in (burn_vout, parent_owner_vout, asset_owner_vout, asset_create_vout)]
-
-                self._outputs = [burn_vout] + new_outs + \
-                                ([parent_owner_vout] if parent_owner_vout else []) + \
-                                ([asset_owner_vout] if asset_owner_vout else []) + \
-                                [asset_create_vout]
         self.invalidate_ser_cache()
 
-    def input_value(self) -> NeuraiValue:
-        input_values = [txin.value_sats() for txin in self.inputs()]
-        if any([val is None for val in input_values]):
-            raise MissingTxInputAmount()
-        return sum(input_values, NeuraiValue())
-
-    def output_value(self) -> NeuraiValue:
-        return \
-            sum([NeuraiValue(0, {x.asset: x.value}) if x.asset else NeuraiValue(x.value) for x in self.outputs()], NeuraiValue())
-
-    def get_fee(self) -> Optional[NeuraiValue]:
-        try:
-            return self.input_value() - self.output_value()
-        except MissingTxInputAmount:
-            return None
-
-    def serialize_preimage(self, txin_index: int, *,
-                           bip143_shared_txdigest_fields: BIP143SharedTxDigestFields = None) -> str:
+    def serialize_preimage(self, txin_index: int, wallet: 'Abstract_Wallet', *,
+                           bip143_shared_txdigest_fields: BIP143SharedTxDigestFields = None,
+                           locking_script_overrides = None) -> str:
         nVersion = int_to_hex(self.version, 4)
         nLocktime = int_to_hex(self.locktime, 4)
         inputs = self.inputs()
         outputs = self.outputs()
         txin = inputs[txin_index]
-        sighash = txin.sighash if txin.sighash is not None else SIGHASH.ALL
-        if sighash not in list(map(int, SIGHASH)):
-            raise Exception("invalid sighash: {}".format(sighash))
+        sighash = txin.sighash if txin.sighash is not None else Sighash.ALL
+        if not Sighash.is_valid(sighash):
+            raise Exception(f"SIGHASH_FLAG ({sighash}) not supported!")
         nHashType = int_to_hex(sighash, 4)
-        preimage_script = self.get_preimage_script(txin, self._wallet, txin_locking_script_overrides=self._prevout_overrides)
-        _logger.info(f"Preimage script for {txin.prevout.txid.hex()}\n{bfh(preimage_script)}")
+        preimage_script = self.get_preimage_script(txin, wallet, locking_script_overrides=locking_script_overrides)
         if txin.is_segwit():
-            raise NotImplementedError()
             if bip143_shared_txdigest_fields is None:
                 bip143_shared_txdigest_fields = self._calc_bip143_shared_txdigest_fields()
-            if not(sighash & SIGHASH.ANYONECANPAY):
+            if not (sighash & Sighash.ANYONECANPAY):
                 hashPrevouts = bip143_shared_txdigest_fields.hashPrevouts
             else:
                 hashPrevouts = '00' * 32
-            if (not(sighash & SIGHASH.ANYONECANPAY) and (sighash & 0x1f) != SIGHASH.SINGLE and (sighash & 0x1f) != SIGHASH.NONE):
+            if not (sighash & Sighash.ANYONECANPAY) and (sighash & 0x1f) != Sighash.SINGLE and (sighash & 0x1f) != Sighash.NONE:
                 hashSequence = bip143_shared_txdigest_fields.hashSequence
             else:
                 hashSequence = '00' * 32
-            if ((sighash & 0x1f) != SIGHASH.SINGLE and (sighash & 0x1f) != SIGHASH.NONE):
+            if (sighash & 0x1f) != Sighash.SINGLE and (sighash & 0x1f) != Sighash.NONE:
                 hashOutputs = bip143_shared_txdigest_fields.hashOutputs
-            elif ((sighash & 0x1f) == SIGHASH.SINGLE and txin_index < len(outputs)):
-                hashOutputs = bh2u(sha256d(outputs[txin_index].serialize_to_network()))
+            elif (sighash & 0x1f) == Sighash.SINGLE and txin_index < len(outputs):
+                hashOutputs = sha256d(outputs[txin_index].serialize_to_network()).hex()
             else:
                 hashOutputs = '00' * 32
             outpoint = txin.prevout.serialize_to_network().hex()
@@ -2321,44 +2191,40 @@ class PartialTransaction(Transaction):
             nSequence = int_to_hex(txin.nsequence, 4)
             preimage = nVersion + hashPrevouts + hashSequence + outpoint + scriptCode + amount + nSequence + hashOutputs + nLocktime + nHashType
         else:
-            if sighash & int(SIGHASH.ANYONECANPAY) != 0:
-                txins = var_int(1) + self.serialize_input(txin, preimage_script)
-                # We only need to check the next 2 bits now
-                if sighash & int(SIGHASH.SINGLE) == 0:
-                    raise NotImplementedError()
+            if sighash & Sighash.ANYONECANPAY:
+                txins = var_int(1) + txin.serialize_to_network(script_sig=bfh(preimage_script)).hex()
             else:
-                txins = var_int(len(inputs))
+                input_serializations = []
                 for k, txin in enumerate(inputs):
-                    if (sighash == int(SIGHASH.NONE) or sighash == int(SIGHASH.SINGLE)) and txin_index != k:
-                        txin = PartialTxInput.from_txin(txin)
+                    if ((sighash & 0x1f) == Sighash.NONE or (sighash & 0x1f) == Sighash.SINGLE) and txin_index != k:
+                        txin = PartialTxInput.from_txin(txin, strip_witness=False)
                         txin.nsequence = 0
-                    s_in = self.serialize_input(txin, preimage_script if txin_index==k else '')
-                    txins += s_in
-            
-            if sighash == int(SIGHASH.NONE):
+                    serialization = txin.serialize_to_network(script_sig=bfh(preimage_script) if txin_index==k else b"").hex()
+                    input_serializations.append(serialization)
+
+                txins = var_int(len(inputs)) + ''.join(input_serializations)
+
+            if (sighash & 0x1f) == Sighash.NONE:
                 txouts = var_int(0)
-            elif sighash == int(SIGHASH.SINGLE):
-                if txin_index > len(outputs):
-                    raise Exception("Not enough outputs for SIGHASH_SINGLE!")
-                txouts = var_int(txin_index)
+            elif (sighash & 0x1f) == Sighash.SINGLE:
+                if txin_index >= len(outputs):
+                    raise Exception('Not enough outputs for SIGHASH_SINGLE!')
+                output_serializations = []
                 for k, txout in enumerate(outputs):
+                    if k > txin_index: break
                     if k < txin_index:
                         txout = PartialTxOutput.from_txout(txout)
                         txout.scriptpubkey = b''
-                        txout.value = Satoshis((1 << 64) - 1)
-                        txout.asset = None
-                        txouts += txout.serialize_to_network().hex()
-                    elif k == txin_index:
-                        txouts += txout.serialize_to_network().hex()
-                    else:
-                        break
+                        txout.value = (1 << 64) - 1
+                    serialization = txout.serialize_to_network().hex()
+                    output_serializations.append(serialization)
+                txouts = var_int(len(output_serializations)) + ''.join(output_serializations)
             else:
                 txouts = var_int(len(outputs)) + ''.join(o.serialize_to_network().hex() for o in outputs)
-
             preimage = nVersion + txins + txouts + nLocktime + nHashType
         return preimage
 
-    def sign(self, keypairs) -> None:
+    def sign(self, keypairs, wallet: 'Abstract_Wallet', *, locking_script_overrides=None) -> None:
         # keypairs:  pubkey_hex -> (secret_bytes, is_compressed)
         bip143_shared_txdigest_fields = self._calc_bip143_shared_txdigest_fields()
         for i, txin in enumerate(self.inputs()):
@@ -2368,39 +2234,35 @@ class PartialTransaction(Transaction):
                     break
                 if pubkey not in keypairs:
                     continue
-                _logger.info(f"adding signature for {pubkey}")
+                _logger.info(f"adding signature for {pubkey}. spending utxo {txin.prevout.to_str()}")
                 sec, compressed = keypairs[pubkey]
-                sig = self.sign_txin(i, sec, bip143_shared_txdigest_fields=bip143_shared_txdigest_fields)
+                sig = self.sign_txin(i, sec, wallet, bip143_shared_txdigest_fields=bip143_shared_txdigest_fields, locking_script_overrides=locking_script_overrides)
                 self.add_signature_to_txin(txin_idx=i, signing_pubkey=pubkey, sig=sig)
 
         _logger.debug(f"is_complete {self.is_complete()}")
         self.invalidate_ser_cache()
 
-    def sign_txin(self, txin_index, privkey_bytes, *, bip143_shared_txdigest_fields=None) -> str:
+    def sign_txin(self, txin_index, privkey_bytes, wallet: 'Abstract_Wallet', *, bip143_shared_txdigest_fields=None, locking_script_overrides=None) -> str:
         txin = self.inputs()[txin_index]
         txin.validate_data(for_signing=True)
-        sighash = txin.sighash if txin.sighash is not None else SIGHASH.ALL
-        sighash_type = sighash.to_bytes(length=1, byteorder="big").hex()
-        pre_hash = sha256d(bfh(self.serialize_preimage(txin_index,
-                                                       bip143_shared_txdigest_fields=bip143_shared_txdigest_fields)))
+        sighash = txin.sighash if txin.sighash is not None else Sighash.ALL
+        pre_hash = sha256d(bfh(self.serialize_preimage(txin_index, wallet,
+                                                       bip143_shared_txdigest_fields=bip143_shared_txdigest_fields, locking_script_overrides=locking_script_overrides)))
         privkey = ecc.ECPrivkey(privkey_bytes)
         sig = privkey.sign_transaction(pre_hash)
-        sig = bh2u(sig) + '{0:02x}'.format(txin.sighash if txin.sighash else SIGHASH.ALL)
+        sig = sig.hex() + Sighash.to_sigbytes(sighash).hex()
         return sig
 
     def is_complete(self) -> bool:
         return all([txin.is_complete() for txin in self.inputs()])
 
     def signature_count(self) -> Tuple[int, int]:
-        s = 0  # "num Sigs we have"
-        r = 0  # "Required"
+        nhave, nreq = 0, 0
         for txin in self.inputs():
-            if txin.is_coinbase_input():
-                continue
-            signatures = list(txin.part_sigs.values())
-            s += len(signatures)
-            r += txin.num_sig
-        return s, r
+            a, b = txin.get_satisfaction_progress()
+            nhave += a
+            nreq += b
+        return nhave, nreq
 
     def serialize(self) -> str:
         """Returns PSBT as base64 text, or raw hex of network tx (if complete)."""
@@ -2423,7 +2285,7 @@ class PartialTransaction(Transaction):
         raw_bytes = self.serialize_as_bytes()
         return base64.b64encode(raw_bytes).decode('ascii')
 
-    def update_signatures(self, signatures: Sequence[str]):
+    def update_signatures(self, signatures: Sequence[Union[str, None]], wallet: 'Abstract_Wallet'):
         """Add new signatures to a transaction
 
         `signatures` is expected to be a list of sigs with signatures[i]
@@ -2437,9 +2299,11 @@ class PartialTransaction(Transaction):
         for i, txin in enumerate(self.inputs()):
             pubkeys = [pk.hex() for pk in txin.pubkeys]
             sig = signatures[i]
+            if sig is None:
+                continue
             if bfh(sig) in list(txin.part_sigs.values()):
                 continue
-            pre_hash = sha256d(bfh(self.serialize_preimage(i)))
+            pre_hash = sha256d(bfh(self.serialize_preimage(i, wallet)))
             sig_string = ecc.sig_string_from_der_sig(bfh(sig[:-2]))
             for recid in range(4):
                 try:
@@ -2465,13 +2329,11 @@ class PartialTransaction(Transaction):
         txin.witness = None
         self.invalidate_ser_cache()
 
-    #TODO: Move asset info to here
     def add_info_from_wallet(
             self,
             wallet: 'Abstract_Wallet',
             *,
             include_xpubs: bool = False,
-            ignore_network_issues: bool = True,
     ) -> None:
         if self.is_complete():
             return
@@ -2493,7 +2355,6 @@ class PartialTransaction(Transaction):
             wallet.add_input_info(
                 txin,
                 only_der_suffix=False,
-                ignore_network_issues=ignore_network_issues,
             )
         for txout in self.outputs():
             wallet.add_output_info(
@@ -2523,6 +2384,18 @@ class PartialTransaction(Transaction):
             txout.bip32_paths.clear()
             txout._unknown.clear()
 
+    async def prepare_for_export_for_hardware_device(self, wallet: 'Abstract_Wallet') -> None:
+        self.add_info_from_wallet(wallet, include_xpubs=True)
+        await self.add_info_from_network(wallet.network)
+        # log warning if PSBT_*_BIP32_DERIVATION fields cannot be filled with full path due to missing info
+        from .keystore import Xpub
+        def is_ks_missing_info(ks):
+            return (isinstance(ks, Xpub) and (ks.get_root_fingerprint() is None
+                                              or ks.get_derivation_prefix() is None))
+        if any([is_ks_missing_info(ks) for ks in wallet.get_keystores()]):
+            _logger.warning('PSBT was requested to be filled with full bip32 paths but '
+                            'some keystores lacked either the derivation prefix or the root fingerprint')
+
     def convert_all_utxos_to_witness_utxos(self) -> None:
         """Replaces all NON-WITNESS-UTXOs with WITNESS-UTXOs.
         This will likely make an exported PSBT invalid spec-wise,
@@ -2539,14 +2412,6 @@ class PartialTransaction(Transaction):
         assert not self.is_complete()
         self.invalidate_ser_cache()
 
-    def update_txin_script_type(self):
-        """Determine the script_type of each input by analyzing the scripts.
-        It updates all tx-Inputs, NOT only the wallet owned, if the
-        scriptpubkey is present.
-        """
-        for txin in self.inputs():
-            if txin.script_type in ('unknown', 'address'):
-                txin.set_script_type()
 
 def pack_bip32_root_fingerprint_and_int_path(xfp: bytes, path: Sequence[int]) -> bytes:
     if len(xfp) != 4:

@@ -57,8 +57,6 @@ def number_nonzero_nodes(config: SplitConfig) -> int:
 def total_config_amount(config: SplitConfig) -> int:
     return sum([sum(c) for c in config.values()])
 
-def total_config_amount(config: SplitConfig) -> int:
-    return sum([sum(c) for c in config.values()])
 
 def is_any_amount_smaller_than_min_part_size(config: SplitConfig) -> bool:
     smaller = False
@@ -67,16 +65,6 @@ def is_any_amount_smaller_than_min_part_size(config: SplitConfig) -> bool:
             smaller |= True
     return smaller
 
-def remove_duplicates(configs: List[SplitConfig]) -> List[SplitConfig]:
-    unique_configs = set()
-    for config in configs:
-        # sort keys and values
-        config_sorted_values = {k: sorted(v) for k, v in config.items()}
-        config_sorted_keys = {k: config_sorted_values[k] for k in sorted(config_sorted_values.keys())}
-        hashable_config = tuple((c, tuple(sorted(config[c]))) for c in config_sorted_keys)
-        unique_configs.add(hashable_config)
-    unique_configs = [{c[0]: list(c[1]) for c in config} for config in unique_configs]
-    return unique_configs
 
 def remove_duplicates(configs: List[SplitConfig]) -> List[SplitConfig]:
     unique_configs = set()
@@ -112,6 +100,7 @@ def rate_config(
         config: SplitConfig,
         channels_with_funds: ChannelsFundsInfo) -> float:
     """Defines an objective function to rate a configuration.
+
     We calculate the normalized L2 norm for a configuration and
     add a part penalty for each nonzero amount. The consequence is that
     amounts that are equally distributed and have less parts are rated

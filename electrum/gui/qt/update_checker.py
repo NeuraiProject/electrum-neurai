@@ -20,8 +20,12 @@ from electrum._vendor.distutils.version import StrictVersion
 
 
 class UpdateCheck(QDialog, Logger):
-    url = "https://api.github.com/repos/NeuraiProject/electrum-neurai/releases"
-    download_url = "https://github.com/NeuraiProject/electrum-neurai/releases/latest"
+    url = "https://raw.githubusercontent.com/Electrum-RVN-SIG/electrum-ravencoin/master/check-version.json"
+    download_url = "https://github.com/Electrum-RVN-SIG/electrum-ravencoin/releases"
+
+    VERSION_ANNOUNCEMENT_SIGNING_KEYS = (
+        "RPuQNvDVBC5Q4fXKyfYLjrunbyqiEYckP5",  # kralverde since ravencoin fork
+    )
 
     def __init__(self, *, latest_version=None):
         QDialog.__init__(self)
@@ -103,10 +107,6 @@ class UpdateCheckThread(QThread, Logger):
         #       and it's bad not to get an update notification just because we did not wait enough.
         async with make_aiohttp_session(proxy=self.network.proxy, timeout=120) as session:
             async with session.get(UpdateCheck.url) as result:
-                result = await result.json(content_type=None)
-                if not result: return StrictVersion('0.1.0')
-                max_verison = max(StrictVersion(x['tag_name'].replace('v','').strip()) for x in result)
-                return max_verison
                 signed_version_dict = await result.json(content_type=None)
                 # example signed_version_dict:
                 # {
@@ -123,7 +123,7 @@ class UpdateCheckThread(QThread, Logger):
                     sig = base64.b64decode(sig)
                     msg = version_num.encode('utf-8')
                     if ecc.verify_message_with_address(address=address, sig65=sig, message=msg,
-                                                       net=constants.BitcoinMainnet):
+                                                       net=constants.RavencoinMainnet):
                         self.logger.info(f"valid sig for version announcement '{version_num}' from address '{address}'")
                         break
                 else:

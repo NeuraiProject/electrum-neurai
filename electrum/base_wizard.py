@@ -30,7 +30,7 @@ import traceback
 from functools import partial
 from typing import List, TYPE_CHECKING, Tuple, NamedTuple, Any, Dict, Optional, Union
 
-from . import neurai
+from . import bitcoin
 from . import keystore
 from . import mnemonic
 from .bip32 import is_bip32_derivation, xpub_type, normalize_bip32_derivation, BIP32Node
@@ -45,7 +45,6 @@ from .simple_config import SimpleConfig
 from .plugin import Plugins, HardwarePluginLibraryUnavailable
 from .logging import Logger
 from .plugins.hw_wallet.plugin import OutdatedHwFirmwareException, HW_PluginBase
-from .constants import net
 
 if TYPE_CHECKING:
     from .plugin import DeviceInfo, BasePlugin
@@ -93,7 +92,7 @@ class BaseWizard(Logger):
         self._stack = []  # type: List[WizardStackItem]
         self.plugin = None  # type: Optional[BasePlugin]
         self.keystores = []  # type: List[KeyStore]
-        self.is_kivy = config.get('gui') == 'kivy'
+        self.is_kivy = config.GUI_NAME == 'kivy'
         self.seed_type = None
 
     def set_icon(self, icon):
@@ -147,11 +146,9 @@ class BaseWizard(Logger):
         wallet_kinds = [
             ('standard',  _("Standard wallet")),
             #('2fa', _("Wallet with two-factor authentication")),
-            #('multisig',  _("Multi-signature wallet (advanced)")),
-            ('imported',  _("Import Neurai addresses or private keys")),
+            ('multisig',  _("Multi-signature wallet")),
+            ('imported',  _("Import Bitcoin addresses or private keys")),
         ]
-        if net.TESTNET:
-            wallet_kinds.insert(1, ('multisig',  _("Multi-signature wallet (advanced)")))
         choices = [pair for pair in wallet_kinds if pair[0] in wallet_types]
         self.choice_dialog(title=title, message=message, choices=choices, run_next=self.on_wallet_type)
 
@@ -188,9 +185,9 @@ class BaseWizard(Logger):
             action = 'choose_keystore'
         elif choice == 'multisig':
             action = 'choose_multisig'
-        #elif choice == '2fa':
-        #    self.load_2fa()
-        #    action = self.plugin.get_action(self.data)
+        elif choice == '2fa':
+            self.load_2fa()
+            action = self.plugin.get_action(self.data)
         elif choice == 'imported':
             action = 'import_addresses_or_keys'
         self.run(action)
@@ -214,8 +211,8 @@ class BaseWizard(Logger):
                 ('restore_from_seed', _('I already have a seed')),
                 ('restore_from_key', _('Use a master key')),
             ]
-            #if not self.is_kivy and not self.wallet_type == 'multisig':
-            #    choices.append(('choose_hw_device',  _('Use a hardware device')))
+            if not self.is_kivy and not self.wallet_type == 'multisig':
+                choices.append(('choose_hw_device',  _('Use a hardware device')))
         else:
             message = _('Add a cosigner to your multi-sig wallet')
             choices = [
@@ -229,8 +226,8 @@ class BaseWizard(Logger):
 
     def import_addresses_or_keys(self):
         v = lambda x: keystore.is_address_list(x) or keystore.is_private_key_list(x, raise_on_error=True)
-        title = _("Import Neurai Addresses")
-        message = _("Enter a list of Neurai addresses (this will create a watching-only wallet), or a list of private keys.")
+        title = _("Import Bitcoin Addresses")
+        message = _("Enter a list of Bitcoin addresses (this will create a watching-only wallet), or a list of private keys.")
         self.add_xpub_dialog(title=title, message=message, run_next=self.on_import,
                              is_valid=v, allow_multi=True, show_wif_help=True)
 
@@ -239,16 +236,16 @@ class BaseWizard(Logger):
         if keystore.is_address_list(text):
             self.data['addresses'] = {}
             for addr in text.split():
-                assert neurai.is_address(addr)
+                assert bitcoin.is_address(addr)
                 self.data['addresses'][addr] = {}
         elif keystore.is_private_key_list(text):
             self.data['addresses'] = {}
             k = keystore.Imported_KeyStore({})
             keys = keystore.get_private_keys(text)
             for pk in keys:
-                assert neurai.is_private_key(pk)
+                assert bitcoin.is_private_key(pk)
                 txin_type, pubkey = k.import_privkey(pk, None)
-                addr = neurai.pubkey_to_address(txin_type, pubkey)
+                addr = bitcoin.pubkey_to_address(txin_type, pubkey)
                 self.data['addresses'][addr] = {'type':txin_type, 'pubkey':pubkey}
             self.keystores.append(k)
         else:
@@ -263,7 +260,6 @@ class BaseWizard(Logger):
                 _("To create a watching-only wallet, please enter your master public key (xpub/ypub/zpub)."),
                 _("To create a spending wallet, please enter a master private key (xprv/yprv/zprv).")
             ])
-            self.seed_type = 'standard'
             self.add_xpub_dialog(title=title, message=message, run_next=self.on_restore_from_key, is_valid=v)
         else:
             i = len(self.keystores) + 1
@@ -317,9 +313,9 @@ class BaseWizard(Logger):
                     continue
                 # see if plugin recognizes 'scanned_devices'
                 try:
-                    # FIXME: side-effect: unpaired_device_info sets client.handler
-                    device_infos = devmgr.unpaired_device_infos(None, plugin, devices=scanned_devices,
-                                                                include_failing_clients=True)
+                    # FIXME: side-effect: this sets client.handler
+                    device_infos = devmgr.list_pairable_device_infos(
+                        handler=None, plugin=plugin, devices=scanned_devices, include_failing_clients=True)
                 except HardwarePluginLibraryUnavailable as e:
                     failed_getting_device_infos(name, e)
                     continue
@@ -355,7 +351,7 @@ class BaseWizard(Logger):
             state = _("initialized") if info.initialized else _("wiped")
             label = info.label or _("An unnamed {}").format(name)
             try: transport_str = info.device.transport_ui_string[:20]
-            except: transport_str = 'unknown transport'
+            except Exception: transport_str = 'unknown transport'
             descr = f"{label} [{info.model_name or name}, {state}, {transport_str}]"
             choices.append(((name, info), descr))
         msg = _('Select a device') + ':'
@@ -423,10 +419,7 @@ class BaseWizard(Logger):
             # For segwit, a custom path is used, as there is no standard at all.
             default_choice_idx = 0
             choices = [
-                ('standard',   '(p2sh)',            normalize_bip32_derivation("m/45'/0")),
-
-                # Neurai does not current support segwit
-
+                ('standard',   'legacy multisig (p2sh)',            normalize_bip32_derivation("m/45'/0")),
                 #('p2wsh-p2sh', 'p2sh-segwit multisig (p2wsh-p2sh)', purpose48_derivation(0, xtype='p2wsh-p2sh')),
                 #('p2wsh',      'native segwit multisig (p2wsh)',    purpose48_derivation(0, xtype='p2wsh')),
             ]
@@ -442,8 +435,8 @@ class BaseWizard(Logger):
             default_choice_idx = 0
             choices = [
                 ('standard',    'legacy (p2pkh)',            bip44_derivation(0, bip43_purpose=44)),
-                # ('p2wpkh-p2sh', 'p2sh-segwit (p2wpkh-p2sh)', bip44_derivation(0, bip43_purpose=49)),
-                # ('p2wpkh',      'native segwit (p2wpkh)',    bip44_derivation(0, bip43_purpose=84)),
+                #('p2wpkh-p2sh', 'p2sh-segwit (p2wpkh-p2sh)', bip44_derivation(0, bip43_purpose=49)),
+                #('p2wpkh',      'native segwit (p2wpkh)',    bip44_derivation(0, bip43_purpose=84)),
             ]
         while True:
             try:
@@ -535,10 +528,10 @@ class BaseWizard(Logger):
                 self.on_restore_bip43(root_seed)
             self.passphrase_dialog(run_next=f, is_restoring=True) if is_ext else f('')
         elif self.seed_type in ['standard', 'segwit']:
-            f = lambda passphrase: self.run('create_keystore', seed, passphrase)
+            f = lambda passphrase: self.run('create_keystore', seed, passphrase, False)
             self.passphrase_dialog(run_next=f, is_restoring=True) if is_ext else f('')
         elif self.seed_type == 'old':
-            self.run('create_keystore', seed, '')
+            self.run('create_keystore', seed, '', False)
         elif mnemonic.is_any_2fa_seed_type(self.seed_type):
             self.load_2fa()
             self.run('on_restore_seed', seed, is_ext)
@@ -548,7 +541,7 @@ class BaseWizard(Logger):
     def on_restore_bip43(self, root_seed, *, seed=None, passphrase=None):
         def f(derivation, script_type):
             derivation = normalize_bip32_derivation(derivation)
-            self.run('on_bip43', root_seed, derivation, script_type, seed, passphrase)
+            self.run('on_bip43', root_seed, derivation, script_type, seed=seed, passphrase=passphrase)
         if self.wallet_type == 'standard':
             def get_account_xpub(account_path):
                 root_node = BIP32Node.from_rootseed(root_seed, xtype="standard")
@@ -559,15 +552,13 @@ class BaseWizard(Logger):
             get_account_xpub = None
         self.derivation_and_script_type_dialog(f, get_account_xpub=get_account_xpub)
 
-    def create_keystore(self, seed, passphrase):
-        self.logger.info('Creating keystore...')
-        if self.seed_type == 'bip39':
+    def create_keystore(self, seed, passphrase, is_bip39):
+        if is_bip39:
             root_seed = bip39_to_seed(seed, passphrase if passphrase else '')
             if self.wallet_type == 'multisig':
                 derivation = normalize_bip32_derivation("m/45'/0")
             else:
-                derivation = normalize_bip32_derivation(bip44_derivation(0))
-
+                derivation = normalize_bip32_derivation(bip44_derivation(0, bip43_purpose=44))
             k = keystore.from_bip43_rootseed(root_seed, derivation, xtype='standard', seed=seed, passphrase=passphrase)
         else:
             k = keystore.from_seed(seed, passphrase, self.wallet_type == 'multisig')
@@ -575,7 +566,7 @@ class BaseWizard(Logger):
             self.data['lightning_xprv'] = k.get_lightning_xprv(None)
         self.on_keystore(k)
 
-    def on_bip43(self, root_seed, derivation, script_type, seed=None, passphrase=None):
+    def on_bip43(self, root_seed, derivation, script_type, *, seed=None, passphrase=None):
         k = keystore.from_bip43_rootseed(root_seed, derivation, xtype=script_type, seed=seed, passphrase=passphrase)
         self.on_keystore(k)
 
@@ -639,7 +630,7 @@ class BaseWizard(Logger):
                 password = k.get_password_for_storage_encryption()
             except UserCancelled:
                 devmgr = self.plugins.device_manager
-                devmgr.unpair_xpub(k.xpub)
+                devmgr.unpair_pairing_code(k.pairing_code())
                 raise ChooseHwDeviceAgain()
             except BaseException as e:
                 self.logger.exception('')
@@ -697,12 +688,12 @@ class BaseWizard(Logger):
         storage = WalletStorage(path)
         if pw_args.encrypt_storage:
             storage.set_password(pw_args.password, enc_version=pw_args.storage_enc_version)
-        db = WalletDB('', manual_upgrades=False)
+        db = WalletDB('', storage=storage, manual_upgrades=False)
         db.set_keystore_encryption(bool(pw_args.password) and pw_args.encrypt_keystore)
         for key, value in self.data.items():
             db.put(key, value)
         db.load_plugins()
-        db.write(storage)
+        db.write()
         return storage, db
 
     def terminate(self, *, storage: WalletStorage = None,
@@ -714,35 +705,36 @@ class BaseWizard(Logger):
         self.show_xpub_dialog(xpub=xpub, run_next=lambda x: self.run('choose_keystore'))
 
     def choose_seed_type(self):
-        seed_type = 'standard' if self.config.get('nosegwit') else 'segwit'
+        seed_type = 'standard' if self.config.WIZARD_DONT_CREATE_SEGWIT else 'segwit'
         self.create_seed(seed_type)
 
     def create_seed(self, seed_type):
         from . import mnemonic
-        # seed = mnemonic.Mnemonic('en').make_seed(seed_type=self.seed_type)
-        seed = mnemonic.Mnemonic('en').make_bip39_seed()
-        self.opt_bip39 = True #False
-        self.opt_ext = False #True
+        self.seed_type = seed_type
+        seed = mnemonic.Mnemonic('en').make_bip39_seed(num_bits=128)
+        self.opt_bip39 = True
+        self.opt_ext = False
         self.opt_slip39 = False
-        f = lambda x: self.request_passphrase(x)
-        self.show_seed_dialog(run_next=f, seed_text=seed, electrum_seed_type='bip39')
+        self.show_seed_dialog(run_next=self.request_passphrase, seed_text=seed)
 
-    def request_passphrase(self, opt_passphrase):
-        seed = self.seed
+    def request_passphrase(self, seed, opt_passphrase, seed_type):
         if opt_passphrase:
-            f = lambda x: self.confirm_seed(seed, x)
+            f = lambda x: self.confirm_seed(seed, x, seed_type)
             self.passphrase_dialog(run_next=f)
         else:
-            self.run('confirm_seed', seed, '')
+            self.run('confirm_seed', seed, '', seed_type)
 
-    def confirm_seed(self, seed, passphrase):
-        self.logger.info('Confirming Seed...')
-        f = lambda x: self.confirm_passphrase(seed, passphrase)
-        self.confirm_seed_dialog(run_next=f, seed=seed if self.config.get('debug_seed') else '', test=lambda x: x==seed)
+    def confirm_seed(self, seed, passphrase, seed_type):
+        f = lambda x: self.confirm_passphrase(seed, passphrase, seed_type == 'bip39')
+        self.confirm_seed_dialog(
+            run_next=f,
+            seed=seed if self.config.get('debug_seed') else '',
+            test=lambda x: mnemonic.is_matching_seed(seed=seed, seed_again=x),
+            seed_type=seed_type,
+        )
 
-    def confirm_passphrase(self, seed, passphrase):
-        self.logger.info('Confirming Passphrase...')
-        f = lambda x: self.run('create_keystore', seed, x)
+    def confirm_passphrase(self, seed, passphrase, is_bip39):
+        f = lambda x: self.run('create_keystore', seed, x, is_bip39)
         if passphrase:
             title = _('Confirm Seed Extension')
             message = '\n'.join([

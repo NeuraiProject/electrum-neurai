@@ -33,12 +33,13 @@ import base64
 import asyncio
 import threading
 from enum import IntEnum
+import functools
 
 from aiorpcx import NetAddress
 
 from .sql_db import SqlDB, sql
 from . import constants, util
-from .util import bh2u, profiler, get_headers_dir, is_ip_address, json_normalize
+from .util import profiler, get_headers_dir, is_ip_address, json_normalize, UserFacingException
 from .logging import Logger
 from .lnutil import (LNPeerAddr, format_short_channel_id, ShortChannelID,
                      validate_features, IncompatibleOrInsaneFeatures, InvalidGossipMsg)
@@ -46,6 +47,7 @@ from .lnverifier import LNChannelVerifier, verify_sig_for_channel_update
 from .lnmsg import decode_msg
 from . import ecc
 from .crypto import sha256d
+from .lnmsg import FailedToParseMsg
 
 if TYPE_CHECKING:
     from .network import Network
@@ -58,6 +60,9 @@ FLAG_DISABLE   = 1 << 1
 FLAG_DIRECTION = 1 << 0
 
 
+class ChannelDBNotLoaded(UserFacingException): pass
+
+
 class ChannelInfo(NamedTuple):
     short_channel_id: ShortChannelID
     node1_id: bytes
@@ -67,7 +72,7 @@ class ChannelInfo(NamedTuple):
     @staticmethod
     def from_msg(payload: dict) -> 'ChannelInfo':
         features = int.from_bytes(payload['features'], 'big')
-        validate_features(features)
+        features = validate_features(features)
         channel_id = payload['short_channel_id']
         node_id_1 = payload['node_id_1']
         node_id_2 = payload['node_id_2']
@@ -163,7 +168,7 @@ class NodeInfo(NamedTuple):
     def from_msg(payload) -> Tuple['NodeInfo', Sequence['LNPeerAddr']]:
         node_id = payload['node_id']
         features = int.from_bytes(payload['features'], "big")
-        validate_features(features)
+        features = validate_features(features)
         addresses = NodeInfo.parse_addresses_field(payload['addresses'])
         peer_addrs = []
         for host, port in addresses:
@@ -174,7 +179,7 @@ class NodeInfo(NamedTuple):
         alias = payload['alias'].rstrip(b'\x00')
         try:
             alias = alias.decode('utf8')
-        except:
+        except Exception:
             alias = ''
         timestamp = payload['timestamp']
         node_info = NodeInfo(node_id=node_id, features=features, timestamp=timestamp, alias=alias)
@@ -269,6 +274,9 @@ def get_mychannel_policy(short_channel_id: bytes, node_id: bytes,
         return Policy.from_msg(local_update_decoded)
 
 
+class _LoadDataAborted(Exception): pass
+
+
 create_channel_info = """
 CREATE TABLE IF NOT EXISTS channel_info (
 short_channel_id BLOB(8),
@@ -303,6 +311,8 @@ PRIMARY KEY(node_id)
 class ChannelDB(SqlDB):
 
     NUM_MAX_RECENT_PEERS = 20
+    PRIVATE_CHAN_UPD_CACHE_TTL_NORMAL = 600
+    PRIVATE_CHAN_UPD_CACHE_TTL_SHORT = 120
 
     def __init__(self, network: 'Network'):
         path = self.get_file_path(network.config)
@@ -310,7 +320,10 @@ class ChannelDB(SqlDB):
         self.lock = threading.RLock()
         self.num_nodes = 0
         self.num_channels = 0
-        self._channel_updates_for_private_channels = {}  # type: Dict[Tuple[bytes, bytes], dict]
+        self._channel_updates_for_private_channels = {}  # type: Dict[Tuple[bytes, bytes], Tuple[dict, int]]
+        # note: ^ we could maybe move this cache into PaySession instead of being global.
+        #       That would only make sense though if PaySessions were never too short
+        #       (e.g. consider trampoline forwarding).
         self.ca_verifier = LNChannelVerifier(network, self)
 
         # initialized in load_data
@@ -360,6 +373,7 @@ class ChannelDB(SqlDB):
         with self.lock:
             unshuffled = set(self._nodes.keys()) - node_ids
         return random.sample(list(unshuffled), min(200, len(unshuffled)))
+
     def get_last_good_address(self, node_id: bytes) -> Optional[LNPeerAddr]:
         """Returns latest address we successfully connected to, for given node."""
         addr_to_ts = self._addresses.get(node_id)
@@ -373,7 +387,7 @@ class ChannelDB(SqlDB):
 
     def get_recent_peers(self):
         if not self.data_loaded.is_set():
-            raise Exception("channelDB data not loaded yet!")
+            raise ChannelDBNotLoaded("channelDB data not loaded yet!")
         with self.lock:
             ret = [self.get_last_good_address(node_id)
                    for node_id in self._recent_peers]
@@ -394,7 +408,7 @@ class ChannelDB(SqlDB):
             if short_channel_id in self._channels:
                 continue
             if constants.net.rev_genesis_bytes() != msg['chain_hash']:
-                self.logger.info("ChanAnn has unexpected chain_hash {}".format(bh2u(msg['chain_hash'])))
+                self.logger.info("ChanAnn has unexpected chain_hash {}".format(msg['chain_hash'].hex()))
                 continue
             try:
                 channel_info = ChannelInfo.from_msg(msg)
@@ -586,8 +600,8 @@ class ChannelDB(SqlDB):
     @classmethod
     def verify_channel_announcement(cls, payload) -> None:
         h = sha256d(payload['raw'][2+256:])
-        pubkeys = [payload['node_id_1'], payload['node_id_2'], payload['neurai_key_1'], payload['neurai_key_2']]
-        sigs = [payload['node_signature_1'], payload['node_signature_2'], payload['neurai_signature_1'], payload['neurai_signature_2']]
+        pubkeys = [payload['node_id_1'], payload['node_id_2'], payload['bitcoin_key_1'], payload['bitcoin_key_2']]
+        sigs = [payload['node_signature_1'], payload['node_signature_2'], payload['bitcoin_signature_1'], payload['bitcoin_signature_2']]
         for pubkey, sig in zip(pubkeys, sigs):
             if not ecc.verify_signature(pubkey, sig, h):
                 raise InvalidGossipMsg('signature failed')
@@ -662,19 +676,46 @@ class ChannelDB(SqlDB):
             self.update_counts()
             self.logger.info(f'Deleting {len(orphaned_chans)} orphaned channels')
 
-    def add_channel_update_for_private_channel(self, msg_payload: dict, start_node_id: bytes) -> bool:
+    def _get_channel_update_for_private_channel(
+        self,
+        start_node_id: bytes,
+        short_channel_id: ShortChannelID,
+        *,
+        now: int = None,  # unix ts
+    ) -> Optional[dict]:
+        if now is None:
+            now = int(time.time())
+        key = (start_node_id, short_channel_id)
+        chan_upd_dict, cache_expiration = self._channel_updates_for_private_channels.get(key, (None, 0))
+        if cache_expiration < now:
+            chan_upd_dict = None  # already expired
+            # TODO rm expired entries from cache (note: perf vs thread-safety)
+        return chan_upd_dict
+
+    def add_channel_update_for_private_channel(
+        self,
+        msg_payload: dict,
+        start_node_id: bytes,
+        *,
+        cache_ttl: int = None,  # seconds
+    ) -> bool:
         """Returns True iff the channel update was successfully added and it was different than
         what we had before (if any).
         """
         if not verify_sig_for_channel_update(msg_payload, start_node_id):
             return False  # ignore
+        now = int(time.time())
         short_channel_id = ShortChannelID(msg_payload['short_channel_id'])
         msg_payload['start_node'] = start_node_id
-        key = (start_node_id, short_channel_id)
-        prev_chanupd = self._channel_updates_for_private_channels.get(key)
+        prev_chanupd = self._get_channel_update_for_private_channel(start_node_id, short_channel_id, now=now)
         if prev_chanupd == msg_payload:
             return False
-        self._channel_updates_for_private_channels[key] = msg_payload
+        if cache_ttl is None:
+            cache_ttl = self.PRIVATE_CHAN_UPD_CACHE_TTL_NORMAL
+        cache_expiration = now + cache_ttl
+        key = (start_node_id, short_channel_id)
+        with self.lock:
+            self._channel_updates_for_private_channels[key] = msg_payload, cache_expiration
         return True
 
     def remove_channel(self, short_channel_id: ShortChannelID):
@@ -696,15 +737,30 @@ class ChannelDB(SqlDB):
         return [(str(net_addr.host), net_addr.port, ts)
                 for net_addr, ts in addr_to_ts.items()]
 
+    def handle_abort(func):
+        @functools.wraps(func)
+        def wrapper(self: 'ChannelDB', *args, **kwargs):
+            try:
+                return func(self, *args, **kwargs)
+            except _LoadDataAborted:
+                return
+        return wrapper
+
     @sql
     @profiler
+    @handle_abort
     def load_data(self):
         if self.data_loaded.is_set():
             return
         # Note: this method takes several seconds... mostly due to lnmsg.decode_msg being slow.
+        def maybe_abort():
+            if self.stopping:
+                self.logger.info("load_data() was asked to stop. exiting early.")
+                raise _LoadDataAborted()
         c = self.conn.cursor()
         c.execute("""SELECT * FROM address""")
         for x in c:
+            maybe_abort()
             node_id, host, port, timestamp = x
             try:
                 net_addr = NetAddress(host, port)
@@ -720,22 +776,32 @@ class ChannelDB(SqlDB):
         self._recent_peers = sorted_node_ids[:self.NUM_MAX_RECENT_PEERS]
         c.execute("""SELECT * FROM channel_info""")
         for short_channel_id, msg in c:
+            maybe_abort()
             try:
                 ci = ChannelInfo.from_raw_msg(msg)
             except IncompatibleOrInsaneFeatures:
                 continue
+            except FailedToParseMsg:
+                continue
             self._channels[ShortChannelID.normalize(short_channel_id)] = ci
         c.execute("""SELECT * FROM node_info""")
         for node_id, msg in c:
+            maybe_abort()
             try:
                 node_info, node_addresses = NodeInfo.from_raw_msg(msg)
             except IncompatibleOrInsaneFeatures:
+                continue
+            except FailedToParseMsg:
                 continue
             # don't load node_addresses because they dont have timestamps
             self._nodes[node_id] = node_info
         c.execute("""SELECT * FROM policy""")
         for key, msg in c:
-            p = Policy.from_raw_msg(key, msg)
+            maybe_abort()
+            try:
+                p = Policy.from_raw_msg(key, msg)
+            except FailedToParseMsg:
+                continue
             self._policies[(p.start_node, p.short_channel_id)] = p
         for channel_info in self._channels.values():
             self._channels_for_node[channel_info.node1_id].add(channel_info.short_channel_id)
@@ -779,21 +845,20 @@ class ChannelDB(SqlDB):
 
     def get_policy_for_node(
             self,
-            short_channel_id: bytes,
+            short_channel_id: ShortChannelID,
             node_id: bytes,
             *,
             my_channels: Dict[ShortChannelID, 'Channel'] = None,
             private_route_edges: Dict[ShortChannelID, 'RouteEdge'] = None,
+            now: int = None,  # unix ts
     ) -> Optional['Policy']:
         channel_info = self.get_channel_info(short_channel_id)
         if channel_info is not None:  # publicly announced channel
             policy = self._policies.get((node_id, short_channel_id))
             if policy:
                 return policy
-        else:  # private channel
-            chan_upd_dict = self._channel_updates_for_private_channels.get((node_id, short_channel_id))
-            if chan_upd_dict:
-                return Policy.from_msg(chan_upd_dict)
+        elif chan_upd_dict := self._get_channel_update_for_private_channel(node_id, short_channel_id, now=now):
+            return Policy.from_msg(chan_upd_dict)
         # check if it's one of our own channels
         if my_channels:
             policy = get_mychannel_policy(short_channel_id, node_id, my_channels)
@@ -833,7 +898,7 @@ class ChannelDB(SqlDB):
     ) -> Set[ShortChannelID]:
         """Returns the set of short channel IDs where node_id is one of the channel participants."""
         if not self.data_loaded.is_set():
-            raise Exception("channelDB data not loaded yet!")
+            raise ChannelDBNotLoaded("channelDB data not loaded yet!")
         relevant_channels = self._channels_for_node.get(node_id) or set()
         relevant_channels = set(relevant_channels)  # copy
         # add our own channels  # TODO maybe slow?

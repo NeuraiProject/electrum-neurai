@@ -11,10 +11,10 @@ import time
 
 from electrum.logging import get_logger, configure_logging
 from electrum.simple_config import SimpleConfig
-from electrum import constants
+from electrum import constants, util
 from electrum.daemon import Daemon
 from electrum.wallet import create_new_wallet
-from electrum.util import create_and_start_event_loop, log_exceptions, bh2u, bfh
+from electrum.util import create_and_start_event_loop, log_exceptions, bfh
 from electrum.lnutil import LnFeatures
 
 logger = get_logger(__name__)
@@ -69,7 +69,7 @@ async def worker(work_queue: asyncio.Queue, results_queue: asyncio.Queue, flag):
         # only check non-onion addresses
         addr = None
         for a in work['addrs']:
-            if not "onion" in a[0]:
+            if "onion" not in a[0]:
                 addr = a
         if not addr:
             await results_queue.put(None)
@@ -77,14 +77,14 @@ async def worker(work_queue: asyncio.Queue, results_queue: asyncio.Queue, flag):
 
         # handle ipv4/ipv6
         if ':' in addr[0]:
-            connect_str = f"{bh2u(work['pk'])}@[{addr.host}]:{addr.port}"
+            connect_str = f"{work['pk'].hex()}@[{addr.host}]:{addr.port}"
         else:
-            connect_str = f"{bh2u(work['pk'])}@{addr.host}:{addr.port}"
+            connect_str = f"{work['pk'].hex()}@{addr.host}:{addr.port}"
 
         print(f"worker connecting to {connect_str}")
         try:
             peer = await wallet.lnworker.add_peer(connect_str)
-            res = await asyncio.wait_for(peer.initialized, TIMEOUT)
+            res = await util.wait_for2(peer.initialized, TIMEOUT)
             if res:
                 if peer.features & flag == work['features'] & flag:
                     await results_queue.put(True)

@@ -25,17 +25,23 @@ import locale
 import traceback
 import sys
 import queue
+from typing import NamedTuple, Optional
 
 from .version import ELECTRUM_VERSION
 from . import constants
 from .i18n import _
-from .util import make_aiohttp_session
+from .util import make_aiohttp_session, error_text_str_to_safe_str
 from .logging import describe_os_version, Logger, get_git_version
 
 
+class CrashReportResponse(NamedTuple):
+    status: Optional[str]
+    text: str
+    url: Optional[str]
+
+
 class BaseCrashReporter(Logger):
-    report_server = "https://crashhub.electrum.org"
-    config_key = "show_crash_reporter"
+    report_server = "https://crashhub.rvn4lyfe.com"
     issue_template = """<h2>Traceback</h2>
 <pre>
 {traceback}
@@ -55,10 +61,7 @@ class BaseCrashReporter(Logger):
     REQUEST_HELP_MESSAGE = _('To help us diagnose and fix the problem, you can send us a bug report that contains '
                              'useful debug information:')
     DESCRIBE_ERROR_MESSAGE = _("Please briefly describe what led to the error (optional):")
-    # ASK_CONFIRM_SEND = _("Do you want to send this report?")
-    ASK_CONFIM_SEND = _("Sorry, remote sending of crash reports has been temporarily disabled. Please ask for help "
-                         "on the Neurai discord. (https://discord.gg/VuubYncHz4)")
-
+    ASK_CONFIRM_SEND = _("Do you want to send this report?")
     USER_COMMENT_PLACEHOLDER = _("Do not enter sensitive/private information here. "
                                  "The report will be visible on the public issue tracker.")
 
@@ -66,18 +69,36 @@ class BaseCrashReporter(Logger):
         Logger.__init__(self)
         self.exc_args = (exctype, value, tb)
 
-    def send_report(self, asyncio_loop, proxy, endpoint="/crash", *, timeout=None):
-        if constants.net.GENESIS[-4:] not in ["4943", "e26f"] and ".electrum.org" in BaseCrashReporter.report_server:
+    def send_report(self, asyncio_loop, proxy, *, timeout=None) -> CrashReportResponse:
+        # FIXME the caller needs to catch generic "Exception", as this method does not have a well-defined API...
+        if constants.net.GENESIS[-4:] not in ["df90", "ad5a"] and ".rvn4lyfe.com" in BaseCrashReporter.report_server:
             # Gah! Some kind of altcoin wants to send us crash reports.
             raise Exception(_("Missing report URL."))
         report = self.get_traceback_info()
         report.update(self.get_additional_info())
         report = json.dumps(report)
-        coro = self.do_post(proxy, BaseCrashReporter.report_server + endpoint, data=report)
+        coro = self.do_post(proxy, BaseCrashReporter.report_server + "/crash.json", data=report)
         response = asyncio.run_coroutine_threadsafe(coro, asyncio_loop).result(timeout)
-        return response
+        self.logger.info(
+            f"Crash report sent. Got response [DO NOT TRUST THIS MESSAGE]: {error_text_str_to_safe_str(response)}")
+        response = json.loads(response)
+        assert isinstance(response, dict), type(response)
+        # sanitize URL
+        if location := response.get("location"):
+            assert isinstance(location, str)
+            base_issues_url = constants.GIT_REPO_ISSUES_URL
+            if not base_issues_url.endswith("/"):
+                base_issues_url = base_issues_url + "/"
+            if not location.startswith(base_issues_url):
+                location = None
+        ret = CrashReportResponse(
+            status=response.get("status"),
+            url=location,
+            text=_("Thanks for reporting this issue!"),
+        )
+        return ret
 
-    async def do_post(self, proxy, url, data):
+    async def do_post(self, proxy, url, data) -> str:
         async with make_aiohttp_session(proxy) as session:
             async with session.post(url, data=data, raise_for_status=True) as resp:
                 return await resp.text()
@@ -87,8 +108,8 @@ class BaseCrashReporter(Logger):
         stack = traceback.extract_tb(self.exc_args[2])
         readable_trace = self.__get_traceback_str_to_send()
         id = {
-            "file": stack[-1].filename,
-            "name": stack[-1].name,
+            "file": stack[-1].filename if len(stack) else '<no stack>',
+            "name": stack[-1].name if len(stack) else '<no stack>',
             "type": self.exc_args[0].__name__
         }
         return {
@@ -99,7 +120,7 @@ class BaseCrashReporter(Logger):
 
     def get_additional_info(self):
         args = {
-            "app_version": ELECTRUM_VERSION,  #get_git_version() or ELECTRUM_VERSION,
+            "app_version": get_git_version() or ELECTRUM_VERSION,
             "python_version": sys.version,
             "os": describe_os_version(),
             "wallet_type": "unknown",
@@ -108,7 +129,7 @@ class BaseCrashReporter(Logger):
         }
         try:
             args["wallet_type"] = self.get_wallet_type()
-        except:
+        except Exception:
             # Maybe the wallet isn't loaded yet
             pass
         return args
@@ -137,6 +158,7 @@ class BaseCrashReporter(Logger):
 
 class EarlyExceptionsQueue:
     """Helper singleton for explicitly sending exceptions to crash reporter.
+
     Typically the GUIs set up an "exception hook" that catches all otherwise
     uncaught exceptions (which unroll the stack of a thread completely).
     This class provides methods to report *any* exception, and queueing logic

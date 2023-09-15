@@ -31,35 +31,36 @@ import threading
 import socket
 import json
 import sys
-import asyncio
 from typing import NamedTuple, Optional, Sequence, List, Dict, Tuple, TYPE_CHECKING, Iterable, Set, Any, TypeVar
 import traceback
 import concurrent
 from concurrent import futures
 import copy
 import functools
+import urllib.parse
+from enum import IntEnum
 
 import aiorpcx
 from aiorpcx import ignore_after
-from aiohttp import ClientResponse
+from aiohttp import ClientResponse, ClientResponseError
 
 from . import util
 from .util import (log_exceptions, ignore_exceptions, OldTaskGroup,
                    bfh, make_aiohttp_session, send_exception_to_crash_reporter,
                    is_hash256_str, is_non_negative_integer, MyEncoder, NetworkRetryManager,
-                   nullcontext)
-from .neurai import COIN
+                   nullcontext, error_text_str_to_safe_str, ipfs_explorer_URL)
+
+from .bitcoin import COIN
 from . import constants
 from . import blockchain
-from . import neurai
+from . import bitcoin
 from . import dns_hacks
 from .transaction import Transaction
-from .blockchain import Blockchain
+from .blockchain import Blockchain, HEADER_SIZE
 from .interface import (Interface, PREFERRED_NETWORK_PROTOCOL,
                         RequestTimedOut, NetworkTimeout, BUCKET_NAME_OF_ONION_SERVERS,
                         NetworkException, RequestCorrupted, ServerAddr)
 from .version import PROTOCOL_VERSION
-from .simple_config import SimpleConfig
 from .i18n import _
 from .logging import get_logger, Logger
 
@@ -71,6 +72,7 @@ if TYPE_CHECKING:
     from .lnworker import LNGossip
     from .lnwatcher import WatchTower
     from .daemon import Daemon
+    from .simple_config import SimpleConfig
 
 
 _logger = get_logger(__name__)
@@ -81,6 +83,12 @@ NUM_STICKY_SERVERS = 4
 NUM_RECENT_SERVERS = 20
 
 T = TypeVar('T')
+
+
+class ConnectionState(IntEnum):
+    DISCONNECTED  = 0
+    CONNECTING    = 1
+    CONNECTED     = 2
 
 
 def parse_servers(result: Sequence[Tuple[str, str, List[str]]]) -> Dict[str, dict]:
@@ -166,7 +174,7 @@ def serialize_proxy(p):
                      p.get('user', ''), p.get('password', '')])
 
 
-def deserialize_proxy(s: str) -> Optional[dict]:
+def deserialize_proxy(s: Optional[str]) -> Optional[dict]:
     if not isinstance(s, str):
         return None
     if s.lower() == 'none':
@@ -236,8 +244,9 @@ class UntrustedServerReturnedError(NetworkException):
         return _("The server returned an error.")
 
     def __repr__(self):
+        e = self.original_exception
         return (f"<UntrustedServerReturnedError "
-                f"[DO NOT TRUST THIS MESSAGE] original_exception: {repr(self.original_exception)}>")
+                f"[DO NOT TRUST THIS MESSAGE] original_exception: {error_text_str_to_safe_str(repr(e))}>")
 
 
 _INSTANCE = None
@@ -263,7 +272,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
     local_watchtower: Optional['WatchTower'] = None
     path_finder: Optional['LNPathFinder'] = None
 
-    def __init__(self, config: SimpleConfig, *, daemon: 'Daemon' = None):
+    def __init__(self, config: 'SimpleConfig', *, daemon: 'Daemon' = None):
         global _INSTANCE
         assert _INSTANCE is None, "Network is a singleton!"
         _INSTANCE = self
@@ -280,33 +289,20 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         self.asyncio_loop = util.get_asyncio_loop()
         assert self.asyncio_loop.is_running(), "event loop not running"
 
-        assert isinstance(config, SimpleConfig), f"config should be a SimpleConfig instead of {type(config)}"
         self.config = config
-
         self.daemon = daemon
 
         blockchain.read_blockchains(self.config)
         blockchain.init_headers_file_for_best_chain()
         self.logger.info(f"blockchains {list(map(lambda b: b.forkpoint, blockchain.blockchains.values()))}")
-        self._blockchain_preferred_block = self.config.get('blockchain_preferred_block', None)  # type: Dict[str, Any]
+        self._blockchain_preferred_block = self.config.BLOCKCHAIN_PREFERRED_BLOCK  # type: Dict[str, Any]
         if self._blockchain_preferred_block is None:
             self._set_preferred_chain(None)
         self._blockchain = blockchain.get_best_chain()
 
         self._allowed_protocols = {PREFERRED_NETWORK_PROTOCOL}
 
-        # Server for addresses and transactions
-        self.default_server = self.config.get('server', None)
-        # Sanitize default server
-        if self.default_server:
-            try:
-                self.default_server = ServerAddr.from_str(self.default_server)
-            except:
-                self.logger.warning('failed to parse server-string; falling back to localhost:1:s.')
-                self.default_server = ServerAddr.from_str("localhost:1:s")
-        else:
-            self.default_server = pick_random_server(allowed_protocols=self._allowed_protocols)
-        assert isinstance(self.default_server, ServerAddr), f"invalid type for default_server: {self.default_server!r}"
+        self._init_parameters_from_config()
 
         self.taskgroup = None
 
@@ -338,21 +334,17 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         self.interfaces = {}  # these are the ifaces in "initialised and usable" state
         self._closing_ifaces = set()
 
-        self.auto_connect = self.config.get('auto_connect', True)
-        self.proxy = None
-        self._maybe_set_oneserver()
-
         # Dump network messages (all interfaces).  Set at runtime from the console.
         self.debug = False
 
-        self._set_status('disconnected')
+        self._set_status(ConnectionState.DISCONNECTED)
         self._has_ever_managed_to_connect_to_server = False
+        self._was_started = False
 
         # lightning network
-        if self.config.get('run_watchtower', False):
+        if self.config.WATCHTOWER_SERVER_ENABLED:
             from . import lnwatcher
             self.local_watchtower = lnwatcher.WatchTower(self)
-            self.local_watchtower.adb.start_network(self)
             asyncio.ensure_future(self.local_watchtower.start_watching())
 
     def has_internet_connection(self) -> bool:
@@ -366,7 +358,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         from . import lnrouter
         from . import channel_db
         from . import lnworker
-        if not self.config.get('use_gossip'):
+        if not self.config.LIGHTNING_USE_GOSSIP:
             return
         if self.lngossip is None:
             self.channel_db = channel_db.ChannelDB(self)
@@ -411,7 +403,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
                 data = f.read()
                 servers_list = json.loads(data)
             return [ServerAddr.from_str(s) for s in servers_list]
-        except:
+        except Exception:
             return []
 
     @with_recent_servers_lock
@@ -423,7 +415,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         try:
             with open(path, "w", encoding='utf-8') as f:
                 f.write(s)
-        except:
+        except Exception:
             pass
 
     async def _server_is_lagging(self) -> bool:
@@ -439,14 +431,22 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
 
     def _set_status(self, status):
         self.connection_status = status
-        self.notify('status')
+        util.trigger_callback('status')
 
     def is_connected(self):
         interface = self.interface
         return interface is not None and interface.is_connected_and_ready()
 
     def is_connecting(self):
-        return self.connection_status == 'connecting'
+        return self.connection_status == ConnectionState.CONNECTING
+
+    def get_connection_status_for_GUI(self):
+        ConnectionStates = {
+            ConnectionState.DISCONNECTED: _('Disconnected'),
+            ConnectionState.CONNECTING: _('Connecting'),
+            ConnectionState.CONNECTED: _('Connected'),
+        }
+        return ConnectionStates[self.connection_status]
 
     async def _request_server_info(self, interface: 'Interface'):
         await interface.ready
@@ -454,7 +454,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
 
         async def get_banner():
             self.banner = await interface.get_server_banner()
-            self.notify('banner')
+            util.trigger_callback('banner', self.banner)
         async def get_donation_address():
             self.donation_address = await interface.get_donation_address()
         async def get_server_peers():
@@ -464,7 +464,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
             server_peers = server_peers[:max_accepted_peers]
             # note that 'parse_servers' also validates the data (which is untrusted input!)
             self.server_peers = parse_servers(server_peers)
-            self.notify('servers')
+            util.trigger_callback('servers', self.get_servers())
         async def get_relay_fee():
             self.relay_fee = await interface.get_relay_fee()
 
@@ -479,35 +479,20 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         self.config.requested_fee_estimates()
         histogram = await interface.get_fee_histogram()
         self.config.mempool_fees = histogram
-        self.logger.info(f'fee_histogram {histogram}')
-        self.notify('fee_histogram')
-
-    def get_status_value(self, key):
-        if key == 'status':
-            value = self.connection_status
-        elif key == 'banner':
-            value = self.banner
-        elif key == 'fee':
-            value = self.config.fee_estimates
-        elif key == 'fee_histogram':
-            value = self.config.mempool_fees
-        elif key == 'servers':
-            value = self.get_servers()
-        else:
-            raise Exception('unexpected trigger key {}'.format(key))
-        return value
-
-    def notify(self, key):
-        if key in ['status', 'updated']:
-            util.trigger_callback(key)
-        else:
-            util.trigger_callback(key, self.get_status_value(key))
+        self.logger.info(f'fee_histogram {len(histogram)}')
+        util.trigger_callback('fee_histogram', self.config.mempool_fees)
 
     def get_parameters(self) -> NetworkParameters:
         return NetworkParameters(server=self.default_server,
                                  proxy=self.proxy,
                                  auto_connect=self.auto_connect,
                                  oneserver=self.oneserver)
+
+    def _init_parameters_from_config(self) -> None:
+        self.auto_connect = self.config.NETWORK_AUTO_CONNECT
+        self._set_default_server()
+        self._set_proxy(deserialize_proxy(self.config.NETWORK_PROXY))
+        self._maybe_set_oneserver()
 
     def get_donation_address(self):
         if self.is_connected():
@@ -518,6 +503,10 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         with self.interfaces_lock:
             return list(self.interfaces)
 
+    def get_status(self):
+        n = len(self.get_interfaces())
+        return _("Connected to {0} nodes.").format(n) if n > 1 else _("Connected to {0} node.").format(n) if n == 1 else _("Not connected")
+
     def get_fee_estimates(self):
         from statistics import median
         from .simple_config import FEE_ETA_TARGETS
@@ -527,7 +516,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
                 for n in FEE_ETA_TARGETS:
                     try:
                         out[n] = int(median(filter(None, [i.fee_estimates_eta.get(n) for i in self.interfaces.values()])))
-                    except:
+                    except Exception:
                         continue
                 return out
         else:
@@ -543,7 +532,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         if not hasattr(self, "_prev_fee_est") or self._prev_fee_est != fee_est:
             self._prev_fee_est = copy.copy(fee_est)
             self.logger.info(f'fee_estimates {fee_est}')
-        self.notify('fee')
+        util.trigger_callback('fee', self.config.fee_estimates)
 
     @with_recent_servers_lock
     def get_servers(self):
@@ -565,7 +554,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
             else:
                 out[server.host] = {server.protocol: port}
         # potentially filter out some
-        if self.config.get('noonion'):
+        if self.config.NETWORK_NOONION:
             out = filter_noonion(out)
         return out
 
@@ -599,11 +588,33 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
             return server
         return None
 
+    def _set_default_server(self) -> None:
+        # Server for addresses and transactions
+        server = self.config.NETWORK_SERVER
+        # Sanitize default server
+        if server:
+            try:
+                self.default_server = ServerAddr.from_str(server)
+            except Exception:
+                self.logger.warning(f'failed to parse server-string ({server!r}); falling back to localhost:1:s.')
+                self.default_server = ServerAddr.from_str("localhost:1:s")
+        else:
+            self.default_server = pick_random_server(allowed_protocols=self._allowed_protocols)
+        assert isinstance(self.default_server, ServerAddr), f"invalid type for default_server: {self.default_server!r}"
+
     def _set_proxy(self, proxy: Optional[dict]):
         self.proxy = proxy
         dns_hacks.configure_dns_depending_on_proxy(bool(proxy))
         self.logger.info(f'setting proxy {proxy}')
-        util.trigger_callback('proxy_set', self.proxy)
+
+        self.tor_proxy = False
+        if bool(proxy) and proxy['mode'] == 'socks5':
+            # test for Tor
+            self.tor_proxy = util.is_tor_socks_port(proxy['host'], int(proxy['port']))
+            if self.tor_proxy:
+                self.logger.info(f'Proxy is TOR')
+
+        util.trigger_callback('proxy_set', self.proxy, self.tor_proxy)
 
     @log_exceptions
     async def set_parameters(self, net_params: NetworkParameters):
@@ -615,33 +626,38 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
             if proxy:
                 proxy_modes.index(proxy['mode']) + 1
                 int(proxy['port'])
-        except:
+        except Exception:
             return
-        self.config.set_key('auto_connect', net_params.auto_connect, False)
-        self.config.set_key('oneserver', net_params.oneserver, False)
-        self.config.set_key('proxy', proxy_str, False)
-        self.config.set_key('server', str(server), True)
+        self.config.NETWORK_AUTO_CONNECT = net_params.auto_connect
+        self.config.NETWORK_ONESERVER = net_params.oneserver
+        self.config.NETWORK_PROXY = proxy_str
+        self.config.NETWORK_SERVER = str(server)
         # abort if changes were not allowed by config
-        if self.config.get('server') != str(server) \
-                or self.config.get('proxy') != proxy_str \
-                or self.config.get('oneserver') != net_params.oneserver:
+        if self.config.NETWORK_SERVER != str(server) \
+                or self.config.NETWORK_PROXY != proxy_str \
+                or self.config.NETWORK_ONESERVER != net_params.oneserver:
+            return
+
+        proxy_changed = self.proxy != proxy
+        oneserver_changed = self.oneserver != net_params.oneserver
+        default_server_changed = self.default_server != server
+        self._init_parameters_from_config()
+        if not self._was_started:
             return
 
         async with self.restart_lock:
-            self.auto_connect = net_params.auto_connect
-            if self.proxy != proxy or self.oneserver != net_params.oneserver:
-                # Restart the network defaulting to the given server
+            if proxy_changed or oneserver_changed:
+                # Restart the network
                 await self.stop(full_shutdown=False)
-                self.default_server = server
                 await self._start()
-            elif self.default_server != server:
+            elif default_server_changed:
                 await self.switch_to_interface(server)
             else:
                 await self.switch_lagging_interface()
         util.trigger_callback('network_updated')
 
     def _maybe_set_oneserver(self) -> None:
-        oneserver = bool(self.config.get('oneserver', False))
+        oneserver = self.config.NETWORK_ONESERVER
         self.oneserver = oneserver
         self.num_server = NUM_TARGET_CONNECTED_SERVERS if not oneserver else 0
 
@@ -729,7 +745,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
             util.trigger_callback('default_server_changed')
             self.default_server_changed_event.set()
             self.default_server_changed_event.clear()
-            self._set_status('connected')
+            self._set_status(ConnectionState.CONNECTED)
             util.trigger_callback('network_updated')
             if blockchain_updated:
                 util.trigger_callback('blockchain_updated')
@@ -767,13 +783,13 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         We distinguish by whether it is in self.interfaces.'''
         if not interface: return
         if interface.server == self.default_server:
-            self._set_status('disconnected')
+            self._set_status(ConnectionState.DISCONNECTED)
         await self._close_interface(interface)
         util.trigger_callback('network_updated')
 
     def get_network_timeout_seconds(self, request_type=NetworkTimeout.Generic) -> int:
-        if self.config.get('network_timeout', None):
-            return int(self.config.get('network_timeout'))
+        if self.config.NETWORK_TIMEOUT:
+            return self.config.NETWORK_TIMEOUT
         if self.oneserver and not self.auto_connect:
             return request_type.MOST_RELAXED
         if self.proxy:
@@ -787,18 +803,17 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
                 or server in self._connecting_ifaces
                 or server in self._closing_ifaces):
             return
-
         self._connecting_ifaces.add(server)
         if server == self.default_server:
             self.logger.info(f"connecting to {server} as new interface")
-            self._set_status('connecting')
+            self._set_status(ConnectionState.CONNECTING)
         self._trying_addr_now(server)
 
         interface = Interface(network=self, server=server, proxy=self.proxy)
         # note: using longer timeouts here as DNS can sometimes be slow!
         timeout = self.get_network_timeout_seconds(NetworkTimeout.Generic)
         try:
-            await asyncio.wait_for(interface.ready, timeout)
+            await util.wait_for2(interface.ready, timeout)
         except BaseException as e:
             self.logger.info(f"couldn't launch iface {server} -- {repr(e)}")
             await interface.close()
@@ -876,40 +891,31 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         return make_reliable_wrapper
 
     def catch_server_exceptions(func):
+        """Decorator that wraps server errors in UntrustedServerReturnedError,
+        to avoid showing untrusted arbitrary text to users.
+        """
         @functools.wraps(func)
         async def wrapper(self, *args, **kwargs):
             try:
                 return await func(self, *args, **kwargs)
             except aiorpcx.jsonrpc.CodeMessageError as e:
-                raise UntrustedServerReturnedError(original_exception=e) from e
+                wrapped_exc = UntrustedServerReturnedError(original_exception=e)
+                # log (sanitized) untrusted error text now, to ease debugging
+                self.logger.debug(f"got error from server for {func.__qualname__}: {wrapped_exc!r}")
+                raise wrapped_exc from e
         return wrapper
 
     @best_effort_reliable
     @catch_server_exceptions
-    async def listasset_for_scripthash(self, sh: str) -> List[dict]:
-        if not is_hash256_str(sh):
-            raise Exception(f"{repr(sh)} is not a scripthash")
-        return await self.interface.session.send_request('blockchain.scripthash.listassets', [sh])
-
-    @best_effort_reliable
-    @catch_server_exceptions
-    async def get_meta_for_asset(self, name: str) -> dict:
-        return await self.interface.session.send_request('blockchain.asset.get_meta', [name])
-
-    @best_effort_reliable
-    @catch_server_exceptions
-    async def get_asset_balance_for_scripthash(self, sh: str) -> dict:
-        if not is_hash256_str(sh):
-            raise Exception(f"{repr(sh)} is not a scripthash")
-        return await self.interface.session.send_request('blockchain.scripthash.get_asset_balance', [sh])
-
-    @best_effort_reliable
-    @catch_server_exceptions
     async def get_merkle_for_transaction(self, tx_hash: str, tx_height: int) -> dict:
+        if self.interface is None:  # handled by best_effort_reliable
+            raise RequestTimedOut()
         return await self.interface.get_merkle_for_transaction(tx_hash=tx_hash, tx_height=tx_height)
 
     @best_effort_reliable
     async def broadcast_transaction(self, tx: 'Transaction', *, timeout=None) -> None:
+        if self.interface is None:  # handled by best_effort_reliable
+            raise RequestTimedOut()
         if timeout is None:
             timeout = self.get_network_timeout_seconds(NetworkTimeout.Urgent)
         try:
@@ -918,14 +924,15 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         except (RequestTimedOut, asyncio.CancelledError, asyncio.TimeoutError):
             raise  # pass-through
         except aiorpcx.jsonrpc.CodeMessageError as e:
-            self.logger.info(f"broadcast_transaction error [DO NOT TRUST THIS MESSAGE]: {repr(e)}")
+            self.logger.info(f"broadcast_transaction error [DO NOT TRUST THIS MESSAGE]: {error_text_str_to_safe_str(repr(e))}")
             raise TxBroadcastServerReturnedError(self.sanitize_tx_broadcast_response(e.message)) from e
         except BaseException as e:  # intentional BaseException for sanity!
-            self.logger.info(f"broadcast_transaction error2 [DO NOT TRUST THIS MESSAGE]: {repr(e)}")
+            self.logger.info(f"broadcast_transaction error2 [DO NOT TRUST THIS MESSAGE]: {error_text_str_to_safe_str(repr(e))}")
             send_exception_to_crash_reporter(e)
             raise TxBroadcastUnknownError() from e
         if out != tx.txid():
-            self.logger.info(f"unexpected txid for broadcast_transaction [DO NOT TRUST THIS MESSAGE]: {out} != {tx.txid()}")
+            self.logger.info(f"unexpected txid for broadcast_transaction [DO NOT TRUST THIS MESSAGE]: "
+                             f"{error_text_str_to_safe_str(out)} != {tx.txid()}")
             raise TxBroadcastHashMismatch(_("Server returned unexpected transaction ID."))
 
     async def try_broadcasting(self, tx, name) -> bool:
@@ -945,6 +952,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         # server_msg is untrusted input so it should not be shown to the user. see #4968
         server_msg = str(server_msg)
         server_msg = server_msg.replace("\n", r"\n")
+
         # https://github.com/bitcoin/bitcoin/blob/5bb64acd9d3ced6e6f95df282a1a0f8b98522cb0/src/script/script_error.cpp
         script_error_messages = {
             r"Script evaluated without error but finished with a false/empty top stack element",
@@ -1020,7 +1028,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
             r"bad-txns-too-many-sigops": None,
             r"mempool min fee not met":
                 ("mempool min fee not met\n" +
-                 _("Your transaction is paying a fee that is so low that the neurai node cannot "
+                 _("Your transaction is paying a fee that is so low that the bitcoin node cannot "
                    "fit it into its mempool. The mempool is already full of hundreds of megabytes "
                    "of transactions that all pay higher fees. Try to increase the fee.")),
             r"min relay fee not met": None,
@@ -1117,37 +1125,79 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
     @best_effort_reliable
     @catch_server_exceptions
     async def request_chunk(self, height: int, tip=None, *, can_return_early=False):
+        if self.interface is None:  # handled by best_effort_reliable
+            raise RequestTimedOut()
         return await self.interface.request_chunk(height, tip=tip, can_return_early=can_return_early)
 
     @best_effort_reliable
     @catch_server_exceptions
     async def get_transaction(self, tx_hash: str, *, timeout=None) -> str:
+        if self.interface is None:  # handled by best_effort_reliable
+            raise RequestTimedOut()
         return await self.interface.get_transaction(tx_hash=tx_hash, timeout=timeout)
 
     @best_effort_reliable
     @catch_server_exceptions
     async def get_history_for_scripthash(self, sh: str) -> List[dict]:
+        if self.interface is None:  # handled by best_effort_reliable
+            raise RequestTimedOut()
         return await self.interface.get_history_for_scripthash(sh)
 
     @best_effort_reliable
     @catch_server_exceptions
-    async def listunspent_for_scripthash(self, sh: str) -> List[dict]:
-        return await self.interface.listunspent_for_scripthash(sh)
-
-    @best_effort_reliable
-    @catch_server_exceptions
-    async def listunspentassets_for_scripthash(self, sh: str) -> List[dict]:
-        return await self.interface.listunspentassets_for_scripthash(sh)
+    async def listunspent_for_scripthash(self, sh: str, *, asset=False) -> List[dict]:
+        if self.interface is None:  # handled by best_effort_reliable
+            raise RequestTimedOut()
+        return await self.interface.listunspent_for_scripthash(sh, asset)
 
     @best_effort_reliable
     @catch_server_exceptions
     async def get_balance_for_scripthash(self, sh: str) -> dict:
+        if self.interface is None:  # handled by best_effort_reliable
+            raise RequestTimedOut()
         return await self.interface.get_balance_for_scripthash(sh)
 
     @best_effort_reliable
     @catch_server_exceptions
     async def get_txid_from_txpos(self, tx_height, tx_pos, merkle):
+        if self.interface is None:  # handled by best_effort_reliable
+            raise RequestTimedOut()
         return await self.interface.get_txid_from_txpos(tx_height, tx_pos, merkle)
+
+    @best_effort_reliable
+    @catch_server_exceptions
+    async def get_asset_metadata(self, asset: str) -> Dict:
+        if self.interface is None:
+            raise RequestTimedOut()
+        return await self.interface.get_asset_metadata(asset)
+
+    @best_effort_reliable
+    @catch_server_exceptions
+    async def get_verifier_string_for_restricted_asset(self, asset: str) -> Dict:
+        if self.interface is None:
+            raise RequestTimedOut
+        return await self.interface.get_verifier_string_for_restricted_asset(asset)
+
+    @best_effort_reliable
+    @catch_server_exceptions
+    async def get_freeze_status_for_restricted_asset(self, asset: str) -> Dict:
+        if self.interface is None:
+            raise RequestTimedOut
+        return await self.interface.get_freeze_status_for_restricted_asset(asset)
+
+    @best_effort_reliable
+    @catch_server_exceptions
+    async def check_tag_for_h160(self, asset: str, h160: str) -> Dict:
+        if self.interface is None:
+            raise RequestTimedOut()
+        return await self.interface.check_tag_for_h160(asset, h160)
+
+    @best_effort_reliable
+    @catch_server_exceptions
+    async def get_tags_for_h160(self, h160: str, *, include_mempool=False) -> Dict[str, Dict]:
+        if self.interface is None:
+            raise RequestTimedOut()
+        return await self.interface.get_tags_for_h160(h160, include_mempool=include_mempool)
 
     def blockchain(self) -> Blockchain:
         interface = self.interface
@@ -1176,7 +1226,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
             'height': height,
             'hash': header_hash,
         }
-        self.config.set_key('blockchain_preferred_block', self._blockchain_preferred_block)
+        self.config.BLOCKCHAIN_PREFERRED_BLOCK = self._blockchain_preferred_block
 
     async def follow_chain_given_id(self, chain_id: str) -> None:
         bc = blockchain.blockchains.get(chain_id)
@@ -1209,12 +1259,20 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         interface = self.interface
         return interface.tip if interface else 0
 
-    def get_local_height(self):
+    def get_local_height(self) -> int:
         """Length of header chain, POW-verified.
         In case of a chain split, this is for the branch the main interface is on,
         but it is the tip of that branch (even if main interface is behind).
         """
         return self.blockchain().height()
+
+    def export_checkpoints(self, path):
+        """Run manually to generate blockchain checkpoints.
+        Kept for console use only.
+        """
+        cp = self.blockchain().get_checkpoints()
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(json.dumps(cp, indent=4))
 
     async def _start(self):
         assert not self.taskgroup
@@ -1224,8 +1282,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         assert not self._closing_ifaces
         self.logger.info('starting network')
         self._clear_addr_retry_times()
-        self._set_proxy(deserialize_proxy(self.config.get('proxy')))
-        self._maybe_set_oneserver()
+        self._init_parameters_from_config()
         await self.taskgroup.spawn(self._run_new_interface(self.default_server))
 
         async def main():
@@ -1250,11 +1307,15 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         Note: the jobs will *restart* every time the network restarts, e.g. on proxy
         setting changes.
         """
+        self._was_started = True
         self._jobs = jobs or []
         asyncio.run_coroutine_threadsafe(self._start(), self.asyncio_loop)
 
     @log_exceptions
     async def stop(self, *, full_shutdown: bool = True):
+        if not self._was_started:
+            self.logger.info("not stopping network as it was never started")
+            return
         self.logger.info("stopping network")
         # timeout: if full_shutdown, it is up to the caller to time us out,
         #          otherwise if e.g. restarting due to proxy changes, we time out fast
@@ -1329,9 +1390,15 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
             on_finish = default_on_finish
         network = cls.get_instance()
         proxy = network.proxy if network else None
+        if proxy and util.is_localhost(urllib.parse.urlparse(url).netloc.split(':')[0]):
+            get_logger('async_send_http_on_proxy').info('Looks like localhost: not using proxy for this url')
+            proxy = None
         async with make_aiohttp_session(proxy, timeout=timeout) as session:
             if method == 'get':
                 async with session.get(url, params=params, headers=headers) as resp:
+                    return await on_finish(resp)
+            elif method == 'head':
+                async with session.head(url, params=params, headers=headers) as resp:
                     return await on_finish(resp)
             elif method == 'post':
                 assert body is not None or json is not None, 'body or json must be supplied if method is post'
@@ -1342,7 +1409,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
                     async with session.post(url, json=json, headers=headers) as resp:
                         return await on_finish(resp)
             else:
-                assert False
+                raise Exception(f"unexpected {method=!r}")
 
     @classmethod
     def send_http_on_proxy(cls, method, url, **kwargs):
@@ -1377,7 +1444,7 @@ class Network(Logger, NetworkRetryManager[ServerAddr]):
         async def get_response(server: ServerAddr):
             interface = Interface(network=self, server=server, proxy=self.proxy)
             try:
-                await asyncio.wait_for(interface.ready, timeout)
+                await util.wait_for2(interface.ready, timeout)
             except BaseException as e:
                 await interface.close()
                 return

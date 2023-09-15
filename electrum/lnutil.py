@@ -8,29 +8,40 @@ import json
 from collections import namedtuple, defaultdict
 from typing import NamedTuple, List, Tuple, Mapping, Optional, TYPE_CHECKING, Union, Dict, Set, Sequence
 import re
+import sys
+
 import attr
 from aiorpcx import NetAddress
 
-from .util import bfh, bh2u, inv_dict, UserFacingException
+from .util import bfh, inv_dict, UserFacingException
 from .util import list_enabled_bits
-from .crypto import sha256
+from .util import ShortID as ShortChannelID
+from .util import format_short_id as format_short_channel_id
+
+from .crypto import sha256, pw_decode_with_version_and_mac
 from .transaction import (Transaction, PartialTransaction, PartialTxInput, TxOutpoint,
                           PartialTxOutput, opcodes, TxOutput)
 from .ecc import CURVE_ORDER, sig_string_from_der_sig, ECPubkey, string_to_number
-from . import ecc, neurai, crypto, transaction
-from .neurai import (push_script, redeem_script_to_address, address_to_script,
-                        construct_witness, construct_script)
+from . import ecc, bitcoin, crypto, transaction
+from . import descriptor
+from .bitcoin import (push_script, redeem_script_to_address, address_to_script,
+                      construct_witness, construct_script)
 from . import segwit_addr
 from .i18n import _
 from .lnaddr import lndecode
 from .bip32 import BIP32Node, BIP32_PRIME
 from .transaction import BCDataStream, OPPushDataGeneric
+from .logging import get_logger
 
 
 if TYPE_CHECKING:
     from .lnchannel import Channel, AbstractChannel
     from .lnrouter import LNPaymentRoute
     from .lnonion import OnionRoutingFailure
+    from .simple_config import SimpleConfig
+
+
+_logger = get_logger(__name__)
 
 
 # defined in BOLT-03:
@@ -39,14 +50,14 @@ HTLC_SUCCESS_WEIGHT = 703
 COMMITMENT_TX_WEIGHT = 724
 HTLC_OUTPUT_WEIGHT = 172
 
-LN_MAX_FUNDING_SAT = pow(2, 24) - 1
+LN_MAX_FUNDING_SAT_LEGACY = pow(2, 24) - 1
 DUST_LIMIT_MAX = 1000
 
 # dummy address for fee estimation of funding tx
 def ln_dummy_address():
     return redeem_script_to_address('p2wsh', '')
 
-from .json_db import StoredObject
+from .json_db import StoredObject, stored_in, stored_as
 
 
 def channel_id_from_funding_tx(funding_txid: str, funding_index: int) -> Tuple[bytes, bytes]:
@@ -83,7 +94,7 @@ class ChannelConfig(StoredObject):
     htlc_minimum_msat = attr.ib(type=int)  # smallest value for INCOMING htlc
     upfront_shutdown_script = attr.ib(type=bytes, converter=hex_to_bytes)
 
-    def validate_params(self, *, funding_sat: int) -> None:
+    def validate_params(self, *, funding_sat: int, config: 'SimpleConfig', peer_features: 'LnFeatures') -> None:
         conf_name = type(self).__name__
         for key in (
                 self.payment_basepoint,
@@ -96,15 +107,18 @@ class ChannelConfig(StoredObject):
                 raise Exception(f"{conf_name}. invalid pubkey in channel config")
         if funding_sat < MIN_FUNDING_SAT:
             raise Exception(f"funding_sat too low: {funding_sat} sat < {MIN_FUNDING_SAT}")
-        # MUST set funding_satoshis to less than 2^24 satoshi
-        if funding_sat > LN_MAX_FUNDING_SAT:
-            raise Exception(f"funding_sat too high: {funding_sat} sat > {LN_MAX_FUNDING_SAT}")
+        if not peer_features.supports(LnFeatures.OPTION_SUPPORT_LARGE_CHANNEL_OPT):
+            # MUST set funding_satoshis to less than 2^24 satoshi
+            if funding_sat > LN_MAX_FUNDING_SAT_LEGACY:
+                raise Exception(f"funding_sat too high: {funding_sat} sat > {LN_MAX_FUNDING_SAT_LEGACY} (legacy limit)")
+        if funding_sat > config.LIGHTNING_MAX_FUNDING_SAT:
+            raise Exception(f"funding_sat too high: {funding_sat} sat > {config.LIGHTNING_MAX_FUNDING_SAT} (config setting)")
         # MUST set push_msat to equal or less than 1000 * funding_satoshis
         if not (0 <= self.initial_msat <= 1000 * funding_sat):
             raise Exception(f"{conf_name}. insane initial_msat={self.initial_msat}. (funding_sat={funding_sat})")
         if self.reserve_sat < self.dust_limit_sat:
             raise Exception(f"{conf_name}. MUST set channel_reserve_satoshis greater than or equal to dust_limit_satoshis")
-        if self.dust_limit_sat < neurai.DUST_LIMIT_UNKNOWN_SEGWIT:
+        if self.dust_limit_sat < bitcoin.DUST_LIMIT_UNKNOWN_SEGWIT:
             raise Exception(f"{conf_name}. dust limit too low: {self.dust_limit_sat} sat")
         if self.dust_limit_sat > DUST_LIMIT_MAX:
             raise Exception(f"{conf_name}. dust limit too high: {self.dust_limit_sat} sat")
@@ -133,10 +147,12 @@ class ChannelConfig(StoredObject):
             funding_sat: int,
             is_local_initiator: bool,  # whether we are the funder
             initial_feerate_per_kw: int,
+            config: 'SimpleConfig',
+            peer_features: 'LnFeatures',
     ) -> None:
         # first we validate the configs separately
-        local_config.validate_params(funding_sat=funding_sat)
-        remote_config.validate_params(funding_sat=funding_sat)
+        local_config.validate_params(funding_sat=funding_sat, config=config, peer_features=peer_features)
+        remote_config.validate_params(funding_sat=funding_sat, config=config, peer_features=peer_features)
         # now do tests that need access to both configs
         if is_local_initiator:
             funder, fundee = LOCAL, REMOTE
@@ -175,56 +191,7 @@ class ChannelConfig(StoredObject):
             raise Exception(f"feerate lower than min relay fee. {initial_feerate_per_kw} sat/kw.")
 
 
-    @classmethod
-    def cross_validate_params(
-            cls,
-            *,
-            local_config: 'LocalConfig',
-            remote_config: 'RemoteConfig',
-            funding_sat: int,
-            is_local_initiator: bool,  # whether we are the funder
-            initial_feerate_per_kw: int,
-    ) -> None:
-        # first we validate the configs separately
-        local_config.validate_params(funding_sat=funding_sat)
-        remote_config.validate_params(funding_sat=funding_sat)
-        # now do tests that need access to both configs
-        if is_local_initiator:
-            funder, fundee = LOCAL, REMOTE
-            funder_config, fundee_config = local_config, remote_config
-        else:
-            funder, fundee = REMOTE, LOCAL
-            funder_config, fundee_config = remote_config, local_config
-        # if channel_reserve_satoshis is less than dust_limit_satoshis within the open_channel message:
-        #     MUST reject the channel.
-        if remote_config.reserve_sat < local_config.dust_limit_sat:
-            raise Exception("violated constraint: remote_config.reserve_sat < local_config.dust_limit_sat")
-        # if channel_reserve_satoshis from the open_channel message is less than dust_limit_satoshis:
-        #     MUST reject the channel.
-        if local_config.reserve_sat < remote_config.dust_limit_sat:
-            raise Exception("violated constraint: local_config.reserve_sat < remote_config.dust_limit_sat")
-        # The receiving node MUST fail the channel if:
-        #     the funder's amount for the initial commitment transaction is not
-        #     sufficient for full fee payment.
-        if funder_config.initial_msat < calc_fees_for_commitment_tx(
-                num_htlcs=0,
-                feerate=initial_feerate_per_kw,
-                is_local_initiator=is_local_initiator)[funder]:
-            raise Exception(
-                "the funder's amount for the initial commitment transaction "
-                "is not sufficient for full fee payment")
-        # The receiving node MUST fail the channel if:
-        #     both to_local and to_remote amounts for the initial commitment transaction are
-        #     less than or equal to channel_reserve_satoshis (see BOLT 3).
-        if (max(local_config.initial_msat, remote_config.initial_msat)
-                <= 1000 * max(local_config.reserve_sat, remote_config.reserve_sat)):
-            raise Exception(
-                "both to_local and to_remote amounts for the initial commitment "
-                "transaction are less than or equal to channel_reserve_satoshis")
-        from .simple_config import FEERATE_PER_KW_MIN_RELAY_LIGHTNING
-        if initial_feerate_per_kw < FEERATE_PER_KW_MIN_RELAY_LIGHTNING:
-            raise Exception(f"feerate lower than min relay fee. {initial_feerate_per_kw} sat/kw.")
-
+@stored_as('local_config')
 @attr.s
 class LocalConfig(ChannelConfig):
     channel_seed = attr.ib(type=bytes, converter=hex_to_bytes)  # type: Optional[bytes]
@@ -235,7 +202,7 @@ class LocalConfig(ChannelConfig):
     per_commitment_secret_seed = attr.ib(type=bytes, converter=hex_to_bytes)
 
     @classmethod
-    def from_seed(self, **kwargs):
+    def from_seed(cls, **kwargs):
         channel_seed = kwargs['channel_seed']
         static_remotekey = kwargs.pop('static_remotekey')
         node = BIP32Node.from_rootseed(channel_seed, xtype='standard')
@@ -245,30 +212,37 @@ class LocalConfig(ChannelConfig):
         kwargs['htlc_basepoint'] = keypair_generator(LnKeyFamily.HTLC_BASE)
         kwargs['delayed_basepoint'] = keypair_generator(LnKeyFamily.DELAY_BASE)
         kwargs['revocation_basepoint'] = keypair_generator(LnKeyFamily.REVOCATION_BASE)
-        kwargs['payment_basepoint'] = OnlyPubkeyKeypair(static_remotekey) if static_remotekey else keypair_generator(LnKeyFamily.PAYMENT_BASE)
+        if static_remotekey:
+            kwargs['payment_basepoint'] = OnlyPubkeyKeypair(static_remotekey)
+        else:
+            # we expect all our channels to use option_static_remotekey, so ending up here likely indicates an issue...
+            kwargs['payment_basepoint'] = keypair_generator(LnKeyFamily.PAYMENT_BASE)
         return LocalConfig(**kwargs)
 
-    def validate_params(self, *, funding_sat: int) -> None:
+    def validate_params(self, *, funding_sat: int, config: 'SimpleConfig', peer_features: 'LnFeatures') -> None:
         conf_name = type(self).__name__
         # run base checks regardless whether LOCAL/REMOTE config
-        super().validate_params(funding_sat=funding_sat)
+        super().validate_params(funding_sat=funding_sat, config=config, peer_features=peer_features)
         # run some stricter checks on LOCAL config (make sure we ourselves do the sane thing,
         # even if we are lenient with REMOTE for compatibility reasons)
         HTLC_MINIMUM_MSAT_MIN = 1
         if self.htlc_minimum_msat < HTLC_MINIMUM_MSAT_MIN:
             raise Exception(f"{conf_name}. htlc_minimum_msat too low: {self.htlc_minimum_msat} msat < {HTLC_MINIMUM_MSAT_MIN}")
 
+@stored_as('remote_config')
 @attr.s
 class RemoteConfig(ChannelConfig):
     next_per_commitment_point = attr.ib(type=bytes, converter=hex_to_bytes)
     current_per_commitment_point = attr.ib(default=None, type=bytes, converter=hex_to_bytes)
 
+@stored_in('fee_updates')
 @attr.s
 class FeeUpdate(StoredObject):
     rate = attr.ib(type=int)  # in sat/kw
     ctn_local = attr.ib(default=None, type=int)
     ctn_remote = attr.ib(default=None, type=int)
 
+@stored_as('constraints')
 @attr.s
 class ChannelConstraints(StoredObject):
     capacity = attr.ib(type=int)  # in sat
@@ -276,7 +250,9 @@ class ChannelConstraints(StoredObject):
     funding_txn_minimum_depth = attr.ib(type=int)
 
 
-CHANNEL_BACKUP_VERSION = 0
+CHANNEL_BACKUP_VERSION_LATEST = 1
+KNOWN_CHANNEL_BACKUP_VERSIONS = (0, 1,)
+assert CHANNEL_BACKUP_VERSION_LATEST in KNOWN_CHANNEL_BACKUP_VERSIONS
 
 @attr.s
 class ChannelBackupStorage(StoredObject):
@@ -292,14 +268,16 @@ class ChannelBackupStorage(StoredObject):
         chan_id, _ = channel_id_from_funding_tx(self.funding_txid, self.funding_index)
         return chan_id
 
+@stored_in('onchain_channel_backups')
 @attr.s
 class OnchainChannelBackupStorage(ChannelBackupStorage):
-    node_id_prefix = attr.ib(type=bytes, converter=hex_to_bytes)
+    node_id_prefix = attr.ib(type=bytes, converter=hex_to_bytes)  # remote node pubkey
 
+@stored_in('imported_channel_backups')
 @attr.s
 class ImportedChannelBackupStorage(ChannelBackupStorage):
-    node_id = attr.ib(type=bytes, converter=hex_to_bytes)
-    privkey = attr.ib(type=bytes, converter=hex_to_bytes)
+    node_id = attr.ib(type=bytes, converter=hex_to_bytes)  # remote node pubkey
+    privkey = attr.ib(type=bytes, converter=hex_to_bytes)  # local node privkey
     host = attr.ib(type=str)
     port = attr.ib(type=int, converter=int)
     channel_seed = attr.ib(type=bytes, converter=hex_to_bytes)
@@ -307,47 +285,75 @@ class ImportedChannelBackupStorage(ChannelBackupStorage):
     remote_delay = attr.ib(type=int, converter=int)
     remote_payment_pubkey = attr.ib(type=bytes, converter=hex_to_bytes)
     remote_revocation_pubkey = attr.ib(type=bytes, converter=hex_to_bytes)
+    local_payment_pubkey = attr.ib(type=bytes, converter=hex_to_bytes)  # type: Optional[bytes]
 
     def to_bytes(self) -> bytes:
         vds = BCDataStream()
-        vds.write_int16(CHANNEL_BACKUP_VERSION)
+        vds.write_uint16(CHANNEL_BACKUP_VERSION_LATEST)
         vds.write_boolean(self.is_initiator)
         vds.write_bytes(self.privkey, 32)
         vds.write_bytes(self.channel_seed, 32)
         vds.write_bytes(self.node_id, 33)
         vds.write_bytes(bfh(self.funding_txid), 32)
-        vds.write_int16(self.funding_index)
+        vds.write_uint16(self.funding_index)
         vds.write_string(self.funding_address)
         vds.write_bytes(self.remote_payment_pubkey, 33)
         vds.write_bytes(self.remote_revocation_pubkey, 33)
-        vds.write_int16(self.local_delay)
-        vds.write_int16(self.remote_delay)
+        vds.write_uint16(self.local_delay)
+        vds.write_uint16(self.remote_delay)
         vds.write_string(self.host)
-        vds.write_int16(self.port)
+        vds.write_uint16(self.port)
+        vds.write_bytes(self.local_payment_pubkey, 33)
         return bytes(vds.input)
 
     @staticmethod
-    def from_bytes(s):
+    def from_bytes(s: bytes) -> "ImportedChannelBackupStorage":
         vds = BCDataStream()
         vds.write(s)
-        version = vds.read_int16()
-        if version != CHANNEL_BACKUP_VERSION:
+        version = vds.read_uint16()
+        if version not in KNOWN_CHANNEL_BACKUP_VERSIONS:
             raise Exception(f"unknown version for channel backup: {version}")
+        is_initiator = vds.read_boolean()
+        privkey = vds.read_bytes(32)
+        channel_seed = vds.read_bytes(32)
+        node_id = vds.read_bytes(33)
+        funding_txid = vds.read_bytes(32).hex()
+        funding_index = vds.read_uint16()
+        funding_address = vds.read_string()
+        remote_payment_pubkey = vds.read_bytes(33)
+        remote_revocation_pubkey = vds.read_bytes(33)
+        local_delay = vds.read_uint16()
+        remote_delay = vds.read_uint16()
+        host = vds.read_string()
+        port = vds.read_uint16()
+        if version >= 1:
+            local_payment_pubkey = vds.read_bytes(33)
+        else:
+            local_payment_pubkey = None
         return ImportedChannelBackupStorage(
-            is_initiator = vds.read_boolean(),
-            privkey = vds.read_bytes(32).hex(),
-            channel_seed = vds.read_bytes(32).hex(),
-            node_id = vds.read_bytes(33).hex(),
-            funding_txid = vds.read_bytes(32).hex(),
-            funding_index = vds.read_int16(),
-            funding_address = vds.read_string(),
-            remote_payment_pubkey = vds.read_bytes(33).hex(),
-            remote_revocation_pubkey = vds.read_bytes(33).hex(),
-            local_delay = vds.read_int16(),
-            remote_delay = vds.read_int16(),
-            host = vds.read_string(),
-            port = vds.read_int16())
+            is_initiator=is_initiator,
+            privkey=privkey,
+            channel_seed=channel_seed,
+            node_id=node_id,
+            funding_txid=funding_txid,
+            funding_index=funding_index,
+            funding_address=funding_address,
+            remote_payment_pubkey=remote_payment_pubkey,
+            remote_revocation_pubkey=remote_revocation_pubkey,
+            local_delay=local_delay,
+            remote_delay=remote_delay,
+            host=host,
+            port=port,
+            local_payment_pubkey=local_payment_pubkey,
+        )
 
+    @staticmethod
+    def from_encrypted_str(data: str, *, password: str) -> "ImportedChannelBackupStorage":
+        if not data.startswith('channel_backup:'):
+            raise ValueError("missing or invalid magic bytes")
+        encrypted = data[15:]
+        decrypted = pw_decode_with_version_and_mac(encrypted, password)
+        return ImportedChannelBackupStorage.from_bytes(decrypted)
 
 
 class ScriptHtlc(NamedTuple):
@@ -356,6 +362,7 @@ class ScriptHtlc(NamedTuple):
 
 
 # FIXME duplicate of TxOutpoint in transaction.py??
+@stored_as('funding_outpoint')
 @attr.s
 class Outpoint(StoredObject):
     txid = attr.ib(type=str)
@@ -477,7 +484,7 @@ class RevocationStore:
             this_bucket = self.buckets[i]
             e = shachain_derive(new_element, this_bucket.index)
             if e != this_bucket:
-                raise Exception("hash is not derivable: {} {} {}".format(bh2u(e.secret), bh2u(this_bucket.secret), this_bucket.index))
+                raise Exception("hash is not derivable: {} {} {}".format(e.secret.hex(), this_bucket.secret.hex(), this_bucket.index))
         self.buckets[bucket] = new_element
         self.storage['index'] = index - 1
 
@@ -520,8 +527,17 @@ def shachain_derive(element, to_index):
         get_per_commitment_secret_from_seed(element.secret, to_index, zeros),
         to_index)
 
-ShachainElement = namedtuple("ShachainElement", ["secret", "index"])
-ShachainElement.__str__ = lambda self: "ShachainElement(" + bh2u(self.secret) + "," + str(self.index) + ")"
+class ShachainElement(NamedTuple):
+    secret: bytes
+    index: int
+
+    def __str__(self):
+        return "ShachainElement(" + self.secret.hex() + "," + str(self.index) + ")"
+
+    @stored_in('buckets', tuple)
+    def read(*x):
+        return ShachainElement(bfh(x[0]), int(x[1]))
+
 
 def get_per_commitment_secret_from_seed(seed: bytes, i: int, bits: int = 48) -> bytes:
     """Generate per commitment secret."""
@@ -575,7 +591,7 @@ def make_htlc_tx_output(amount_msat, local_feerate, revocationpubkey, local_dela
         delayed_pubkey=local_delayedpubkey,
     )
 
-    p2wsh = neurai.redeem_script_to_address('p2wsh', bh2u(script))
+    p2wsh = bitcoin.redeem_script_to_address('p2wsh', script.hex())
     weight = HTLC_SUCCESS_WEIGHT if success else HTLC_TIMEOUT_WEIGHT
     fee = local_feerate * weight
     fee = fee // 1000 * 1000
@@ -602,6 +618,7 @@ def make_htlc_tx_inputs(htlc_output_txid: str, htlc_output_index: int,
                           nsequence=0)
     txin.witness_script = bfh(witness_script)
     txin.script_sig = b''
+    raise NotImplementedError()
     txin._trusted_value_sats = amount_msat // 1000
     c_inputs = [txin]
     return c_inputs
@@ -621,7 +638,7 @@ def make_offered_htlc(revocation_pubkey: bytes, remote_htlcpubkey: bytes,
     script = bfh(construct_script([
         opcodes.OP_DUP,
         opcodes.OP_HASH160,
-        neurai.hash_160(revocation_pubkey),
+        bitcoin.hash_160(revocation_pubkey),
         opcodes.OP_EQUAL,
         opcodes.OP_IF,
         opcodes.OP_CHECKSIG,
@@ -657,7 +674,7 @@ def make_received_htlc(revocation_pubkey: bytes, remote_htlcpubkey: bytes,
     script = bfh(construct_script([
         opcodes.OP_DUP,
         opcodes.OP_HASH160,
-        neurai.hash_160(revocation_pubkey),
+        bitcoin.hash_160(revocation_pubkey),
         opcodes.OP_EQUAL,
         opcodes.OP_IF,
         opcodes.OP_CHECKSIG,
@@ -787,7 +804,7 @@ def possible_output_idxs_of_htlc_in_ctx(*, chan: 'Channel', pcp: bytes, subject:
                                                       local_htlc_pubkey=htlc_pubkey,
                                                       payment_hash=payment_hash,
                                                       cltv_expiry=cltv_expiry)
-    htlc_address = redeem_script_to_address('p2wsh', bh2u(preimage_script))
+    htlc_address = redeem_script_to_address('p2wsh', preimage_script.hex())
     candidates = ctx.get_output_idxs_from_address(htlc_address)
     return {output_idx for output_idx in candidates
             if ctx.outputs()[output_idx].value == htlc.amount_msat // 1000}
@@ -853,7 +870,7 @@ def make_htlc_tx_with_open_channel(*, chan: 'Channel', pcp: bytes, subject: 'HTL
     htlc_tx_inputs = make_htlc_tx_inputs(
         commit.txid(), ctx_output_idx,
         amount_msat=amount_msat,
-        witness_script=bh2u(preimage_script))
+        witness_script=preimage_script.hex())
     if is_htlc_success:
         cltv_expiry = 0
     htlc_tx = make_htlc_tx(cltv_expiry=cltv_expiry, inputs=htlc_tx_inputs, output=htlc_tx_output)
@@ -861,13 +878,15 @@ def make_htlc_tx_with_open_channel(*, chan: 'Channel', pcp: bytes, subject: 'HTL
 
 def make_funding_input(local_funding_pubkey: bytes, remote_funding_pubkey: bytes,
         funding_pos: int, funding_txid: str, funding_sat: int) -> PartialTxInput:
-    pubkeys = sorted([bh2u(local_funding_pubkey), bh2u(remote_funding_pubkey)])
+    pubkeys = sorted([local_funding_pubkey.hex(), remote_funding_pubkey.hex()])
     # commitment tx input
     prevout = TxOutpoint(txid=bfh(funding_txid), out_idx=funding_pos)
     c_input = PartialTxInput(prevout=prevout)
-    c_input.script_type = 'p2wsh'
-    c_input.pubkeys = [bfh(pk) for pk in pubkeys]
-    c_input.num_sig = 2
+
+    ppubkeys = [descriptor.PubkeyProvider.parse(pk) for pk in pubkeys]
+    multi = descriptor.MultisigDescriptor(pubkeys=ppubkeys, thresh=2, is_sorted=True)
+    c_input.script_descriptor = descriptor.WSHDescriptor(subdescriptor=multi)
+    raise NotImplementedError()
     c_input._trusted_value_sats = funding_sat
     return c_input
 
@@ -906,7 +925,7 @@ def make_commitment_outputs(*, fees_per_participant: Mapping[HTLCOwner, int], lo
     non_htlc_outputs = [to_local, to_remote]
     htlc_outputs = []
     for script, htlc in htlcs:
-        addr = neurai.redeem_script_to_address('p2wsh', bh2u(script))
+        addr = bitcoin.redeem_script_to_address('p2wsh', script.hex())
         htlc_outputs.append(PartialTxOutput(scriptpubkey=bfh(address_to_script(addr)),
                                             value=htlc.amount_msat // 1000))
 
@@ -1032,13 +1051,14 @@ def make_commitment_output_to_local_witness_script(
 def make_commitment_output_to_local_address(
         revocation_pubkey: bytes, to_self_delay: int, delayed_pubkey: bytes) -> str:
     local_script = make_commitment_output_to_local_witness_script(revocation_pubkey, to_self_delay, delayed_pubkey)
-    return neurai.redeem_script_to_address('p2wsh', bh2u(local_script))
+    return bitcoin.redeem_script_to_address('p2wsh', local_script.hex())
 
 def make_commitment_output_to_remote_address(remote_payment_pubkey: bytes) -> str:
-    return neurai.pubkey_to_address('p2wpkh', bh2u(remote_payment_pubkey))
+    return bitcoin.pubkey_to_address('p2wpkh', remote_payment_pubkey.hex())
 
 def sign_and_get_sig_string(tx: PartialTransaction, local_config, remote_config):
-    tx.sign({bh2u(local_config.multisig_key.pubkey): (local_config.multisig_key.privkey, True)})
+    raise NotImplementedError('wallet insert')
+    tx.sign({local_config.multisig_key.pubkey.hex(): (local_config.multisig_key.privkey, True)})
     sig = tx.inputs()[0].part_sigs[local_config.multisig_key.pubkey]
     sig_64 = sig_string_from_der_sig(sig[:-1])
     return sig_64
@@ -1047,7 +1067,7 @@ def funding_output_script(local_config, remote_config) -> str:
     return funding_output_script_from_keys(local_config.multisig_key.pubkey, remote_config.multisig_key.pubkey)
 
 def funding_output_script_from_keys(pubkey1: bytes, pubkey2: bytes) -> str:
-    pubkeys = sorted([bh2u(pubkey1), bh2u(pubkey2)])
+    pubkeys = sorted([pubkey1.hex(), pubkey2.hex()])
     return transaction.multisig_script(pubkeys, 2)
 
 
@@ -1140,26 +1160,19 @@ class LnFeatures(IntFlag):
     _ln_feature_contexts[OPTION_SUPPORT_LARGE_CHANNEL_OPT] = (LNFC.INIT | LNFC.NODE_ANN)
     _ln_feature_contexts[OPTION_SUPPORT_LARGE_CHANNEL_REQ] = (LNFC.INIT | LNFC.NODE_ANN)
 
-    # This is still a temporary number. Also used by Eclair.
-    OPTION_TRAMPOLINE_ROUTING_REQ = 1 << 148
-    OPTION_TRAMPOLINE_ROUTING_OPT = 1 << 149
+    # Temporary number.
+    OPTION_TRAMPOLINE_ROUTING_REQ_ECLAIR = 1 << 148
+    OPTION_TRAMPOLINE_ROUTING_OPT_ECLAIR = 1 << 149
 
-    _ln_feature_contexts[OPTION_TRAMPOLINE_ROUTING_REQ] = (LNFC.INIT | LNFC.NODE_ANN | LNFC.INVOICE)
-    _ln_feature_contexts[OPTION_TRAMPOLINE_ROUTING_OPT] = (LNFC.INIT | LNFC.NODE_ANN | LNFC.INVOICE)
+    _ln_feature_contexts[OPTION_TRAMPOLINE_ROUTING_REQ_ECLAIR] = (LNFC.INIT | LNFC.NODE_ANN | LNFC.INVOICE)
+    _ln_feature_contexts[OPTION_TRAMPOLINE_ROUTING_OPT_ECLAIR] = (LNFC.INIT | LNFC.NODE_ANN | LNFC.INVOICE)
 
-    # allow old Electrum wallets to pay us with trampoline
-    OPTION_TRAMPOLINE_ROUTING_REQ_COMPAT_ELECTRUM = 1 << 24
-    OPTION_TRAMPOLINE_ROUTING_OPT_COMPAT_ELECTRUM = 1 << 25
+    # We use a different bit because Phoenix cannot do end-to-end multi-trampoline routes
+    OPTION_TRAMPOLINE_ROUTING_REQ_ELECTRUM = 1 << 150
+    OPTION_TRAMPOLINE_ROUTING_OPT_ELECTRUM = 1 << 151
 
-    _ln_feature_contexts[OPTION_TRAMPOLINE_ROUTING_REQ_COMPAT_ELECTRUM] = (LNFC.INVOICE)
-    _ln_feature_contexts[OPTION_TRAMPOLINE_ROUTING_OPT_COMPAT_ELECTRUM] = (LNFC.INVOICE)
-
-    # allow old Phoenix wallets to pay us with trampoline
-    OPTION_TRAMPOLINE_ROUTING_REQ_COMPAT_ECLAIR = 1 << 50
-    OPTION_TRAMPOLINE_ROUTING_OPT_COMPAT_ECLAIR = 1 << 51
-
-    _ln_feature_contexts[OPTION_TRAMPOLINE_ROUTING_REQ_COMPAT_ECLAIR] = (LNFC.INVOICE)
-    _ln_feature_contexts[OPTION_TRAMPOLINE_ROUTING_OPT_COMPAT_ECLAIR] = (LNFC.INVOICE)
+    _ln_feature_contexts[OPTION_TRAMPOLINE_ROUTING_REQ_ELECTRUM] = (LNFC.INIT | LNFC.NODE_ANN | LNFC.INVOICE)
+    _ln_feature_contexts[OPTION_TRAMPOLINE_ROUTING_OPT_ELECTRUM] = (LNFC.INIT | LNFC.NODE_ANN | LNFC.INVOICE)
 
     OPTION_SHUTDOWN_ANYSEGWIT_REQ = 1 << 26
     OPTION_SHUTDOWN_ANYSEGWIT_OPT = 1 << 27
@@ -1172,6 +1185,12 @@ class LnFeatures(IntFlag):
 
     _ln_feature_contexts[OPTION_CHANNEL_TYPE_REQ] = (LNFC.INIT | LNFC.NODE_ANN)
     _ln_feature_contexts[OPTION_CHANNEL_TYPE_OPT] = (LNFC.INIT | LNFC.NODE_ANN)
+
+    OPTION_SCID_ALIAS_REQ = 1 << 46
+    OPTION_SCID_ALIAS_OPT = 1 << 47
+
+    _ln_feature_contexts[OPTION_SCID_ALIAS_REQ] = (LNFC.INIT | LNFC.NODE_ANN)
+    _ln_feature_contexts[OPTION_SCID_ALIAS_OPT] = (LNFC.INIT | LNFC.NODE_ANN)
 
     def validate_transitive_dependencies(self) -> bool:
         # for all even bit set, set corresponding odd bit:
@@ -1234,13 +1253,13 @@ class LnFeatures(IntFlag):
         you can do:
           myfeatures.supports(LnFeatures.VAR_ONION_OPT)
         """
-        enabled_bits = list_enabled_bits(feature)
-        if len(enabled_bits) != 1:
+        if (1 << (feature.bit_length() - 1)) != feature:
             raise ValueError(f"'feature' cannot be a combination of features: {feature}")
-        flag = enabled_bits[0]
-        our_flags = set(list_enabled_bits(self))
-        return (flag in our_flags
-                or get_ln_flag_pair_of_bit(flag) in our_flags)
+        if feature.bit_length() % 2 == 0:  # feature is OPT
+            feature_other = feature >> 1
+        else:  # feature is REQ
+            feature_other = feature << 1
+        return (self & feature != 0) or (self & feature_other != 0)
 
     def get_names(self) -> Sequence[str]:
         r = []
@@ -1249,12 +1268,27 @@ class LnFeatures(IntFlag):
             r.append(feature_name or f"bit_{flag}")
         return r
 
+    if hasattr(IntFlag, "_numeric_repr_"):  # python 3.11+
+        # performance improvement (avoid base2<->base10), see #8403
+        _numeric_repr_ = hex
 
+    def __repr__(self):
+        # performance improvement (avoid base2<->base10), see #8403
+        return f"<{self._name_}: {hex(self._value_)}>"
+
+    def __str__(self):
+        # performance improvement (avoid base2<->base10), see #8403
+        return hex(self._value_)
+
+
+@stored_as('channel_type', _type=None)
 class ChannelType(IntFlag):
     OPTION_LEGACY_CHANNEL = 0
     OPTION_STATIC_REMOTEKEY = 1 << 12
     OPTION_ANCHOR_OUTPUTS = 1 << 20
     OPTION_ANCHORS_ZERO_FEE_HTLC_TX = 1 << 22
+    OPTION_SCID_ALIAS = 1 << 46
+    OPTION_ZEROCONF = 1 << 50
 
     def discard_unknown_and_check(self):
         """Discards unknown flags and checks flag combination."""
@@ -1272,13 +1306,12 @@ class ChannelType(IntFlag):
         return final_channel_type
 
     def check_combinations(self):
-        if self == ChannelType.OPTION_STATIC_REMOTEKEY:
-            pass
-        elif self == ChannelType.OPTION_ANCHOR_OUTPUTS | ChannelType.OPTION_STATIC_REMOTEKEY:
-            pass
-        elif self == ChannelType.OPTION_ANCHORS_ZERO_FEE_HTLC_TX | ChannelType.OPTION_STATIC_REMOTEKEY:
-            pass
-        else:
+        basic_type = self & ~(ChannelType.OPTION_SCID_ALIAS | ChannelType.OPTION_ZEROCONF)
+        if basic_type not in [
+                ChannelType.OPTION_STATIC_REMOTEKEY,
+                ChannelType.OPTION_ANCHOR_OUTPUTS | ChannelType.OPTION_STATIC_REMOTEKEY,
+                ChannelType.OPTION_ANCHORS_ZERO_FEE_HTLC_TX | ChannelType.OPTION_STATIC_REMOTEKEY
+        ]:
             raise ValueError("Channel type is not a valid flag combination.")
 
     def complies_with_features(self, features: LnFeatures) -> bool:
@@ -1297,7 +1330,10 @@ class ChannelType(IntFlag):
 
     @property
     def name_minimal(self):
-        return self.name.replace('OPTION_', '')
+        if self.name:
+            return self.name.replace('OPTION_', '')
+        else:
+            return str(self)
 
 
 del LNFC  # name is ambiguous without context
@@ -1313,9 +1349,10 @@ LN_FEATURES_IMPLEMENTED = (
         | LnFeatures.VAR_ONION_OPT | LnFeatures.VAR_ONION_REQ
         | LnFeatures.PAYMENT_SECRET_OPT | LnFeatures.PAYMENT_SECRET_REQ
         | LnFeatures.BASIC_MPP_OPT | LnFeatures.BASIC_MPP_REQ
-        | LnFeatures.OPTION_TRAMPOLINE_ROUTING_OPT | LnFeatures.OPTION_TRAMPOLINE_ROUTING_REQ
+        | LnFeatures.OPTION_TRAMPOLINE_ROUTING_OPT_ELECTRUM | LnFeatures.OPTION_TRAMPOLINE_ROUTING_REQ_ELECTRUM
         | LnFeatures.OPTION_SHUTDOWN_ANYSEGWIT_OPT | LnFeatures.OPTION_SHUTDOWN_ANYSEGWIT_REQ
         | LnFeatures.OPTION_CHANNEL_TYPE_OPT | LnFeatures.OPTION_CHANNEL_TYPE_REQ
+        | LnFeatures.OPTION_SCID_ALIAS_OPT | LnFeatures.OPTION_SCID_ALIAS_REQ
 )
 
 
@@ -1365,11 +1402,22 @@ def ln_compare_features(our_features: 'LnFeatures', their_features: int) -> 'LnF
     return our_features
 
 
-def validate_features(features: int) -> None:
+if hasattr(sys, "get_int_max_str_digits"):
+    # check that the user or other library has not lowered the limit (from default)
+    assert sys.get_int_max_str_digits() >= 4300, f"sys.get_int_max_str_digits() too low: {sys.get_int_max_str_digits()}"
+
+
+def validate_features(features: int) -> LnFeatures:
     """Raises IncompatibleOrInsaneFeatures if
     - a mandatory feature is listed that we don't recognize, or
     - the features are inconsistent
+    For convenience, returns the parsed features.
     """
+    if features.bit_length() > 10_000:
+        # This is an implementation-specific limit for how high feature bits we allow.
+        # Needed as LnFeatures subclasses IntFlag, and uses ints internally.
+        # See https://docs.python.org/3/library/stdtypes.html#integer-string-conversion-length-limitation
+        raise IncompatibleOrInsaneFeatures(f"features bitvector too large: {features.bit_length()=} > 10_000")
     features = LnFeatures(features)
     enabled_features = list_enabled_bits(features)
     for fbit in enabled_features:
@@ -1378,6 +1426,7 @@ def validate_features(features: int) -> None:
     if not features.validate_transitive_dependencies():
         raise IncompatibleOrInsaneFeatures(f"not all transitive dependencies are set. "
                                            f"features={features}")
+    return features
 
 
 def derive_payment_secret_from_payment_preimage(payment_preimage: bytes) -> bytes:
@@ -1483,7 +1532,16 @@ def split_host_port(host_port: str) -> Tuple[str, str]: # port returned as strin
         raise ConnStringFormatError(_('Port number must be decimal'))
     return host, port
 
-def extract_nodeid(connect_contents: str) -> Tuple[bytes, str]:
+
+def extract_nodeid(connect_contents: str) -> Tuple[bytes, Optional[str]]:
+    """Takes a connection-string-like str, and returns a tuple (node_id, rest),
+    where rest is typically a host (with maybe port). Examples:
+    - extract_nodeid(pubkey@host:port) == (pubkey, host:port)
+    - extract_nodeid(pubkey@host) == (pubkey, host)
+    - extract_nodeid(pubkey) == (pubkey, None)
+    - extract_nodeid(bolt11_invoice) == (pubkey, None)
+    Can raise ConnStringFormatError.
+    """
     rest = None
     try:
         # connection string?
@@ -1493,8 +1551,8 @@ def extract_nodeid(connect_contents: str) -> Tuple[bytes, str]:
             # invoice?
             invoice = lndecode(connect_contents)
             nodeid_bytes = invoice.pubkey.serialize()
-            nodeid_hex = bh2u(nodeid_bytes)
-        except:
+            nodeid_hex = nodeid_bytes.hex()
+        except Exception:
             # node id as hex?
             nodeid_hex = connect_contents
     if rest == '':
@@ -1503,7 +1561,7 @@ def extract_nodeid(connect_contents: str) -> Tuple[bytes, str]:
         node_id = bfh(nodeid_hex)
         if len(node_id) != 33:
             raise Exception()
-    except:
+    except Exception:
         raise ConnStringFormatError(_('Invalid node ID, must be 33 bytes and hexadecimal'))
     return node_id, rest
 
@@ -1519,6 +1577,7 @@ class LnKeyFamily(IntEnum):
     REVOCATION_ROOT = 5 | BIP32_PRIME
     NODE_KEY = 6
     BACKUP_CIPHER = 7 | BIP32_PRIME
+    PAYMENT_SECRET_KEY = 8 | BIP32_PRIME
 
 
 def generate_keypair(node: BIP32Node, key_family: LnKeyFamily) -> Keypair:
@@ -1533,63 +1592,7 @@ NUM_MAX_HOPS_IN_PAYMENT_PATH = 20
 NUM_MAX_EDGES_IN_PAYMENT_PATH = NUM_MAX_HOPS_IN_PAYMENT_PATH
 
 
-class ShortChannelID(bytes):
 
-    def __repr__(self):
-        return f"<ShortChannelID: {format_short_channel_id(self)}>"
-
-    def __str__(self):
-        return format_short_channel_id(self)
-
-    @classmethod
-    def from_components(cls, block_height: int, tx_pos_in_block: int, output_index: int) -> 'ShortChannelID':
-        bh = block_height.to_bytes(3, byteorder='big')
-        tpos = tx_pos_in_block.to_bytes(3, byteorder='big')
-        oi = output_index.to_bytes(2, byteorder='big')
-        return ShortChannelID(bh + tpos + oi)
-
-    @classmethod
-    def from_str(cls, scid: str) -> 'ShortChannelID':
-        """Parses a formatted scid str, e.g. '643920x356x0'."""
-        components = scid.split("x")
-        if len(components) != 3:
-            raise ValueError(f"failed to parse ShortChannelID: {scid!r}")
-        try:
-            components = [int(x) for x in components]
-        except ValueError:
-            raise ValueError(f"failed to parse ShortChannelID: {scid!r}") from None
-        return ShortChannelID.from_components(*components)
-
-    @classmethod
-    def normalize(cls, data: Union[None, str, bytes, 'ShortChannelID']) -> Optional['ShortChannelID']:
-        if isinstance(data, ShortChannelID) or data is None:
-            return data
-        if isinstance(data, str):
-            assert len(data) == 16
-            return ShortChannelID.fromhex(data)
-        if isinstance(data, (bytes, bytearray)):
-            assert len(data) == 8
-            return ShortChannelID(data)
-
-    @property
-    def block_height(self) -> int:
-        return int.from_bytes(self[:3], byteorder='big')
-
-    @property
-    def txpos(self) -> int:
-        return int.from_bytes(self[3:6], byteorder='big')
-
-    @property
-    def output_index(self) -> int:
-        return int.from_bytes(self[6:8], byteorder='big')
-
-
-def format_short_channel_id(short_channel_id: Optional[bytes]):
-    if not short_channel_id:
-        return _('Not yet available')
-    return str(int.from_bytes(short_channel_id[:3], 'big')) \
-        + 'x' + str(int.from_bytes(short_channel_id[3:6], 'big')) \
-        + 'x' + str(int.from_bytes(short_channel_id[6:], 'big'))
 
 
 @attr.s(frozen=True)
@@ -1600,15 +1603,16 @@ class UpdateAddHtlc:
     timestamp = attr.ib(type=int, kw_only=True)
     htlc_id = attr.ib(type=int, kw_only=True, default=None)
 
-    @classmethod
-    def from_tuple(cls, amount_msat, payment_hash, cltv_expiry, htlc_id, timestamp) -> 'UpdateAddHtlc':
-        return cls(amount_msat=amount_msat,
-                   payment_hash=payment_hash,
-                   cltv_expiry=cltv_expiry,
-                   htlc_id=htlc_id,
-                   timestamp=timestamp)
+    @stored_in('adds', tuple)
+    def from_tuple(amount_msat, payment_hash, cltv_expiry, htlc_id, timestamp) -> 'UpdateAddHtlc':
+        return UpdateAddHtlc(
+            amount_msat=amount_msat,
+            payment_hash=payment_hash,
+            cltv_expiry=cltv_expiry,
+            htlc_id=htlc_id,
+            timestamp=timestamp)
 
-    def to_tuple(self):
+    def to_json(self):
         return (self.amount_msat, self.payment_hash, self.cltv_expiry, self.htlc_id, self.timestamp)
 
 

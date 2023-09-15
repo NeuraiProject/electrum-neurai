@@ -40,13 +40,12 @@ from electrum import constants, blockchain, util
 from electrum.interface import ServerAddr, PREFERRED_NETWORK_PROTOCOL
 from electrum.network import Network
 from electrum.logging import get_logger
+from electrum.util import detect_tor_socks_proxy
+from electrum.simple_config import SimpleConfig
 
 from .util import (Buttons, CloseButton, HelpButton, read_QIcon, char_width_in_lineedit,
                    PasswordLineEdit)
 from .util import QtEventListener, qt_event_listener
-
-if TYPE_CHECKING:
-    from electrum.simple_config import SimpleConfig
 
 
 _logger = get_logger(__name__)
@@ -65,6 +64,11 @@ class NetworkDialog(QDialog, QtEventListener):
         vbox.addLayout(Buttons(CloseButton(self)))
         self.register_callbacks()
         self._cleaned_up = False
+
+    def show(self):
+        super().show()
+        if td := self.nlayout.td:
+            td.trigger_rescan()
 
     @qt_event_listener
     def on_event_network_updated(self):
@@ -110,7 +114,7 @@ class NodesListWidget(QTreeWidget):
         elif item_type == self.ItemType.DISCONNECTED_SERVER:
             server = item.data(0, self.SERVER_ADDR_ROLE)  # type: ServerAddr
             def func():
-                self.parent.server_e.setText(server.net_addr_str())
+                self.parent.server_e.setText(str(server))
                 self.parent.set_server()
             menu.addAction(_("Use as server"), func)
         elif item_type == self.ItemType.CHAIN:
@@ -151,11 +155,12 @@ class NodesListWidget(QTreeWidget):
             else:
                 x = connected_servers_item
             for i in interfaces:
-                star = ' *' if i == network.interface else ''
-                item = QTreeWidgetItem([f"{i.server.to_friendly_name()}" + star, '%d'%i.tip])
+                item = QTreeWidgetItem([f"{i.server.to_friendly_name()}", '%d'%i.tip])
                 item.setData(0, self.ITEMTYPE_ROLE, self.ItemType.CONNECTED_SERVER)
                 item.setData(0, self.SERVER_ADDR_ROLE, i.server)
                 item.setToolTip(0, str(i.server))
+                if i == network.interface:
+                    item.setIcon(0, read_QIcon("chevron-right.png"))
                 x.addChild(item)
             if n_chains > 1:
                 connected_servers_item.addChild(x)
@@ -203,10 +208,11 @@ class NetworkChoiceLayout(object):
         self.tor_proxy = None
 
         self.tabs = tabs = QTabWidget()
-        proxy_tab = QWidget()
+        self._proxy_tab = proxy_tab = QWidget()
         blockchain_tab = QWidget()
         tabs.addTab(blockchain_tab, _('Overview'))
         tabs.addTab(proxy_tab, _('Proxy'))
+        tabs.currentChanged.connect(self._on_tab_changed)
 
         fixed_width_hostname = 24 * char_width_in_lineedit()
         fixed_width_port = 6 * char_width_in_lineedit()
@@ -271,7 +277,7 @@ class NetworkChoiceLayout(object):
         grid.addWidget(HelpButton(msg), 0, 4)
 
         self.autoconnect_cb = QCheckBox(_('Select server automatically'))
-        self.autoconnect_cb.setEnabled(self.config.is_modifiable('auto_connect'))
+        self.autoconnect_cb.setEnabled(self.config.cv.NETWORK_AUTO_CONNECT.is_modifiable())
         self.autoconnect_cb.clicked.connect(self.set_server)
         self.autoconnect_cb.clicked.connect(self.update)
         msg = ' '.join([
@@ -319,13 +325,13 @@ class NetworkChoiceLayout(object):
             self.td = None
 
     def check_disable_proxy(self, b):
-        if not self.config.is_modifiable('proxy'):
+        if not self.config.cv.NETWORK_PROXY.is_modifiable():
             b = False
         for w in [self.proxy_mode, self.proxy_host, self.proxy_port, self.proxy_user, self.proxy_password]:
             w.setEnabled(b)
 
     def enable_set_server(self):
-        if self.config.is_modifiable('server'):
+        if self.config.cv.NETWORK_SERVER.is_modifiable():
             enabled = not self.autoconnect_cb.isChecked()
             self.server_e.setEnabled(enabled)
         else:
@@ -342,9 +348,7 @@ class NetworkChoiceLayout(object):
 
         height_str = "%d "%(self.network.get_local_height()) + _('blocks')
         self.height_label.setText(height_str)
-        n = len(self.network.get_interfaces())
-        status = _("Connected to {0} nodes.").format(n) if n > 1 else _("Connected to {0} node.").format(n) if n == 1 else _("Not connected")
-        self.status_label.setText(status)
+        self.status_label.setText(self.network.get_status())
         chains = self.network.get_blockchains()
         if len(chains) > 1:
             chain = self.network.blockchain()
@@ -417,6 +421,10 @@ class NetworkChoiceLayout(object):
         net_params = net_params._replace(proxy=proxy)
         self.network.run_from_another_thread(self.network.set_parameters(net_params))
 
+    def _on_tab_changed(self):
+        if self.tabs.currentWidget() is self._proxy_tab:
+            self.td.trigger_rescan()
+
     def suggest_proxy(self, found_proxy):
         if found_proxy is None:
             self.tor_cb.hide()
@@ -457,38 +465,25 @@ class TorDetector(QThread):
 
     def __init__(self):
         QThread.__init__(self)
-        self._stop_event = threading.Event()
+        self._work_to_do_evt = threading.Event()
+        self._stopping = False
 
     def run(self):
-        # Probable ports for Tor to listen at
-        ports = [9050, 9150]
         while True:
-            for p in ports:
-                net_addr = ("127.0.0.1", p)
-                if TorDetector.is_tor_port(net_addr):
-                    self.found_proxy.emit(net_addr)
-                    break
-            else:
-                self.found_proxy.emit(None)
-            stopping = self._stop_event.wait(10)
-            if stopping:
+            # do rescan
+            net_addr = detect_tor_socks_proxy()
+            self.found_proxy.emit(net_addr)
+            # wait until triggered
+            self._work_to_do_evt.wait()
+            self._work_to_do_evt.clear()
+            if self._stopping:
                 return
 
+    def trigger_rescan(self) -> None:
+        self._work_to_do_evt.set()
+
     def stop(self):
-        self._stop_event.set()
+        self._stopping = True
+        self._work_to_do_evt.set()
         self.exit()
         self.wait()
-
-    @staticmethod
-    def is_tor_port(net_addr: Tuple[str, int]) -> bool:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(0.1)
-                s.connect(net_addr)
-                # Tor responds uniquely to HTTP-like requests
-                s.send(b"GET\n")
-                if b"Tor is not an HTTP Proxy" in s.recv(1024):
-                    return True
-        except socket.error:
-            pass
-        return False

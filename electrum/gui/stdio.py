@@ -10,7 +10,7 @@ from electrum import WalletStorage, Wallet
 from electrum.wallet import Abstract_Wallet
 from electrum.wallet_db import WalletDB
 from electrum.util import format_satoshis, EventListener, event_listener
-from electrum.neurai import is_address, COIN
+from electrum.bitcoin import is_address, COIN
 from electrum.transaction import PartialTxOutput
 from electrum.network import TxBroadcastError, BestEffortRequestFailed
 
@@ -25,7 +25,7 @@ class ElectrumGui(BaseElectrumGui, EventListener):
     def __init__(self, *, config, daemon, plugins):
         BaseElectrumGui.__init__(self, config=config, daemon=daemon, plugins=plugins)
         self.network = daemon.network
-        storage = WalletStorage(config.get_wallet_path())
+        storage = WalletStorage(config.get_wallet_path(use_gui_last_wallet=True))
         if not storage.file_exists():
             print("Wallet not found. try 'electrum create'")
             exit()
@@ -33,7 +33,7 @@ class ElectrumGui(BaseElectrumGui, EventListener):
             password = getpass.getpass('Password:', stream=None)
             storage.decrypt(password)
 
-        db = WalletDB(storage.read(), manual_upgrades=False)
+        db = WalletDB(storage.read(), storage=storage, manual_upgrades=False)
 
         self.done = 0
         self.last_balance = ""
@@ -43,7 +43,7 @@ class ElectrumGui(BaseElectrumGui, EventListener):
         self.str_amount = ""
         self.str_fee = ""
 
-        self.wallet = Wallet(db, storage, config=config)  # type: Optional[Abstract_Wallet]
+        self.wallet = Wallet(db, config=config)  # type: Optional[Abstract_Wallet]
         self.wallet.start_network(self.network)
         self.contacts = self.wallet.contacts
 
@@ -68,7 +68,7 @@ class ElectrumGui(BaseElectrumGui, EventListener):
         self.updated()
 
     @event_listener
-    def on_event_banner(self):
+    def on_event_banner(self, *args):
         self.print_banner()
 
     def main_command(self):
@@ -138,7 +138,7 @@ class ElectrumGui(BaseElectrumGui, EventListener):
         else:
                 msg = _("Not connected")
 
-        return(msg)
+        return msg
 
 
     def print_contacts(self):
@@ -146,7 +146,7 @@ class ElectrumGui(BaseElectrumGui, EventListener):
         self.print_list(messages, "%19s  %25s "%("Key", "Value"))
 
     def print_addresses(self):
-        messages = map(lambda addr: "%30s    %30s       "%(addr, self.wallet.get_label(addr)), self.wallet.get_addresses())
+        messages = map(lambda addr: "%30s    %30s       "%(addr, self.wallet.get_label_for_address(addr)), self.wallet.get_addresses())
         self.print_list(messages, "%19s  %25s "%("Address", "Label"))
 
     def print_order(self):
@@ -177,11 +177,13 @@ class ElectrumGui(BaseElectrumGui, EventListener):
 
 
     def main(self):
-        while self.done == 0: self.main_command()
+        self.daemon.start_network()
+        while self.done == 0:
+            self.main_command()
 
     def do_send(self):
         if not is_address(self.str_recipient):
-            print(_('Invalid neurai address'))
+            print(_('Invalid Bitcoin address'))
             return
         try:
             amount = int(Decimal(self.str_amount) * COIN)

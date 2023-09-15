@@ -1,15 +1,15 @@
 include LICENCE RELEASE-NOTES AUTHORS
-include README.rst
-include electrum-neurai.desktop
+include README.md
+include electrum-ravencoin.desktop
 include *.py
 include run_electrum
+include org.electrum.electrum.metainfo.xml
 recursive-include packages *.py
 recursive-include packages cacert.pem
 
 include contrib/requirements/requirements*.txt
 include contrib/deterministic-build/requirements*.txt
-include contrib/make_libsecp256k1.sh
-include contrib/build_tools_util.sh
+include contrib/*.sh
 
 graft electrum
 prune electrum/tests

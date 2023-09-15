@@ -59,8 +59,6 @@ def _prepare_windows_dns_hack():
         _dns_threads_executor = concurrent.futures.ThreadPoolExecutor(max_workers=20,
                                                                       thread_name_prefix='dns_resolver')
 
-def _is_force_system_dns_for_host(host: str) -> bool:
-    return str(host) in ('localhost', 'localhost.',)
 
 def _is_force_system_dns_for_host(host: str) -> bool:
     return str(host) in ('localhost', 'localhost.',)

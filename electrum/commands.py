@@ -36,23 +36,22 @@ import inspect
 from collections import defaultdict
 from functools import wraps, partial
 from itertools import repeat
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Optional, TYPE_CHECKING, Dict, List
 import os
 
 from .import util, ecc
-from .util import (bfh, bh2u, format_satoshis, json_decode, json_normalize,
-                   is_hash256_str, is_hex_str, to_bytes, parse_max_spend)
-from . import neurai
-from .neurai import is_address,  hash_160, COIN
+from .util import (bfh, format_satoshis, json_decode, json_normalize,
+                   is_hash256_str, is_hex_str, to_bytes, parse_max_spend, to_decimal)
+from . import bitcoin
+from .bitcoin import is_address,  hash_160, COIN
 from .bip32 import BIP32Node
 from .i18n import _
 from .transaction import (Transaction, multisig_script, TxOutput, PartialTransaction, PartialTxOutput,
                           tx_from_any, PartialTxInput, TxOutpoint)
-from .interface import MAX_INCOMING_MSG_SIZE
 from .invoices import PR_PAID, PR_UNPAID, PR_UNKNOWN, PR_EXPIRED
 from .synchronizer import Notifier
-from .wallet import Abstract_Wallet, create_new_wallet, restore_wallet_from_text, Deterministic_Wallet, BumpFeeStrategy
+from .wallet import Abstract_Wallet, create_new_wallet, restore_wallet_from_text, Deterministic_Wallet
 from .address_synchronizer import TX_HEIGHT_LOCAL
 from .mnemonic import Mnemonic
 from .lnutil import SENT, RECEIVED
@@ -66,7 +65,8 @@ from .invoices import Invoice
 from . import submarine_swaps
 from . import GuiImportError
 from . import crypto
-
+from . import constants
+from . import descriptor
 
 if TYPE_CHECKING:
     from .network import Network
@@ -85,10 +85,10 @@ def satoshis_or_max(amount):
 
 def satoshis(amount):
     # satoshi conversion must not be performed by the parser
-    return int(COIN*Decimal(amount)) if amount is not None else None
+    return int(COIN*to_decimal(amount)) if amount is not None else None
 
 def format_satoshis(x):
-    return str(Decimal(x)/COIN) if x is not None else None
+    return str(to_decimal(x)/COIN) if x is not None else None
 
 
 class Command:
@@ -200,46 +200,12 @@ class Commands:
         """List of commands"""
         return ' '.join(sorted(known_commands.keys()))
 
-    @command('')
-    async def address_to_h160(self, address: str):
-        _, hash_160_ = neurai.b58_address_to_hash160(address)
-        return hash_160_.hex()
-
-    @command('')
-    async def h160(self, hex):
-        return hash_160(bytes.fromhex(hex)).hex()
-
-    @command('')
-    async def h160_to_address(self, h160: str, addr_type: int):
-        h160 = bytes.fromhex(h160)
-        return neurai.hash160_to_b58_address(h160, addr_type)
-
-    @command('')
-    async def scripthash_from_address(self, address: str):
-        return neurai.address_to_scripthash(address)
-
-    @command('n')
-    async def send_custom_script(self, function: str, *args):
-        return await self.network.interface.session.send_request(function, args)
-
-    @command('')
-    async def wheres_my_stuff(self):
-        return util.user_dir()
-
-    @command('')
-    async def change_max_receive_amount(self, amt: int):
-        old_max = self.config.get('network_max_incoming_msg_size', MAX_INCOMING_MSG_SIZE)
-        self.config.set_key('network_max_incoming_msg_size', amt, True)
-        return "Your max receive amount has been changed to {} bytes. " \
-               "It was {} bytes. " \
-               "The default is {} bytes. " \
-               "Restart electrum-neurai for the effect to take place.".format(amt, old_max, MAX_INCOMING_MSG_SIZE)
-
     @command('n')
     async def getinfo(self):
         """ network info """
         net_params = self.network.get_parameters()
         response = {
+            'network': constants.net.NET_NAME,
             'path': self.network.config.path,
             'server': net_params.server.host,
             'blockchain_height': self.network.get_local_height(),
@@ -299,8 +265,8 @@ class Commands:
     @command('')
     async def restore(self, text, passphrase=None, password=None, encrypt_file=True, wallet_path=None):
         """Restore a wallet from text. Text can be a seed phrase, a master
-        public key, a master private key, a list of neurai addresses
-        or neurai private keys.
+        public key, a master private key, a list of bitcoin addresses
+        or bitcoin private keys.
         If you want to be prompted for an argument, type '?' or ':' (concealed)
         """
         # TODO create a separate command that blocks until wallet is synced
@@ -342,12 +308,12 @@ class Commands:
 
     @classmethod
     def _setconfig_normalize_value(cls, key, value):
-        if key not in ('rpcuser', 'rpcpassword'):
+        if key not in (SimpleConfig.RPC_USERNAME.key(), SimpleConfig.RPC_PASSWORD.key()):
             value = json_decode(value)
             # call literal_eval for backward compatibility (see #4225)
             try:
                 value = ast.literal_eval(value)
-            except:
+            except Exception:
                 pass
         return value
 
@@ -355,9 +321,9 @@ class Commands:
     async def setconfig(self, key, value):
         """Set a configuration variable. 'value' may be a string or a Python expression."""
         value = self._setconfig_normalize_value(key, value)
-        if self.daemon and key == 'rpcuser':
+        if self.daemon and key == SimpleConfig.RPC_USERNAME.key():
             self.daemon.commands_server.rpc_user = value
-        if self.daemon and key == 'rpcpassword':
+        if self.daemon and key == SimpleConfig.RPC_PASSWORD.key():
             self.daemon.commands_server.rpc_password = value
         self.config.set_key(key, value)
         return True
@@ -380,7 +346,7 @@ class Commands:
         """Return the transaction history of any address. Note: This is a
         walletless server query, results are not checked by SPV.
         """
-        sh = neurai.address_to_scripthash(address)
+        sh = bitcoin.address_to_scripthash(address)
         return await self.network.get_history_for_scripthash(sh)
 
     @command('w')
@@ -391,7 +357,7 @@ class Commands:
         for txin in wallet.get_utxos():
             d = txin.to_json()
             v = d.pop("value_sats")
-            d["value"] = str(Decimal(v)/COIN) if v is not None else None
+            d["value"] = str(to_decimal(v)/COIN) if v is not None else None
             coins.append(d)
         return coins
 
@@ -400,14 +366,22 @@ class Commands:
         """Returns the UTXO list of any address. Note: This
         is a walletless server query, results are not checked by SPV.
         """
-        sh = neurai.address_to_scripthash(address)
+        sh = bitcoin.address_to_scripthash(address)
         return await self.network.listunspent_for_scripthash(sh)
 
     @command('')
     async def serialize(self, jsontx):
-        """Create a transaction from json inputs.
-        Inputs must have a redeemPubkey.
-        Outputs must be a list of {'address':address, 'value':satoshi_amount}.
+        """Create a signed raw transaction from a json tx template.
+
+        Example value for "jsontx" arg: {
+            "inputs": [
+                {"prevout_hash": "9d221a69ca3997cbeaf5624d723e7dc5f829b1023078c177d37bdae95f37c539", "prevout_n": 1,
+                 "value_sats": 1000000, "privkey": "p2wpkh:cVDXzzQg6RoCTfiKpe8MBvmm5d5cJc6JLuFApsFDKwWa6F5TVHpD"}
+            ],
+            "outputs": [
+                {"address": "tb1q4s8z6g5jqzllkgt8a4har94wl8tg0k9m8kv5zd", "value_sats": 990000}
+            ]
+        }
         """
         keypairs = {}
         inputs = []  # type: List[PartialTxInput]
@@ -420,23 +394,38 @@ class Commands:
             else:
                 raise Exception("missing prevout for txin")
             txin = PartialTxInput(prevout=prevout)
-            txin._trusted_value_sats = int(txin_dict.get('value', txin_dict['value_sats']))
+            try:
+                raise NotImplementedError()
+                txin._trusted_value_sats = int(txin_dict.get('value') or txin_dict['value_sats'])
+            except KeyError:
+                raise Exception("missing 'value_sats' field for txin")
             nsequence = txin_dict.get('nsequence', None)
             if nsequence is not None:
                 txin.nsequence = nsequence
             sec = txin_dict.get('privkey')
             if sec:
-                txin_type, privkey, compressed = neurai.deserialize_privkey(sec)
+                txin_type, privkey, compressed = bitcoin.deserialize_privkey(sec)
                 pubkey = ecc.ECPrivkey(privkey).get_public_key_hex(compressed=compressed)
                 keypairs[pubkey] = privkey, compressed
-                txin.script_type = txin_type
-                txin.pubkeys = [bfh(pubkey)]
-                txin.num_sig = 1
+                desc = descriptor.get_singlesig_descriptor_from_legacy_leaf(pubkey=pubkey, script_type=txin_type)
+                txin.script_descriptor = desc
             inputs.append(txin)
 
-        outputs = [PartialTxOutput.from_address_and_value(txout['address'], int(txout.get('value', txout['value_sats'])))
-                   for txout in jsontx.get('outputs')]
+        outputs = []  # type: List[PartialTxOutput]
+        for txout_dict in jsontx.get('outputs'):
+            try:
+                txout_addr = txout_dict['address']
+            except KeyError:
+                raise Exception("missing 'address' field for txout")
+            try:
+                txout_val = int(txout_dict.get('value') or txout_dict['value_sats'])
+            except KeyError:
+                raise Exception("missing 'value_sats' field for txout")
+            txout = PartialTxOutput.from_address_and_value(txout_addr, txout_val)
+            outputs.append(txout)
+
         tx = PartialTransaction.from_io(inputs, outputs, locktime=locktime)
+        raise NotImplementedError('wallet insert')
         tx.sign(keypairs)
         return tx.serialize()
 
@@ -444,6 +433,7 @@ class Commands:
     async def signtransaction_with_privkey(self, tx, privkey):
         """Sign a transaction. The provided list of private keys will be used to sign the transaction."""
         tx = tx_from_any(tx)
+
         txins_dict = defaultdict(list)
         for txin in tx.inputs():
             txins_dict[txin.address].append(txin)
@@ -452,13 +442,14 @@ class Commands:
             privkey = [privkey]
 
         for priv in privkey:
-            txin_type, priv2, compressed = neurai.deserialize_privkey(priv)
+            txin_type, priv2, compressed = bitcoin.deserialize_privkey(priv)
             pubkey = ecc.ECPrivkey(priv2).get_public_key_bytes(compressed=compressed)
-            address = neurai.pubkey_to_address(txin_type, pubkey.hex())
+            desc = descriptor.get_singlesig_descriptor_from_legacy_leaf(pubkey=pubkey.hex(), script_type=txin_type)
+            address = desc.expand().address()
             if address in txins_dict.keys():
                 for txin in txins_dict[address]:
-                    txin.pubkeys = [pubkey]
-                    txin.script_type = txin_type
+                    txin.script_descriptor = desc
+                raise NotImplementedError('wallet insert')
                 tx.sign({pubkey.hex(): (priv2, compressed)})
 
         return tx.serialize()
@@ -488,7 +479,7 @@ class Commands:
         """Create multisig address"""
         assert isinstance(pubkeys, list), (type(num), type(pubkeys))
         redeem_script = multisig_script(pubkeys, num)
-        address = neurai.hash160_to_p2sh(hash_160(bfh(redeem_script)))
+        address = bitcoin.hash160_to_p2sh(hash_160(bfh(redeem_script)))
         return {'address':address, 'redeemScript':redeem_script}
 
     @command('w')
@@ -555,13 +546,13 @@ class Commands:
         """Return the balance of your wallet. """
         c, u, x = wallet.get_balance()
         l = wallet.lnworker.get_balance() if wallet.lnworker else None
-        out = {"confirmed": str(Decimal(c)/COIN)}
+        out = {"confirmed": str(to_decimal(c)/COIN)}
         if u:
-            out["unconfirmed"] = str(Decimal(u)/COIN)
+            out["unconfirmed"] = str(to_decimal(u)/COIN)
         if x:
-            out["unmatured"] = str(Decimal(x)/COIN)
+            out["unmatured"] = str(to_decimal(x)/COIN)
         if l:
-            out["lightning"] = str(Decimal(l)/COIN)
+            out["lightning"] = str(to_decimal(l)/COIN)
         return out
 
     @command('n')
@@ -569,10 +560,10 @@ class Commands:
         """Return the balance of any address. Note: This is a walletless
         server query, results are not checked by SPV.
         """
-        sh = neurai.address_to_scripthash(address)
+        sh = bitcoin.address_to_scripthash(address)
         out = await self.network.get_balance_for_scripthash(sh)
-        out["confirmed"] =  str(Decimal(out["confirmed"])/COIN)
-        out["unconfirmed"] =  str(Decimal(out["unconfirmed"])/COIN)
+        out["confirmed"] =  str(to_decimal(out["confirmed"])/COIN)
+        out["unconfirmed"] =  str(to_decimal(out["unconfirmed"])/COIN)
         return out
 
     @command('n')
@@ -597,6 +588,8 @@ class Commands:
         ret = {
             "electrum.version": ELECTRUM_VERSION,
             "electrum.path": os.path.dirname(os.path.realpath(__file__)),
+            "python.version": sys.version,
+            "python.path": sys.executable,
         }
         # add currently running GUI
         if self.daemon and self.daemon.gui_object:
@@ -643,7 +636,7 @@ class Commands:
         """Convert xtype of a master key. e.g. xpub -> ypub"""
         try:
             node = BIP32Node.from_xkey(xkey)
-        except:
+        except Exception:
             raise Exception('xkey should be a master public/private key')
         return node._replace(xtype=xtype).to_xkey()
 
@@ -709,7 +702,7 @@ class Commands:
 
     @command('wp')
     async def payto(self, destination, amount, fee=None, feerate=None, from_addr=None, from_coins=None, change_addr=None,
-                    nocheck=False, unsigned=False, rbf=None, password=None, locktime=None, addtransaction=False, wallet: Abstract_Wallet = None):
+                    nocheck=False, unsigned=False, rbf=True, password=None, locktime=None, addtransaction=False, wallet: Abstract_Wallet = None):
         """Create a transaction. """
         self.nocheck = nocheck
         tx_fee = satoshis(fee)
@@ -737,7 +730,7 @@ class Commands:
 
     @command('wp')
     async def paytomany(self, outputs, fee=None, feerate=None, from_addr=None, from_coins=None, change_addr=None,
-                        nocheck=False, unsigned=False, rbf=None, password=None, locktime=None, addtransaction=False, wallet: Abstract_Wallet = None):
+                        nocheck=False, unsigned=False, rbf=True, password=None, locktime=None, addtransaction=False, wallet: Abstract_Wallet = None):
         """Create a multi-output transaction. """
         self.nocheck = nocheck
         tx_fee = satoshis(fee)
@@ -783,47 +776,35 @@ class Commands:
             kwargs['to_timestamp'] = time.mktime(end_date.timetuple())
         if show_fiat:
             from .exchange_rate import FxThread
-            fx = FxThread(self.config, None)
-            kwargs['fx'] = fx
+            kwargs['fx'] = self.daemon.fx if self.daemon else FxThread(config=self.config)
 
         return json_normalize(wallet.get_detailed_history(**kwargs))
 
-    #@command('wl')
-    #async def lightning_history(self, show_fiat=False, wallet: Abstract_Wallet = None):
-    #    """ lightning history """
-    #    lightning_history = wallet.lnworker.get_history() if wallet.lnworker else []
-    #    return json_normalize(lightning_history)
-
     @command('wp')
-    async def bumpfee(self, tx, new_fee_rate, from_coins=None, strategies=None, password=None, unsigned=False, wallet: Abstract_Wallet = None):
+    async def bumpfee(self, tx, new_fee_rate, from_coins=None, decrease_payment=False, password=None, unsigned=False, wallet: Abstract_Wallet = None):
         """ Bump the Fee for an unconfirmed Transaction """
         tx = Transaction(tx)
         domain_coins = from_coins.split(',') if from_coins else None
         coins = wallet.get_spendable_coins(None)
         if domain_coins is not None:
             coins = [coin for coin in coins if (coin.prevout.to_str() in domain_coins)]
-        strategies = strategies.split(',') if strategies else None
-        bumpfee_strategies = None
-        if strategies is not None:
-            bumpfee_strategies = []
-            for strategy in strategies:
-                if strategy == 'CoinChooser':
-                    bumpfee_strategies.append(BumpFeeStrategy.COINCHOOSER)
-                elif strategy == 'DecreaseChange':
-                    bumpfee_strategies.append(BumpFeeStrategy.DECREASE_CHANGE)
-                elif strategy == 'DecreasePayment':
-                    bumpfee_strategies.append(BumpFeeStrategy.DECREASE_PAYMENT)
-                else:
-                    raise Exception("Invalid Choice of Strategies")
+        tx.add_info_from_wallet(wallet)
+        await tx.add_info_from_network(self.network)
         new_tx = wallet.bump_fee(
             tx=tx,
             txid=tx.txid(),
             coins=coins,
-            strategies=bumpfee_strategies,
+            decrease_payment=decrease_payment,
             new_fee_rate=new_fee_rate)
         if not unsigned:
             wallet.sign_transaction(new_tx, password)
         return new_tx.serialize()
+
+    @command('wl')
+    async def lightning_history(self, show_fiat=False, wallet: Abstract_Wallet = None):
+        """ lightning history """
+        lightning_history = wallet.lnworker.get_history() if wallet.lnworker else []
+        return json_normalize(lightning_history)
 
     @command('w')
     async def setlabel(self, key, label, wallet: Abstract_Wallet = None):
@@ -871,7 +852,7 @@ class Commands:
             if balance:
                 item += (format_satoshis(sum(wallet.get_addr_balance(addr))),)
             if labels:
-                item += (repr(wallet.get_label(addr)),)
+                item += (repr(wallet.get_label_for_address(addr)),)
             out.append(item)
         return out
 
@@ -915,21 +896,27 @@ class Commands:
         return decrypted.decode('utf-8')
 
     @command('w')
-    async def getrequest(self, key, wallet: Abstract_Wallet = None):
-        """Return a payment request"""
-        r = wallet.get_request(key)
+    async def get_request(self, request_id, wallet: Abstract_Wallet = None):
+        """Returns a payment request"""
+        r = wallet.get_request(request_id)
         if not r:
             raise Exception("Request not found")
         return wallet.export_request(r)
+
+    @command('w')
+    async def get_invoice(self, invoice_id, wallet: Abstract_Wallet = None):
+        """Returns an invoice (request for outgoing payment)"""
+        r = wallet.get_invoice(invoice_id)
+        if not r:
+            raise Exception("Request not found")
+        return wallet.export_invoice(r)
 
     #@command('w')
     #async def ackrequest(self, serialized):
     #    """<Not implemented>"""
     #    pass
 
-    @command('w')
-    async def list_requests(self, pending=False, expired=False, paid=False, wallet: Abstract_Wallet = None):
-        """List the payment requests you made."""
+    def _filter_invoices(self, _list, wallet, pending, expired, paid):
         if pending:
             f = PR_UNPAID
         elif expired:
@@ -938,11 +925,23 @@ class Commands:
             f = PR_PAID
         else:
             f = None
-        out = wallet.get_sorted_requests()
         if f is not None:
-            out = [req for req in out
-                   if f == wallet.get_request_status(wallet.get_key_for_receive_request(req))]
-        return [wallet.export_request(x) for x in out]
+            _list = [x for x in _list if f == wallet.get_invoice_status(x)]
+        return _list
+
+    @command('w')
+    async def list_requests(self, pending=False, expired=False, paid=False, wallet: Abstract_Wallet = None):
+        """Returns the list of incoming payment requests saved in the wallet."""
+        l = wallet.get_sorted_requests()
+        l = self._filter_invoices(l, wallet, pending, expired, paid)
+        return [wallet.export_request(x) for x in l]
+
+    @command('w')
+    async def list_invoices(self, pending=False, expired=False, paid=False, wallet: Abstract_Wallet = None):
+        """Returns the list of invoices (requests for outgoing payments) saved in the wallet."""
+        l = wallet.get_invoices()
+        l = self._filter_invoices(l, wallet, pending, expired, paid)
+        return [wallet.export_invoice(x) for x in l]
 
     @command('w')
     async def createnewaddress(self, wallet: Abstract_Wallet = None):
@@ -980,7 +979,7 @@ class Commands:
         return wallet.get_unused_address()
 
     @command('w')
-    async def add_request(self, amount, memo='', expiration=3600, force=False, wallet: Abstract_Wallet = None):
+    async def add_request(self, amount, asset: str = None, memo='', expiry=3600, force=False, wallet: Abstract_Wallet = None):
         """Create a payment request, using the first unused address of the wallet.
         The address will be considered as used after this operation.
         If no payment is received, the address will be considered as unused if the payment request is deleted from the wallet."""
@@ -991,8 +990,8 @@ class Commands:
             else:
                 return False
         amount = satoshis(amount)
-        expiration = int(expiration) if expiration else None
-        key = wallet.create_request(amount, memo, expiration, addr, None)
+        expiry = int(expiry) if expiry else None
+        key = wallet.create_request(amount, asset, memo, expiry, addr)
         req = wallet.get_request(key)
         return wallet.export_request(req)
 
@@ -1005,19 +1004,15 @@ class Commands:
         wallet.save_db()
         return tx.txid()
 
-    @command('wp')
-    async def signrequest(self, address, password=None, wallet: Abstract_Wallet = None):
-        "Sign payment request with an OpenAlias"
-        alias = self.config.get('alias')
-        if not alias:
-            raise Exception('No alias in your configuration')
-        alias_addr = wallet.contacts.resolve(alias)['address']
-        wallet.sign_payment_request(address, alias, alias_addr, password)
+    @command('w')
+    async def delete_request(self, request_id, wallet: Abstract_Wallet = None):
+        """Remove an incoming payment request"""
+        return wallet.delete_request(request_id)
 
     @command('w')
-    async def delete_request(self, address, wallet: Abstract_Wallet = None):
-        """Remove a payment request"""
-        return wallet.delete_request(address)
+    async def delete_invoice(self, invoice_id, wallet: Abstract_Wallet = None):
+        """Remove an outgoing payment invoice"""
+        return wallet.delete_invoice(invoice_id)
 
     @command('w')
     async def clear_requests(self, wallet: Abstract_Wallet = None):
@@ -1065,7 +1060,7 @@ class Commands:
         else:
             raise Exception('Invalid fee estimation method: {}'.format(fee_method))
         if fee_level is not None:
-            fee_level = Decimal(fee_level)
+            fee_level = to_decimal(fee_level)
         return self.config.fee_per_kb(dyn=dyn, mempool=mempool, fee_level=fee_level)
 
     @command('w')
@@ -1118,48 +1113,48 @@ class Commands:
             'channels': [c.funding_outpoint.to_str() for c in p.channels.values()],
         } for p in lnworker.peers.values()]
 
-    #@command('wpnl')
-    #async def open_channel(self, connection_string, amount, push_amount=0, password=None, wallet: Abstract_Wallet = None):
-    #    funding_sat = satoshis(amount)
-    #    push_sat = satoshis(push_amount)
-    #    coins = wallet.get_spendable_coins(None)
-    #    node_id, rest = extract_nodeid(connection_string)
-    #    funding_tx = wallet.lnworker.mktx_for_open_channel(
-    #        coins=coins,
-    #        funding_sat=funding_sat,
-    #        node_id=node_id,
-    #        fee_est=None)
-    #    chan, funding_tx = await wallet.lnworker._open_channel_coroutine(
-    #        connect_str=connection_string,
-    #        funding_tx=funding_tx,
-    #        funding_sat=funding_sat,
-    #        push_sat=push_sat,
-    #        password=password)
-    #    return chan.funding_outpoint.to_str()
+    @command('wpnl')
+    async def open_channel(self, connection_string, amount, push_amount=0, password=None, wallet: Abstract_Wallet = None):
+        funding_sat = satoshis(amount)
+        push_sat = satoshis(push_amount)
+        coins = wallet.get_spendable_coins(None)
+        node_id, rest = extract_nodeid(connection_string)
+        funding_tx = wallet.lnworker.mktx_for_open_channel(
+            coins=coins,
+            funding_sat=funding_sat,
+            node_id=node_id,
+            fee_est=None)
+        chan, funding_tx = await wallet.lnworker._open_channel_coroutine(
+            connect_str=connection_string,
+            funding_tx=funding_tx,
+            funding_sat=funding_sat,
+            push_sat=push_sat,
+            password=password)
+        return chan.funding_outpoint.to_str()
 
     @command('')
     async def decode_invoice(self, invoice: str):
         invoice = Invoice.from_bech32(invoice)
         return invoice.to_debug_json()
 
-    #@command('wnl')
-    #async def lnpay(self, invoice, timeout=120, wallet: Abstract_Wallet = None):
-    #    lnworker = wallet.lnworker
-    #    lnaddr = lnworker._check_invoice(invoice)
-    #    payment_hash = lnaddr.paymenthash
-    #    wallet.save_invoice(Invoice.from_bech32(invoice))
-    #    success, log = await lnworker.pay_invoice(invoice)
-    #    return {
-    #        'payment_hash': payment_hash.hex(),
-    #        'success': success,
-    #        'preimage': lnworker.get_preimage(payment_hash).hex() if success else None,
-    #        'log': [x.formatted_tuple() for x in log]
-    #    }
+    @command('wnl')
+    async def lnpay(self, invoice, timeout=120, wallet: Abstract_Wallet = None):
+        lnworker = wallet.lnworker
+        lnaddr = lnworker._check_invoice(invoice)
+        payment_hash = lnaddr.paymenthash
+        wallet.save_invoice(Invoice.from_bech32(invoice))
+        success, log = await lnworker.pay_invoice(invoice)
+        return {
+            'payment_hash': payment_hash.hex(),
+            'success': success,
+            'preimage': lnworker.get_preimage(payment_hash).hex() if success else None,
+            'log': [x.formatted_tuple() for x in log]
+        }
 
     @command('wl')
     async def nodeid(self, wallet: Abstract_Wallet = None):
-        listen_addr = self.config.get('lightning_listen')
-        return bh2u(wallet.lnworker.node_keypair.pubkey) + (('@' + listen_addr) if listen_addr else '')
+        listen_addr = self.config.LIGHTNING_LISTEN
+        return wallet.lnworker.node_keypair.pubkey.hex() + (('@' + listen_addr) if listen_addr else '')
 
     @command('wl')
     async def list_channels(self, wallet: Abstract_Wallet = None):
@@ -1175,9 +1170,11 @@ class Commands:
                 'channel_point': chan.funding_outpoint.to_str(),
                 'state': chan.get_state().name,
                 'peer_state': chan.peer_state.name,
-                'remote_pubkey': bh2u(chan.node_id),
+                'remote_pubkey': chan.node_id.hex(),
                 'local_balance': chan.balance(LOCAL)//1000,
                 'remote_balance': chan.balance(REMOTE)//1000,
+                'local_ctn': chan.get_latest_ctn(LOCAL),
+                'remote_ctn': chan.get_latest_ctn(REMOTE),
                 'local_reserve': chan.config[REMOTE].reserve_sat, # their config has our reserve
                 'remote_reserve': chan.config[LOCAL].reserve_sat,
                 'local_unsettled_sent': chan.balance_tied_up_in_htlcs_by_direction(LOCAL, direction=SENT) // 1000,
@@ -1193,51 +1190,9 @@ class Commands:
             } for channel_id, chan in backups
         ]
 
-    #@command('w')
-    #async def nodeid(self, wallet: Abstract_Wallet = None):
-    #    listen_addr = self.config.get('lightning_listen')
-    #    return bh2u(wallet.lnworker.node_keypair.pubkey) + (('@' + listen_addr) if listen_addr else '')
-
-    #@command('wl')
-    #async def list_channels(self, wallet: Abstract_Wallet = None):
-    #    # FIXME: we need to be online to display capacity of backups
-    #    from .lnutil import LOCAL, REMOTE, format_short_channel_id
-    #    channels = list(wallet.lnworker.channels.items())
-    #    backups = list(wallet.lnworker.channel_backups.items())
-    #    return [
-    #        {
-    #            'type': 'CHANNEL',
-    #            'short_channel_id': format_short_channel_id(chan.short_channel_id) if chan.short_channel_id else None,
-    #            'channel_id': chan.channel_id.hex(),
-    #            'channel_point': chan.funding_outpoint.to_str(),
-    #            'state': chan.get_state().name,
-    #            'peer_state': chan.peer_state.name,
-    #            'remote_pubkey': bh2u(chan.node_id),
-    #            'local_balance': chan.balance(LOCAL)//1000,
-    #            'remote_balance': chan.balance(REMOTE)//1000,
-    #            'local_reserve': chan.config[REMOTE].reserve_sat, # their config has our reserve
-    #            'remote_reserve': chan.config[LOCAL].reserve_sat,
-    #            'local_unsettled_sent': chan.balance_tied_up_in_htlcs_by_direction(LOCAL, direction=SENT) // 1000,
-    #            'remote_unsettled_sent': chan.balance_tied_up_in_htlcs_by_direction(REMOTE, direction=SENT) // 1000,
-    #        } for channel_id, chan in channels
-    #    ] + [
-    #        {
-    #            'type': 'BACKUP',
-    #            'short_channel_id': format_short_channel_id(chan.short_channel_id) if chan.short_channel_id else None,
-    #            'channel_id': chan.channel_id.hex(),
-    #            'channel_point': chan.funding_outpoint.to_str(),
-    #            'state': chan.get_state().name,
-    #        } for channel_id, chan in backups
-    #    ]
-
-    #@command('wn')
-    #async def dumpgraph(self, wallet: Abstract_Wallet = None):
-    #    return wallet.lnworker.channel_db.to_dict()
-
-    #@command('wl')
-    #async def nodeid(self, wallet: Abstract_Wallet = None):
-    #    listen_addr = self.config.get('lightning_listen')
-    #    return bh2u(wallet.lnworker.node_keypair.pubkey) + (('@' + listen_addr) if listen_addr else '')
+    @command('wnl')
+    async def dumpgraph(self, wallet: Abstract_Wallet = None):
+        return wallet.lnworker.channel_db.to_dict()
 
     @command('n')
     async def inject_fees(self, fees):
@@ -1245,156 +1200,44 @@ class Commands:
         fee_est = ast.literal_eval(fees)
         self.network.update_fee_estimates(fee_est=fee_est)
 
-    #@command('wnl')
-    #async def enable_htlc_settle(self, b: bool, wallet: Abstract_Wallet = None):
-    #    wallet.lnworker.enable_htlc_settle = b
+    @command('wnl')
+    async def enable_htlc_settle(self, b: bool, wallet: Abstract_Wallet = None):
+        wallet.lnworker.enable_htlc_settle = b
 
-    #@command('n')
-    #async def clear_ln_blacklist(self):
-    #    if self.network.path_finder:
-    #        self.network.path_finder.liquidity_hints.clear_blacklist()
+    @command('n')
+    async def clear_ln_blacklist(self):
+        if self.network.path_finder:
+            self.network.path_finder.clear_blacklist()
 
     @command('n')
     async def reset_liquidity_hints(self):
         if self.network.path_finder:
             self.network.path_finder.liquidity_hints.reset_liquidity_hints()
+            self.network.path_finder.clear_blacklist()
 
-    @command('w')
-    async def list_invoices(self, wallet: Abstract_Wallet = None):
-        l = wallet.get_invoices()
-        return [wallet.export_invoice(x) for x in l]
+    @command('wnl')
+    async def close_channel(self, channel_point, force=False, wallet: Abstract_Wallet = None):
+        txid, index = channel_point.split(':')
+        chan_id, _ = channel_id_from_funding_tx(txid, int(index))
+        coro = wallet.lnworker.force_close_channel(chan_id) if force else wallet.lnworker.close_channel(chan_id)
+        return await coro
 
-    #@command('wnl')
-    #async def close_channel(self, channel_point, force=False, wallet: Abstract_Wallet = None):
-    #    txid, index = channel_point.split(':')
-    #    chan_id, _ = channel_id_from_funding_tx(txid, int(index))
-    #    coro = wallet.lnworker.force_close_channel(chan_id) if force else wallet.lnworker.close_channel(chan_id)
-    #    return await coro
-
-    #@command('wnl')
-    #async def request_force_close(self, channel_point, connection_string=None, wallet: Abstract_Wallet = None):
-    #    """
-    #    Requests the remote to force close a channel.
-    #    If a connection string is passed, can be used without having state or any backup for the channel.
-    #    Assumes that channel was originally opened with the same local peer (node_keypair).
-    #    """
-    #    txid, index = channel_point.split(':')
-    #    chan_id, _ = channel_id_from_funding_tx(txid, int(index))
-    #    await wallet.lnworker.request_force_close(chan_id, connect_str=connection_string)
-
-    #@command('wl')
-    #async def export_channel_backup(self, channel_point, wallet: Abstract_Wallet = None):
-    #    txid, index = channel_point.split(':')
-    #    chan_id, _ = channel_id_from_funding_tx(txid, int(index))
-    #    return wallet.lnworker.export_channel_backup(chan_id)
-
-    #@command('wl')
-    #async def import_channel_backup(self, encrypted, wallet: Abstract_Wallet = None):
-    #    return wallet.lnworker.import_channel_backup(encrypted)
-
-    #@command('wnl')
-    #async def get_channel_ctx(self, channel_point, iknowwhatimdoing=False, wallet: Abstract_Wallet = None):
-    #    """ return the current commitment transaction of a channel """
-    #    if not iknowwhatimdoing:
-    #        raise Exception("WARNING: this command is potentially unsafe.\n"
-    #                        "To proceed, try again, with the --iknowwhatimdoing option.")
-    #    txid, index = channel_point.split(':')
-    #    chan_id, _ = channel_id_from_funding_tx(txid, int(index))
-    #    chan = wallet.lnworker.channels[chan_id]
-    #    tx = chan.force_close_tx()
-    #    return tx.serialize()
-
-    #@command('wnl')
-    #async def get_watchtower_ctn(self, channel_point, wallet: Abstract_Wallet = None):
-    #    """ return the local watchtower's ctn of channel. used in regtests """
-    #    return await self.network.local_watchtower.sweepstore.get_ctn(channel_point, None)
-
-    #@command('wnpl')
-    #async def normal_swap(self, onchain_amount, lightning_amount, password=None, wallet: Abstract_Wallet = None):
-    #    """
-    #    Normal submarine swap: send on-chain BTC, receive on Lightning
-    #    Note that your funds will be locked for 24h if you do not have enough incoming capacity.
-    #    """
-    #    sm = wallet.lnworker.swap_manager
-    #         if onchain_amount == 'dryrun':
-    #             await sm.get_pairs()
-    #             lightning_amount_sat = satoshis(lightning_amount)
-    #             onchain_amount_sat = sm.get_recv_amount(lightning_amount_sat, is_reverse=True)
-    #             success = None
-    #         elif lightning_amount == 'dryrun':
-    #             await sm.get_pairs()
-    #             onchain_amount_sat = satoshis(onchain_amount)
-    #             lightning_amount_sat = sm.get_send_amount(onchain_amount_sat, is_reverse=True)
-    #             success = None
-    #         else:
-    #             lightning_amount_sat = satoshis(lightning_amount)
-    #             claim_fee = sm.get_claim_fee()
-    #             onchain_amount_sat = satoshis(onchain_amount) + claim_fee
-    #             success = await wallet.lnworker.swap_manager.reverse_swap(
-    #                 lightning_amount_sat=lightning_amount_sat,
-    #                 expected_onchain_amount_sat=onchain_amount_sat,
-    #             )
-    #         return {
-    #             'success': success,
-    #             'lightning_amount': format_satoshis(lightning_amount_sat),
-    #             'onchain_amount': format_satoshis(onchain_amount_sat),
-    #         }
-
-    #@command('wnl')
-    #async def reverse_swap(self, lightning_amount, onchain_amount, wallet: Abstract_Wallet = None):
-    #    """Reverse submarine swap: send on Lightning, receive on-chain
-    #    """
-    #    sm = wallet.lnworker.swap_manager
-    #    if onchain_amount == 'dryrun':
-    #        await sm.get_pairs()
-    #        lightning_amount_sat = satoshis(lightning_amount)
-    #        onchain_amount_sat = sm.get_recv_amount(lightning_amount_sat, is_reverse=True)
-    #        success = None
-    #    elif lightning_amount == 'dryrun':
-    #        await sm.get_pairs()
-    #        onchain_amount_sat = satoshis(onchain_amount)
-    #        lightning_amount_sat = sm.get_send_amount(onchain_amount_sat, is_reverse=True)
-    #        success = None
-    #    else:
-    #        lightning_amount_sat = satoshis(lightning_amount)
-    #        claim_fee = sm.get_claim_fee()
-    #        onchain_amount_sat = satoshis(onchain_amount + claim_fee)
-    #        success = await wallet.lnworker.swap_manager.reverse_swap(
-    #            lightning_amount_sat=lightning_amount_sat,
-    #            expected_onchain_amount_sat=onchain_amount_sat,
-    #        )
-    #    return {
-    #        'success': success,
-    #        'lightning_amount': format_satoshis(lightning_amount_sat),
-    #        'onchain_amount': format_satoshis(onchain_amount_sat),
-    #    }
-
-    @command('n')
-    def getaddressassets(self, address):
-        """Returns the Asset list of any address. Note: This
-        is a walletless server query, results are not checked by SPV.
+    @command('wnl')
+    async def request_force_close(self, channel_point, connection_string=None, wallet: Abstract_Wallet = None):
         """
-        sh = neurai.address_to_scripthash(address)
-        return self.network.run_from_another_thread(self.network.listasset_for_scripthash(sh))
-
-    @command('n')
-    def getassetaddressbalance(self, address):
-        """Return the asset balance of any address. Note: This is a walletless
-        server query, results are not checked by SPV.
+        Requests the remote to force close a channel.
+        If a connection string is passed, can be used without having state or any backup for the channel.
+        Assumes that channel was originally opened with the same local peer (node_keypair).
         """
-        sh = neurai.address_to_scripthash(address)
-        out = self.network.run_from_another_thread(self.network.get_asset_balance_for_scripthash(sh))
-        for key, value in out["confirmed"].items():
-            val = str(Decimal(value) / COIN)
-            out["confirmed"][key] = val
-        for key, value in out["unconfirmed"].items():
-            val = str(Decimal(value) / COIN)
-            out["unconfirmed"][key] = val
-        return out
+        txid, index = channel_point.split(':')
+        chan_id, _ = channel_id_from_funding_tx(txid, int(index))
+        await wallet.lnworker.request_force_close(chan_id, connect_str=connection_string)
 
-    @command('n')
-    def getassetdata(self, name):
-        return self.network.run_from_another_thread(self.network.get_meta_for_asset(name))
+    @command('wl')
+    async def export_channel_backup(self, channel_point, wallet: Abstract_Wallet = None):
+        txid, index = channel_point.split(':')
+        chan_id, _ = channel_id_from_funding_tx(txid, int(index))
+        return wallet.lnworker.export_channel_backup(chan_id)
 
     @command('wl')
     async def import_channel_backup(self, encrypted, wallet: Abstract_Wallet = None):
@@ -1421,7 +1264,7 @@ class Commands:
     async def rebalance_channels(self, from_scid, dest_scid, amount, wallet: Abstract_Wallet = None):
         """
         Rebalance channels.
-        If trampoline is used, channels must be with diferent trampolines.
+        If trampoline is used, channels must be with different trampolines.
         """
         from .lnutil import ShortChannelID
         from_scid = ShortChannelID.from_str(from_scid)
@@ -1429,7 +1272,11 @@ class Commands:
         from_channel = wallet.lnworker.get_channel_by_scid(from_scid)
         dest_channel = wallet.lnworker.get_channel_by_scid(dest_scid)
         amount_sat = satoshis(amount)
-        success, log = await wallet.lnworker.rebalance_channels(from_channel, dest_channel, amount_sat * 1000)
+        success, log = await wallet.lnworker.rebalance_channels(
+            from_channel,
+            dest_channel,
+            amount_msat=amount_sat * 1000,
+        )
         return {
             'success': success,
             'log': [x.formatted_tuple() for x in log]
@@ -1475,24 +1322,61 @@ class Commands:
             await sm.get_pairs()
             lightning_amount_sat = satoshis(lightning_amount)
             onchain_amount_sat = sm.get_recv_amount(lightning_amount_sat, is_reverse=True)
-            success = None
+            funding_txid = None
         elif lightning_amount == 'dryrun':
             await sm.get_pairs()
             onchain_amount_sat = satoshis(onchain_amount)
             lightning_amount_sat = sm.get_send_amount(onchain_amount_sat, is_reverse=True)
-            success = None
+            funding_txid = None
         else:
             lightning_amount_sat = satoshis(lightning_amount)
             claim_fee = sm.get_claim_fee()
             onchain_amount_sat = satoshis(onchain_amount) + claim_fee
-            success = await wallet.lnworker.swap_manager.reverse_swap(
+            funding_txid = await wallet.lnworker.swap_manager.reverse_swap(
                 lightning_amount_sat=lightning_amount_sat,
                 expected_onchain_amount_sat=onchain_amount_sat,
             )
         return {
-            'success': success,
+            'funding_txid': funding_txid,
             'lightning_amount': format_satoshis(lightning_amount_sat),
             'onchain_amount': format_satoshis(onchain_amount_sat),
+        }
+
+    @command('n')
+    async def convert_currency(self, from_amount=1, from_ccy = '', to_ccy = ''):
+        """Converts the given amount of currency to another using the
+        configured exchange rate source.
+        """
+        if not self.daemon.fx.is_enabled():
+            raise Exception("FX is disabled. To enable, run: 'electrum setconfig use_exchange_rate true'")
+        # Currency codes are uppercase
+        from_ccy = from_ccy.upper()
+        to_ccy = to_ccy.upper()
+        # Default currencies
+        if from_ccy == '':
+            from_ccy = "BTC" if to_ccy != "BTC" else self.daemon.fx.ccy
+        if to_ccy == '':
+            to_ccy = "BTC" if from_ccy != "BTC" else self.daemon.fx.ccy
+        # Get current rates
+        rate_from = self.daemon.fx.exchange.get_cached_spot_quote(from_ccy)
+        rate_to = self.daemon.fx.exchange.get_cached_spot_quote(to_ccy)
+        # Test if currencies exist
+        if rate_from.is_nan():
+            raise Exception(f'Currency to convert from ({from_ccy}) is unknown or rate is unavailable')
+        if rate_to.is_nan():
+            raise Exception(f'Currency to convert to ({to_ccy}) is unknown or rate is unavailable')
+        # Conversion
+        try:
+            from_amount = to_decimal(from_amount)
+            to_amount = from_amount / rate_from * rate_to
+        except InvalidOperation:
+            raise Exception("from_amount is not a number")
+        return {
+            "from_amount": self.daemon.fx.ccy_amount_str(from_amount, add_thousands_sep=False, ccy=from_ccy),
+            "to_amount": self.daemon.fx.ccy_amount_str(to_amount, add_thousands_sep=False, ccy=to_ccy),
+            "from_ccy": from_ccy,
+            "to_ccy": to_ccy,
+            "source": self.daemon.fx.exchange.name(),
         }
 
 
@@ -1501,7 +1385,7 @@ def eval_bool(x: str) -> bool:
     if x == 'true': return True
     try:
         return bool(ast.literal_eval(x))
-    except:
+    except Exception:
         return bool(x)
 
 param_descriptions = {
@@ -1517,8 +1401,7 @@ param_descriptions = {
     'pubkey': 'Public key',
     'message': 'Clear text message. Use quotes if it contains spaces.',
     'encrypted': 'Encrypted message',
-    'amount': 'Amount to be sent (in xna). Type \'!\' to send the maximum available.',
-    'requested_amount': 'Requested amount (in xna).',
+    'amount': 'Amount to be sent (in BTC). Type \'!\' to send the maximum available.',
     'outputs': 'list of ["address", amount]',
     'redeem_script': 'redeem script (hexadecimal)',
     'lightning_amount': "Amount sent or received in a submarine swap. Set it to 'dryrun' to receive a value",
@@ -1538,7 +1421,7 @@ command_options = {
     'labels':      ("-l", "Show the labels of listed addresses"),
     'nocheck':     (None, "Do not verify aliases"),
     'imax':        (None, "Maximum number of inputs"),
-    'fee':         ("-f", "Transaction fee (absolute, in xna)"),
+    'fee':         ("-f", "Transaction fee (absolute, in BTC)"),
     'feerate':     (None, "Transaction fee rate (in sat/byte)"),
     'from_addr':   ("-F", "Source address (must be a wallet address; use sweep to spend from non-wallet address)."),
     'from_coins':  (None, "Source coins (must be in wallet; use sweep to spend from non-wallet address)."),
@@ -1550,15 +1433,16 @@ command_options = {
     'privkey':     (None, "Private key. Set to '?' to get a prompt."),
     'unsigned':    ("-u", "Do not sign transaction"),
     'rbf':         (None, "Whether to signal opt-in Replace-By-Fee in the transaction (true/false)"),
+    'decrease_payment': (None, "Whether payment amount will be decreased (true/false)"),
     'locktime':    (None, "Set locktime block number"),
     'addtransaction': (None,'Whether transaction is to be used for broadcasting afterwards. Adds transaction to the wallet'),
     'domain':      ("-D", "List of addresses"),
     'memo':        ("-m", "Description of the request"),
-    'expiration':  (None, "Time in seconds"),
+    'expiry':      (None, "Time in seconds"),
     'timeout':     (None, "Timeout in seconds"),
     'force':       (None, "Create new address beyond gap limit, if no more addresses are available."),
     'pending':     (None, "Show only pending requests."),
-    'push_amount': (None, 'Push initial amount (in xna)'),
+    'push_amount': (None, 'Push initial amount (in BTC)'),
     'expired':     (None, "Show only expired requests."),
     'paid':        (None, "Show only paid requests."),
     'show_addresses': (None, "Show input and output addresses"),
@@ -1573,13 +1457,16 @@ command_options = {
     'gossip':      (None, "Apply command to gossip node instead of wallet"),
     'connection_string':      (None, "Lightning network node ID or network address"),
     'new_fee_rate': (None, "The Updated/Increased Transaction fee rate (in sat/byte)"),
-    'strategies': (None, "Select RBF any one or multiple RBF strategies in any order, separated by ','; Options : 'CoinChooser','DecreaseChange','DecreasePayment' "),
+    'from_amount': (None, "Amount to convert (default: 1)"),
+    'from_ccy':    (None, "Currency to convert from"),
+    'to_ccy':      (None, "Currency to convert to"),
+    'asset':       (None, "The asset for the transaction")
 }
 
 
 # don't use floats because of rounding errors
 from .transaction import convert_raw_tx_to_hex
-json_loads = lambda x: json.loads(x, parse_float=lambda x: str(Decimal(x)))
+json_loads = lambda x: json.loads(x, parse_float=lambda x: str(to_decimal(x)))
 arg_types = {
     'num': int,
     'nbits': int,
@@ -1592,8 +1479,8 @@ arg_types = {
     'jsontx': json_loads,
     'inputs': json_loads,
     'outputs': json_loads,
-    'fee': lambda x: str(Decimal(x)) if x is not None else None,
-    'amount': lambda x: str(Decimal(x)) if not parse_max_spend(x) else x,
+    'fee': lambda x: str(to_decimal(x)) if x is not None else None,
+    'amount': lambda x: str(to_decimal(x)) if not parse_max_spend(x) else x,
     'locktime': int,
     'addtransaction': eval_bool,
     'fee_method': str,
@@ -1668,13 +1555,14 @@ argparse._SubParsersAction.__call__ = subparser_call
 
 
 def add_network_options(parser):
-    parser.add_argument("-f", "--serverfingerprint", dest="serverfingerprint", default=None, help="only allow connecting to servers with a matching SSL certificate SHA256 fingerprint." + " " +
-                                                                                                  "To calculate this yourself: '$ openssl x509 -noout -fingerprint -sha256 -inform pem -in mycertfile.crt'. Enter as 64 hex chars.")
-    parser.add_argument("-1", "--oneserver", action="store_true", dest="oneserver", default=None, help="connect to one server only")
-    parser.add_argument("-s", "--server", dest="server", default=None, help="set server host:port:protocol, where protocol is either t (tcp) or s (ssl)")
-    parser.add_argument("-p", "--proxy", dest="proxy", default=None, help="set proxy [type:]host[:port] (or 'none' to disable proxy), where type is socks4,socks5 or http")
-    parser.add_argument("--noonion", action="store_true", dest="noonion", default=None, help="do not try to connect to onion servers")
-    parser.add_argument("--skipmerklecheck", action="store_true", dest="skipmerklecheck", default=None, help="Tolerate invalid merkle proofs from server")
+    parser.add_argument("-f", "--serverfingerprint", dest=SimpleConfig.NETWORK_SERVERFINGERPRINT.key(), default=None,
+                        help="only allow connecting to servers with a matching SSL certificate SHA256 fingerprint. " +
+                             "To calculate this yourself: '$ openssl x509 -noout -fingerprint -sha256 -inform pem -in mycertfile.crt'. Enter as 64 hex chars.")
+    parser.add_argument("-1", "--oneserver", action="store_true", dest=SimpleConfig.NETWORK_ONESERVER.key(), default=None, help="connect to one server only")
+    parser.add_argument("-s", "--server", dest=SimpleConfig.NETWORK_SERVER.key(), default=None, help="set server host:port:protocol, where protocol is either t (tcp) or s (ssl)")
+    parser.add_argument("-p", "--proxy", dest=SimpleConfig.NETWORK_PROXY.key(), default=None, help="set proxy [type:]host[:port] (or 'none' to disable proxy), where type is socks4,socks5 or http")
+    parser.add_argument("--noonion", action="store_true", dest=SimpleConfig.NETWORK_NOONION.key(), default=None, help="do not try to connect to onion servers")
+    parser.add_argument("--skipmerklecheck", action="store_true", dest=SimpleConfig.NETWORK_SKIPMERKLECHECK.key(), default=None, help="Tolerate invalid merkle proofs from server")
 
 def add_global_options(parser):
     group = parser.add_argument_group('global options')
@@ -1683,17 +1571,16 @@ def add_global_options(parser):
     group.add_argument("-D", "--dir", dest="electrum_path", help="electrum directory")
     group.add_argument("-P", "--portable", action="store_true", dest="portable", default=False, help="Use local 'electrum_data' directory")
     group.add_argument("--testnet", action="store_true", dest="testnet", default=False, help="Use Testnet")
-    group.add_argument("--nosave", action="store_true", dest="nosave", default=False, help="Don't save config")
-    group.add_argument("--noverify", action="store_true", dest="noverify", default=False, help="DO NOT USE LOL (doesn't verify anything)")
-    # group.add_argument("--regtest", action="store_true", dest="regtest", default=False, help="Use Regtest")
-    # group.add_argument("--simnet", action="store_true", dest="simnet", default=False, help="Use Simnet")
-    group.add_argument("-o", "--offline", action="store_true", dest="offline", default=False, help="Run offline")
-    group.add_argument("--rpcuser", dest="rpcuser", default=argparse.SUPPRESS, help="RPC user")
-    group.add_argument("--rpcpassword", dest="rpcpassword", default=argparse.SUPPRESS, help="RPC password")
+    group.add_argument("--regtest", action="store_true", dest="regtest", default=False, help="Use Regtest")
+    group.add_argument("--simnet", action="store_true", dest="simnet", default=False, help="Use Simnet")
+    group.add_argument("--signet", action="store_true", dest="signet", default=False, help="Use Signet")
+    group.add_argument("-o", "--offline", action="store_true", dest=SimpleConfig.NETWORK_OFFLINE.key(), default=None, help="Run offline")
+    group.add_argument("--rpcuser", dest=SimpleConfig.RPC_USERNAME.key(), default=argparse.SUPPRESS, help="RPC user")
+    group.add_argument("--rpcpassword", dest=SimpleConfig.RPC_PASSWORD.key(), default=argparse.SUPPRESS, help="RPC password")
 
 def add_wallet_option(parser):
     parser.add_argument("-w", "--wallet", dest="wallet_path", help="wallet path")
-    parser.add_argument("--forgetconfig", action="store_true", dest="forget_config", default=False, help="Forget config on exit")
+    parser.add_argument("--forgetconfig", action="store_true", dest=SimpleConfig.CONFIG_FORGET_CHANGES.key(), default=False, help="Forget config on exit")
 
 def get_parser():
     # create main parser
@@ -1705,13 +1592,12 @@ def get_parser():
     subparsers = parser.add_subparsers(dest='cmd', metavar='<command>')
     # gui
     parser_gui = subparsers.add_parser('gui', description="Run Electrum's Graphical User Interface.", help="Run GUI (default)")
-    #parser_gui.add_argument("url", nargs='?', default=None, help="bitcoin URI (or bip70 file)")
-    parser_gui.add_argument("-g", "--gui", dest="gui", help="select graphical user interface", choices=['qt'])#, 'kivy', 'text', 'stdio', 'qml'])
-    parser_gui.add_argument("-m", action="store_true", dest="hide_gui", default=False, help="hide GUI on startup")
-    parser_gui.add_argument("-L", "--lang", dest="language", default=None, help="default language used in GUI")
+    parser_gui.add_argument("url", nargs='?', default=None, help="bitcoin URI (or bip70 file)")
+    parser_gui.add_argument("-g", "--gui", dest=SimpleConfig.GUI_NAME.key(), help="select graphical user interface", choices=['qt', 'kivy', 'text', 'stdio', 'qml'])
+    parser_gui.add_argument("-m", action="store_true", dest=SimpleConfig.GUI_QT_HIDE_ON_STARTUP.key(), default=False, help="hide GUI on startup")
+    parser_gui.add_argument("-L", "--lang", dest=SimpleConfig.LOCALIZATION_LANGUAGE.key(), default=None, help="default language used in GUI")
     parser_gui.add_argument("--daemon", action="store_true", dest="daemon", default=False, help="keep daemon running after GUI is closed")
-    # Segwit is not current supported
-    # parser_gui.add_argument("--nosegwit", action="store_true", dest="nosegwit", default=True, help="Do not create segwit wallets")
+    parser_gui.add_argument("--nosegwit", action="store_true", dest=SimpleConfig.WIZARD_DONT_CREATE_SEGWIT.key(), default=True, help="Do not create segwit wallets")
     add_wallet_option(parser_gui)
     add_network_options(parser_gui)
     add_global_options(parser_gui)
@@ -1720,10 +1606,10 @@ def get_parser():
     parser_daemon.add_argument("-d", "--detached", action="store_true", dest="detach", default=False, help="run daemon in detached mode")
     # FIXME: all these options are rpc-server-side. The CLI client-side cannot use e.g. --rpcport,
     #        instead it reads it from the daemon lockfile.
-    parser_daemon.add_argument("--rpchost", dest="rpchost", default=argparse.SUPPRESS, help="RPC host")
-    parser_daemon.add_argument("--rpcport", dest="rpcport", type=int, default=argparse.SUPPRESS, help="RPC port")
-    parser_daemon.add_argument("--rpcsock", dest="rpcsock", default=None, help="what socket type to which to bind RPC daemon", choices=['unix', 'tcp', 'auto'])
-    parser_daemon.add_argument("--rpcsockpath", dest="rpcsockpath", help="where to place RPC file socket")
+    parser_daemon.add_argument("--rpchost", dest=SimpleConfig.RPC_HOST.key(), default=argparse.SUPPRESS, help="RPC host")
+    parser_daemon.add_argument("--rpcport", dest=SimpleConfig.RPC_PORT.key(), type=int, default=argparse.SUPPRESS, help="RPC port")
+    parser_daemon.add_argument("--rpcsock", dest=SimpleConfig.RPC_SOCKET_TYPE.key(), default=None, help="what socket type to which to bind RPC daemon", choices=['unix', 'tcp', 'auto'])
+    parser_daemon.add_argument("--rpcsockpath", dest=SimpleConfig.RPC_SOCKET_FILEPATH.key(), help="where to place RPC file socket")
     add_network_options(parser_daemon)
     add_global_options(parser_daemon)
     # commands

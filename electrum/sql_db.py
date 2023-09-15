@@ -10,6 +10,7 @@ from .util import test_read_write_permissions
 
 def sql(func):
     """wrapper for sql methods
+
     returns an awaitable asyncio.Future
     """
     def wrapper(self: 'SqlDB', *args, **kwargs):

@@ -15,6 +15,19 @@ function new_blocks()
     $bitcoin_cli generatetoaddress $1 $($bitcoin_cli getnewaddress) > /dev/null
 }
 
+function wait_until_htlcs_settled()
+{
+    msg="wait until $1's local_unsettled_sent is zero"
+    cmd="./run_electrum --regtest -D /tmp/$1"
+    while unsettled=$($alice list_channels | jq '.[] | .local_unsettled_sent') && [ $unsettled != "0" ]; do
+        sleep 1
+        msg="$msg."
+        printf "$msg\r"
+    done
+    printf "\n"
+}
+
+
 function wait_for_balance()
 {
     msg="wait until $1's balance reaches $2"
@@ -80,13 +93,15 @@ if [[ $1 == "init" ]]; then
     $agent setconfig --offline use_gossip True
     $agent setconfig --offline server 127.0.0.1:51001:t
     $agent setconfig --offline lightning_to_self_delay 144
+    $agent setconfig --offline test_force_disable_mpp True
     # alice is funded, bob is listening
     if [[ $2 == "bob" ]]; then
         $bob setconfig --offline lightning_listen localhost:9735
-    else
-        echo "funding $2"
-        $bitcoin_cli sendtoaddress $($agent getunusedaddress -o) 1
+        $bob setconfig --offline use_swapserver true
     fi
+    echo "funding $2"
+    # note: changing the funding amount affects all tests, as they rely on "wait_for_balance"
+    $bitcoin_cli sendtoaddress $($agent getunusedaddress -o) 1
 fi
 
 
@@ -112,7 +127,7 @@ if [[ $1 == "breach" ]]; then
     wait_for_balance alice 1
     echo "alice opens channel"
     bob_node=$($bob nodeid)
-    channel=$($alice open_channel $bob_node 0.15)
+    channel=$($alice open_channel $bob_node 0.15 --password='')
     new_blocks 3
     wait_until_channel_open alice
     request=$($bob add_request 0.01 -m "blah" | jq -r ".lightning_invoice")
@@ -128,7 +143,7 @@ if [[ $1 == "breach" ]]; then
     new_blocks 1
     wait_until_channel_closed bob
     new_blocks 1
-    wait_for_balance bob 0.14
+    wait_for_balance bob 1.14
     $bob getbalance
 fi
 
@@ -137,13 +152,13 @@ if [[ $1 == "backup" ]]; then
     wait_for_balance alice 1
     echo "alice opens channel"
     bob_node=$($bob nodeid)
-    channel1=$($alice open_channel $bob_node 0.15)
+    channel1=$($alice open_channel $bob_node 0.15 --password='')
     $alice setconfig use_recoverable_channels False
-    channel2=$($alice open_channel $bob_node 0.15)
+    channel2=$($alice open_channel $bob_node 0.15 --password='')
     new_blocks 3
     wait_until_channel_open alice
     backup=$($alice export_channel_backup $channel2)
-    seed=$($alice getseed)
+    seed=$($alice getseed --password='')
     $alice stop
     mv /tmp/alice/regtest/wallets/default_wallet /tmp/alice/regtest/wallets/default_wallet.old
     $alice -o restore "$seed"
@@ -158,15 +173,80 @@ if [[ $1 == "backup" ]]; then
 fi
 
 
+if [[ $1 == "backup_local_forceclose" ]]; then
+    # Alice does a local-force-close, and then restores from seed before sweeping CSV-locked coins
+    wait_for_balance alice 1
+    echo "alice opens channel"
+    bob_node=$($bob nodeid)
+    $alice setconfig use_recoverable_channels False
+    channel=$($alice open_channel $bob_node 0.15 --password='')
+    new_blocks 3
+    wait_until_channel_open alice
+    backup=$($alice export_channel_backup $channel)
+    echo "local force close $channel"
+    $alice close_channel $channel --force
+    sleep 0.5
+    seed=$($alice getseed --password='')
+    $alice stop
+    mv /tmp/alice/regtest/wallets/default_wallet /tmp/alice/regtest/wallets/default_wallet.old
+    new_blocks 150
+    $alice -o restore "$seed"
+    $alice daemon -d
+    $alice load_wallet
+    $alice import_channel_backup $backup
+    wait_for_balance alice 0.998
+fi
+
+
 if [[ $1 == "collaborative_close" ]]; then
     wait_for_balance alice 1
     echo "alice opens channel"
     bob_node=$($bob nodeid)
-    channel=$($alice open_channel $bob_node 0.15)
+    channel=$($alice open_channel $bob_node 0.15 --password='')
     new_blocks 3
     wait_until_channel_open alice
     echo "alice closes channel"
     request=$($bob close_channel $channel)
+fi
+
+
+if [[ $1 == "swapserver_success" ]]; then
+    wait_for_balance alice 1
+    echo "alice opens channel"
+    bob_node=$($bob nodeid)
+    channel=$($alice open_channel $bob_node 0.15 --password='')
+    new_blocks 3
+    wait_until_channel_open alice
+    echo "alice initiates swap"
+    dryrun=$($alice reverse_swap 0.02 dryrun)
+    onchain_amount=$(echo $dryrun| jq -r ".onchain_amount")
+    swap=$($alice reverse_swap 0.02 $onchain_amount)
+    echo $swap | jq
+    funding_txid=$(echo $swap| jq -r ".funding_txid")
+    new_blocks 1
+    wait_until_spent $funding_txid 0
+    wait_until_htlcs_settled alice
+fi
+
+
+if [[ $1 == "swapserver_refund" ]]; then
+    $alice setconfig test_swapserver_refund true
+    wait_for_balance alice 1
+    echo "alice opens channel"
+    bob_node=$($bob nodeid)
+    channel=$($alice open_channel $bob_node 0.15 --password='')
+    new_blocks 3
+    wait_until_channel_open alice
+    echo "alice initiates swap"
+    dryrun=$($alice reverse_swap 0.02 dryrun)
+    onchain_amount=$(echo $dryrun| jq -r ".onchain_amount")
+    swap=$($alice reverse_swap 0.02 $onchain_amount)
+    echo $swap | jq
+    funding_txid=$(echo $swap| jq -r ".funding_txid")
+    new_blocks 140
+    wait_until_spent $funding_txid 0
+    new_blocks 1
+    wait_until_htlcs_settled alice
 fi
 
 
@@ -176,7 +256,7 @@ if [[ $1 == "extract_preimage" ]]; then
     wait_for_balance alice 1
     echo "alice opens channel"
     bob_node=$($bob nodeid)
-    $alice open_channel $bob_node 0.15
+    $alice open_channel $bob_node 0.15 --password=''
     new_blocks 3
     wait_until_channel_open alice
     chan_id=$($alice list_channels | jq -r ".[0].channel_point")
@@ -207,7 +287,7 @@ if [[ $1 == "redeem_htlcs" ]]; then
     wait_for_balance alice 1
     echo "alice opens channel"
     bob_node=$($bob nodeid)
-    $alice open_channel $bob_node 0.15
+    $alice open_channel $bob_node 0.15 --password=''
     new_blocks 3
     wait_until_channel_open alice
     # alice pays bob
@@ -249,7 +329,7 @@ if [[ $1 == "breach_with_unspent_htlc" ]]; then
     wait_for_balance alice 1
     echo "alice opens channel"
     bob_node=$($bob nodeid)
-    channel=$($alice open_channel $bob_node 0.15)
+    channel=$($alice open_channel $bob_node 0.15 --password='')
     new_blocks 3
     wait_until_channel_open alice
     echo "alice pays bob"
@@ -269,7 +349,7 @@ if [[ $1 == "breach_with_unspent_htlc" ]]; then
     fi
     echo "alice breaches with old ctx"
     $bitcoin_cli sendrawtransaction $ctx
-    wait_for_balance bob 0.14
+    wait_for_balance bob 1.14
 fi
 
 
@@ -278,7 +358,7 @@ if [[ $1 == "breach_with_spent_htlc" ]]; then
     wait_for_balance alice 1
     echo "alice opens channel"
     bob_node=$($bob nodeid)
-    channel=$($alice open_channel $bob_node 0.15)
+    channel=$($alice open_channel $bob_node 0.15 --password='')
     new_blocks 3
     wait_until_channel_open alice
     echo "alice pays bob"
@@ -324,7 +404,7 @@ if [[ $1 == "breach_with_spent_htlc" ]]; then
     $bob daemon -d
     sleep 1
     $bob load_wallet
-    wait_for_balance bob 0.039
+    wait_for_balance bob 1.039
     $bob getbalance
 fi
 
@@ -334,7 +414,7 @@ if [[ $1 == "configure_test_watchtower" ]]; then
     $carol setconfig -o run_watchtower true
     $carol setconfig -o watchtower_user wtuser
     $carol setconfig -o watchtower_password wtpassword
-    $carol setconfig -o watchtower_address 127.0.0.1:12345
+    $carol setconfig -o watchtower_port 12345
     $bob setconfig -o watchtower_url http://wtuser:wtpassword@127.0.0.1:12345
 fi
 
@@ -342,7 +422,7 @@ if [[ $1 == "watchtower" ]]; then
     wait_for_balance alice 1
     echo "alice opens channel"
     bob_node=$($bob nodeid)
-    channel=$($alice open_channel $bob_node 0.15)
+    channel=$($alice open_channel $bob_node 0.15 --password='')
     echo "channel outpoint: $channel"
     new_blocks 3
     wait_until_channel_open alice
@@ -353,14 +433,15 @@ if [[ $1 == "watchtower" ]]; then
     echo "alice pays bob again"
     invoice2=$($bob add_request 0.01 -m "invoice2" | jq -r ".lightning_invoice")
     $alice lnpay $invoice2
+    alice_ctn=$($alice list_channels | jq '.[0].local_ctn')
     msg="waiting until watchtower is synchronized"
-    while watchtower_ctn=$($carol get_watchtower_ctn $channel) && [[ $watchtower_ctn != "3" ]]; do
-        sleep 1
-        msg="$msg."
-        printf "$msg\r"
+    # watchtower needs to be at latest revoked ctn
+    while watchtower_ctn=$($carol get_watchtower_ctn $channel) && [[ $watchtower_ctn != $((alice_ctn-1)) ]]; do
+        sleep 0.1
+        printf "$msg $alice_ctn $watchtower_ctn\r"
     done
     printf "\n"
-    echo "alice and bob do nothing"
+    echo "stopping alice and bob"
     $bob stop
     $alice stop
     ctx_id=$($bitcoin_cli sendrawtransaction $ctx)

@@ -6,8 +6,8 @@ from electrum import keystore
 from electrum import mnemonic
 from electrum import slip39
 from electrum import old_mnemonic
-from electrum.util import bh2u, bfh
-from electrum.mnemonic import is_new_seed, is_old_seed, seed_type
+from electrum.util import bfh
+from electrum.mnemonic import is_new_seed, is_old_seed, seed_type, is_matching_seed
 from electrum.version import SEED_PREFIX_SW, SEED_PREFIX
 
 from . import ElectrumTestCase
@@ -104,20 +104,20 @@ class Test_NewMnemonic(ElectrumTestCase):
         # note: not a valid electrum seed
         seed = mnemonic.Mnemonic.mnemonic_to_seed(mnemonic='foobar', passphrase='none')
         self.assertEqual('741b72fd15effece6bfe5a26a52184f66811bd2be363190e07a42cca442b1a5bb22b3ad0eb338197287e6d314866c7fba863ac65d3f156087a5052ebc7157fce',
-                         bh2u(seed))
+                         seed.hex())
 
     def test_mnemonic_to_seed(self):
         for test_name, test in SEED_TEST_CASES.items():
             if test.words_hex is not None:
-                self.assertEqual(test.words_hex, bh2u(test.words.encode('utf8')), msg=test_name)
+                self.assertEqual(test.words_hex, test.words.encode('utf8').hex(), msg=test_name)
             self.assertTrue(is_new_seed(test.words, prefix=test.seed_version), msg=test_name)
             m = mnemonic.Mnemonic(lang=test.lang)
             if test.entropy is not None:
                 self.assertEqual(test.entropy, m.mnemonic_decode(test.words), msg=test_name)
             if test.passphrase_hex is not None:
-                self.assertEqual(test.passphrase_hex, bh2u(test.passphrase.encode('utf8')), msg=test_name)
+                self.assertEqual(test.passphrase_hex, test.passphrase.encode('utf8').hex(), msg=test_name)
             seed = mnemonic.Mnemonic.mnemonic_to_seed(mnemonic=test.words, passphrase=test.passphrase)
-            self.assertEqual(test.bip32_seed, bh2u(seed), msg=test_name)
+            self.assertEqual(test.bip32_seed, seed.hex(), msg=test_name)
 
     def test_random_seeds(self):
         iters = 10
@@ -192,6 +192,26 @@ class Test_seeds(ElectrumTestCase):
         for idx, (seed_words, _type) in enumerate(self.mnemonics):
             with self.subTest(msg=f"seed_type_subcase_{idx}", seed_words=seed_words):
                 self.assertEqual(_type, seed_type(seed_words), msg=seed_words)
+
+    def test_is_matching_seed(self):
+        self.assertTrue(is_matching_seed(seed="9dk", seed_again="9dk "))
+        self.assertTrue(is_matching_seed(seed="9dk", seed_again=" 9dk"))
+        self.assertTrue(is_matching_seed(seed="9dk", seed_again="  9dk "))
+        self.assertTrue(is_matching_seed(seed="when blade focus", seed_again="when blade focus "))
+        self.assertTrue(is_matching_seed(seed="when blade focus", seed_again=" when  blade       focus  "))
+        self.assertTrue(is_matching_seed(seed=" when  blade  focus  ", seed_again=" when  blade       focus  "))
+        self.assertTrue(is_matching_seed(
+            seed=" when  blade  focus  ",
+            seed_again=
+            """ when  blade
+
+               focus  """))
+
+        self.assertFalse(is_matching_seed(seed="when blade focus", seed_again="wen blade focus"))
+        self.assertFalse(is_matching_seed(seed="when blade focus", seed_again="when bladefocus"))
+        self.assertFalse(is_matching_seed(seed="when blade focus", seed_again="when blAde focus"))
+        self.assertFalse(is_matching_seed(seed="when blade focus", seed_again="when bl4de focus"))
+        self.assertFalse(is_matching_seed(seed="when blade focus", seed_again="when bla4de focus"))
 
 
 class Test_slip39(ElectrumTestCase):

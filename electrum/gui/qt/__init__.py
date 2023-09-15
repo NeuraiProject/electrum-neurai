@@ -61,11 +61,13 @@ from electrum.util import (UserCancelled, profiler, send_exception_to_crash_repo
                            WalletFileException, BitcoinException, get_new_wallet_name)
 from electrum.wallet import Wallet, Abstract_Wallet
 from electrum.wallet_db import WalletDB
+from electrum.ipfs_db import IPFSDB
 from electrum.logging import Logger
 from electrum.gui import BaseElectrumGui
+from electrum.simple_config import SimpleConfig
 
 from .installwizard import InstallWizard, WalletAlreadyOpenInMemory
-from .util import get_default_language, read_QIcon, ColorScheme, custom_message_box, MessageBoxMixin
+from .util import read_QIcon, ColorScheme, custom_message_box, MessageBoxMixin
 from .main_window import ElectrumWindow
 from .network_dialog import NetworkDialog
 from .stylesheet_patcher import patch_qt_stylesheet
@@ -75,27 +77,8 @@ from .exception_window import Exception_Hook
 
 if TYPE_CHECKING:
     from electrum.daemon import Daemon
-    from electrum.simple_config import SimpleConfig
-    from electrum.plugin import Plugins
-    from electrum.simple_config import SimpleConfig
-    from electrum.daemon import Daemon
     from electrum.plugin import Plugins
 
-
-class BaseElectrumGui:
-    def __init__(self, *, config: 'SimpleConfig', daemon: 'Daemon', plugins: 'Plugins'):
-        self.config = config
-        self.daemon = daemon
-        self.plugins = plugins
-
-    def main(self) -> None:
-        raise NotImplementedError()
-
-    def stop(self) -> None:
-        """Stops the GUI.
-        This method must be thread-safe.
-        """
-        pass
 
 class OpenFileEventFilter(QObject):
     def __init__(self, windows: Sequence[ElectrumWindow]):
@@ -105,7 +88,7 @@ class OpenFileEventFilter(QObject):
     def eventFilter(self, obj, event):
         if event.type() == QtCore.QEvent.FileOpen:
             if len(self.windows) >= 1:
-                self.windows[0].handle_payment_identifier(event.url().toString())
+                self.windows[0].set_payment_identifier(event.url().toString())
                 return True
         return False
 
@@ -129,7 +112,6 @@ class ElectrumGui(BaseElectrumGui, Logger):
 
     @profiler
     def __init__(self, *, config: 'SimpleConfig', daemon: 'Daemon', plugins: 'Plugins'):
-        set_language(config.get('language', get_default_language()))
         BaseElectrumGui.__init__(self, config=config, daemon=daemon, plugins=plugins)
         Logger.__init__(self)
         self.logger.info(f"Qt GUI starting up... Qt={QtCore.QT_VERSION_STR}, PyQt={QtCore.PYQT_VERSION_STR}")
@@ -137,17 +119,16 @@ class ElectrumGui(BaseElectrumGui, Logger):
         # GC-ed when windows are closed
         #network.add_jobs([DebugMem([Abstract_Wallet, SPV, Synchronizer,
         #                            ElectrumWindow], interval=5)])
-        QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_X11InitThreads)
         if hasattr(QtCore.Qt, "AA_ShareOpenGLContexts"):
             QtCore.QCoreApplication.setAttribute(QtCore.Qt.AA_ShareOpenGLContexts)
         if hasattr(QGuiApplication, 'setDesktopFileName'):
-            QGuiApplication.setDesktopFileName('electrum-neurai.desktop')
+            QGuiApplication.setDesktopFileName('electrum-ravencoin.desktop')
         self.gui_thread = threading.current_thread()
         self.windows = []  # type: List[ElectrumWindow]
         self.efilter = OpenFileEventFilter(self.windows)
         self.app = QElectrumApplication(sys.argv)
         self.app.installEventFilter(self.efilter)
-        self.app.setWindowIcon(read_QIcon("electrum-neurai.png"))
+        self.app.setWindowIcon(read_QIcon("electrum.png"))
         self._cleaned_up = False
         # timer
         self.timer = QTimer(self.app)
@@ -159,7 +140,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
         self.watchtower_dialog = None
         self._num_wizards_in_progress = 0
         self._num_wizards_lock = threading.Lock()
-        self.dark_icon = self.config.get("dark_icon", True)
+        self.dark_icon = self.config.GUI_QT_DARK_TRAY_ICON
         self.tray = None
         self._init_tray()
         self.app.new_window_signal.connect(self.start_new_window)
@@ -172,11 +153,11 @@ class ElectrumGui(BaseElectrumGui, Logger):
 
     def _init_tray(self):
         self.tray = QSystemTrayIcon(self.tray_icon(), None)
-        self.tray.setToolTip('Electrum Neurai')
+        self.tray.setToolTip('Electrum')
         self.tray.activated.connect(self.tray_activated)
         self.build_tray_menu()
         self.tray.show()
-    
+
     def reload_app_stylesheet(self):
         """Set the Qt stylesheet and custom colors according to the user-selected
         light/dark theme.
@@ -187,7 +168,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
              - in Coins tab, the color for "frozen" UTXOs, or
              - in TxDialog, the receiving/change address colors
         """
-        use_dark_theme = self.config.get('qt_gui_color_theme', 'dark') == 'dark'
+        use_dark_theme = self.config.GUI_QT_COLOR_THEME == 'dark'
         if use_dark_theme:
             try:
                 import qdarkstyle
@@ -239,7 +220,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
         if not self.tray:
             return
         self.dark_icon = not self.dark_icon
-        self.config.set_key("dark_icon", self.dark_icon, True)
+        self.config.GUI_QT_DARK_TRAY_ICON = self.dark_icon
         self.tray.setIcon(self.tray_icon())
 
     def tray_activated(self, reason):
@@ -350,8 +331,11 @@ class ElectrumGui(BaseElectrumGui, Logger):
             app_is_starting: bool = False,
             force_wizard: bool = False,
     ) -> Optional[ElectrumWindow]:
-        '''Raises the window for the wallet if it is open.  Otherwise
-        opens the wallet and creates a new window for it'''
+        """Raises the window for the wallet if it is open.
+        Otherwise, opens the wallet and creates a new window for it.
+        Warning: the returned window might be for a completely different wallet
+                 than the provided path, as we allow user interaction to change the path.
+        """
         wallet = None
         # Try to open with daemon first. If this succeeds, there won't be a wizard at all
         # (the wallet main window will appear directly).
@@ -360,10 +344,13 @@ class ElectrumGui(BaseElectrumGui, Logger):
                 wallet = self.daemon.load_wallet(path, None)
             except Exception as e:
                 self.logger.exception('')
+                err_text = str(e) if isinstance(e, WalletFileException) else repr(e)
                 custom_message_box(icon=QMessageBox.Warning,
                                    parent=None,
                                    title=_('Error'),
-                                   text=_('Cannot load wallet') + ' (1):\n' + repr(e))
+                                   text=_('Cannot load wallet') + ' (1):\n' + err_text)
+                if isinstance(e, WalletFileException) and e.should_report_crash:
+                    send_exception_to_crash_reporter(e)
                 # if app is starting, still let wizard appear
                 if not app_is_starting:
                     return
@@ -382,10 +369,13 @@ class ElectrumGui(BaseElectrumGui, Logger):
                 window = self._create_window_for_wallet(wallet)
         except Exception as e:
             self.logger.exception('')
+            err_text = str(e) if isinstance(e, WalletFileException) else repr(e)
             custom_message_box(icon=QMessageBox.Warning,
                                parent=None,
                                title=_('Error'),
-                               text=_('Cannot load wallet') + '(2) :\n' + repr(e))
+                               text=_('Cannot load wallet') + '(2) :\n' + err_text)
+            if isinstance(e, WalletFileException) and e.should_report_crash:
+                send_exception_to_crash_reporter(e)
             if app_is_starting:
                 # If we raise in this context, there are no more fallbacks, we will shut down.
                 # Worst case scenario, we might have gotten here without user interaction,
@@ -399,14 +389,14 @@ class ElectrumGui(BaseElectrumGui, Logger):
                     path = self.config.get_fallback_wallet_path()
                 else:
                     path = os.path.join(wallet_dir, filename)
-                self.start_new_window(path, uri=None, force_wizard=True)
+                return self.start_new_window(path, uri=None, force_wizard=True)
             return
-        if uri:
-            window.handle_payment_identifier(uri)
         window.bring_to_top()
         window.setWindowState(window.windowState() & ~QtCore.Qt.WindowMinimized | QtCore.Qt.WindowActive)
-
         window.activateWindow()
+        if uri:
+            window.show_send_tab()
+            window.send_tab.set_payment_identifier(uri)
         return window
 
     def _start_wizard_to_select_or_create_wallet(self, path) -> Optional[Abstract_Wallet]:
@@ -419,7 +409,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
                 wizard.run('new')
                 storage, db = wizard.create_storage(path)
             else:
-                db = WalletDB(storage.read(), manual_upgrades=False)
+                db = WalletDB(storage.read(), storage=storage, manual_upgrades=False)
                 wizard.run_upgrades(storage, db)
         except (UserCancelled, GoBack):
             return
@@ -430,7 +420,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
         # return if wallet creation is not complete
         if storage is None or db.get_action():
             return
-        wallet = Wallet(db, storage, config=self.config)
+        wallet = Wallet(db, config=self.config)
         wallet.start_network(self.daemon.network)
         self.daemon.add_wallet(wallet)
         return wallet
@@ -446,12 +436,15 @@ class ElectrumGui(BaseElectrumGui, Logger):
         self.daemon.stop_wallet(window.wallet.storage.path)
 
     def init_network(self):
-        # Show network dialog if config does not exist
+        """Start the network, including showing a first-start network dialog if config does not exist."""
         if self.daemon.network:
-            if self.config.get('auto_connect') is None:
+            # first-start network-setup
+            if not self.config.cv.NETWORK_AUTO_CONNECT.is_set():
                 wizard = InstallWizard(self.config, self.app, self.plugins, gui_object=self)
                 wizard.init_network(self.daemon.network)
                 wizard.terminate()
+            # start network
+            self.daemon.start_network()
 
     def main(self):
         # setup Ctrl-C handling and tear-down code first, so that user can easily exit whenever
@@ -461,7 +454,7 @@ class ElectrumGui(BaseElectrumGui, Logger):
         signal.signal(signal.SIGINT, lambda *args: self.app.quit())
         # hook for crash reporter
         Exception_Hook.maybe_setup(config=self.config)
-        # first-start network-setup
+        # start network, and maybe show first-start network-setup
         try:
             self.init_network()
         except UserCancelled:
@@ -473,6 +466,8 @@ class ElectrumGui(BaseElectrumGui, Logger):
             return
         # start wizard to select/create wallet
         self.timer.start()
+        IPFSDB.initialize(self.config.get_ipfs_data_path(), self.config.get_ipfs_raw_path())
+        IPFSDB.get_instance().purge_stale_ipfs_data()
         path = self.config.get_wallet_path(use_gui_last_wallet=True)
         try:
             if not self.start_new_window(path, self.config.get('url'), app_is_starting=True):

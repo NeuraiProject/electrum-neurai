@@ -13,7 +13,7 @@ from .test_bitcoin import needs_test_with_all_chacha20_implementations
 class TestLNTransport(ElectrumTestCase):
 
     @needs_test_with_all_chacha20_implementations
-    def test_responder(self):
+    async def test_responder(self):
         # local static
         ls_priv=bytes.fromhex('2121212121212121212121212121212121212121212121212121212121212121')
         # ephemeral
@@ -39,11 +39,10 @@ class TestLNTransport(ElectrumTestCase):
                     assert num_bytes == 66
                     return bytes.fromhex('00b9e3a702e93e3a9948c2ed6e5fd7590a6e1c3a0344cfc9d5b57357049aa22355361aa02e55a8fc28fef5bd6d71ad0c38228dc68b1c466263b47fdf31e560e139ba')
         transport = LNResponderTransport(ls_priv, Reader(), Writer())
-        asyncio.run_coroutine_threadsafe(
-            transport.handshake(epriv=e_priv), self.asyncio_loop).result()
+        await transport.handshake(epriv=e_priv)
 
     @needs_test_with_all_chacha20_implementations
-    def test_loop(self):
+    async def test_loop(self):
         responder_shaked = asyncio.Event()
         server_shaked = asyncio.Event()
         responder_key = ECPrivkey.generate_random_key()
@@ -77,8 +76,8 @@ class TestLNTransport(ElectrumTestCase):
                 await group.spawn(read_messages(t, messages_sent_by_client))
                 await group.spawn(write_messages(t, messages_sent_by_server))
             responder_shaked.set()
-        async def connect():
-            peer_addr = LNPeerAddr('127.0.0.1', 42898, responder_key.get_public_key_bytes())
+        async def connect(port: int):
+            peer_addr = LNPeerAddr('127.0.0.1', port, responder_key.get_public_key_bytes())
             t = LNTransport(initiator_key.get_secret_bytes(), peer_addr, proxy=None)
             await t.handshake()
             async with OldTaskGroup() as group:
@@ -87,14 +86,15 @@ class TestLNTransport(ElectrumTestCase):
             server_shaked.set()
 
         async def f():
-            server = await asyncio.start_server(cb, '127.0.0.1', 42898)
+            server = await asyncio.start_server(cb, '127.0.0.1', port=None)
+            server_port = server.sockets[0].getsockname()[1]
             try:
                 async with OldTaskGroup() as group:
-                    await group.spawn(connect())
+                    await group.spawn(connect(port=server_port))
                     await group.spawn(responder_shaked.wait())
                     await group.spawn(server_shaked.wait())
             finally:
                 server.close()
                 await server.wait_closed()
 
-        asyncio.run_coroutine_threadsafe(f(), self.asyncio_loop).result()
+        await f()

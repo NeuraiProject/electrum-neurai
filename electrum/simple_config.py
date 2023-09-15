@@ -3,19 +3,20 @@ import threading
 import time
 import os
 import stat
-import ssl
 from decimal import Decimal
-from typing import Union, Optional, Dict, Sequence, Tuple
+from typing import Union, Optional, Dict, Sequence, Tuple, Any, Set
 from numbers import Real
+from functools import cached_property
 
 from copy import deepcopy
-from aiorpcx import NetAddress
 
 from . import util
 from . import constants
+from . import invoices
 from .util import base_units, base_unit_name_to_decimal_point, decimal_point_to_base_unit_name, UnknownBaseUnit, DECIMAL_POINT_DEFAULT
-from .util import format_satoshis, format_fee_satoshis, NeuraiValue
+from .util import format_satoshis, format_fee_satoshis, os_chmod
 from .util import user_dir, make_dir, NoDynamicFeeEstimates, quantize_feerate
+from .lnutil import LN_MAX_FUNDING_SAT_LEGACY
 from .i18n import _
 from .logging import get_logger, Logger
 
@@ -44,10 +45,81 @@ FEERATE_PER_KW_MIN_RELAY_LIGHTNING = 253
 FEE_RATIO_HIGH_WARNING = 0.05  # warn user if fee/amount for on-chain tx is higher than this
 
 
+
 _logger = get_logger(__name__)
 
 
 FINAL_CONFIG_VERSION = 3
+
+
+class ConfigVar(property):
+
+    def __init__(self, key: str, *, default, type_=None):
+        self._key = key
+        self._default = default
+        self._type = type_
+        property.__init__(self, self._get_config_value, self._set_config_value)
+
+    def _get_config_value(self, config: 'SimpleConfig'):
+        value = config.get(self._key, default=self._default)
+        if self._type is not None and value != self._default:
+            assert value is not None, f"got None for key={self._key!r}"
+            try:
+                value = self._type(value)
+            except Exception as e:
+                raise ValueError(
+                    f"ConfigVar.get type-check and auto-conversion failed. "
+                    f"key={self._key!r}. type={self._type}. value={value!r}") from e
+        return value
+
+    def _set_config_value(self, config: 'SimpleConfig', value, *, save=True):
+        if self._type is not None and value is not None:
+            if not isinstance(value, self._type):
+                raise ValueError(
+                    f"ConfigVar.set type-check failed. "
+                    f"key={self._key!r}. type={self._type}. value={value!r}")
+        config.set_key(self._key, value, save=save)
+
+    def key(self) -> str:
+        return self._key
+
+    def get_default_value(self) -> Any:
+        return self._default
+
+    def __repr__(self):
+        return f"<ConfigVar key={self._key!r}>"
+
+    def __deepcopy__(self, memo):
+        cv = ConfigVar(self._key, default=self._default, type_=self._type)
+        return cv
+
+
+class ConfigVarWithConfig:
+
+    def __init__(self, *, config: 'SimpleConfig', config_var: 'ConfigVar'):
+        self._config = config
+        self._config_var = config_var
+
+    def get(self) -> Any:
+        return self._config_var._get_config_value(self._config)
+
+    def set(self, value: Any, *, save=True) -> None:
+        self._config_var._set_config_value(self._config, value, save=save)
+
+    def key(self) -> str:
+        return self._config_var.key()
+
+    def get_default_value(self) -> Any:
+        return self._config_var.get_default_value()
+
+    def is_modifiable(self) -> bool:
+        return self._config.is_modifiable(self._config_var)
+
+    def is_set(self) -> bool:
+        return self._config.is_set(self._config_var)
+
+    def __repr__(self):
+        return f"<ConfigVarWithConfig key={self.key()!r}>"
 
 
 class SimpleConfig(Logger):
@@ -98,7 +170,7 @@ class SimpleConfig(Logger):
             # avoid new config getting upgraded
             self.user_config = {'config_version': FINAL_CONFIG_VERSION}
 
-        self._not_modifiable_keys = set()
+        self._not_modifiable_keys = set()  # type: Set[str]
 
         # config "upgrade" - CLI options
         self.rename_config_keys(
@@ -111,15 +183,15 @@ class SimpleConfig(Logger):
         self._check_dependent_keys()
 
         # units and formatting
-        self.decimal_point = self.get('decimal_point', DECIMAL_POINT_DEFAULT)
+        # FIXME is this duplication (dp, nz, post_sat, thou_sep) due to performance reasons??
+        self.decimal_point = self.BTC_AMOUNTS_DECIMAL_POINT
         try:
             decimal_point_to_base_unit_name(self.decimal_point)
         except UnknownBaseUnit:
             self.decimal_point = DECIMAL_POINT_DEFAULT
-
-        self.num_zeros = int(self.get('num_zeros', 1))
-        self.amt_precision_post_satoshi = int(self.get('amt_precision_post_satoshi', 0))
-        self.amt_add_thousands_sep = bool(self.get('amt_add_thousands_sep', False))
+        self.num_zeros = self.BTC_AMOUNTS_FORCE_NZEROS_AFTER_DECIMAL_POINT
+        self.amt_precision_post_satoshi = self.BTC_AMOUNTS_PREC_POST_SAT
+        self.amt_add_thousands_sep = self.BTC_AMOUNTS_ADD_THOUSANDS_SEP
 
     def electrum_path(self):
         # Read electrum_path from command line
@@ -132,15 +204,15 @@ class SimpleConfig(Logger):
         if self.get('testnet'):
             path = os.path.join(path, 'testnet')
             make_dir(path, allow_symlink=False)
-        elif self.get('regtest'):
-            path = os.path.join(path, 'regtest')
-            make_dir(path, allow_symlink=False)
-        elif self.get('simnet'):
-            path = os.path.join(path, 'simnet')
-            make_dir(path, allow_symlink=False)
-        elif self.get('signet'):
-            path = os.path.join(path, 'signet')
-            make_dir(path, allow_symlink=False)
+        #elif self.get('regtest'):
+        #    path = os.path.join(path, 'regtest')
+        #    make_dir(path, allow_symlink=False)
+        #elif self.get('simnet'):
+        #    path = os.path.join(path, 'simnet')
+        #    make_dir(path, allow_symlink=False)
+        #elif self.get('signet'):
+        #    path = os.path.join(path, 'signet')
+        #    make_dir(path, allow_symlink=False)
 
         self.logger.info(f"electrum directory {path}")
         return path
@@ -159,19 +231,28 @@ class SimpleConfig(Logger):
                 updated = True
         return updated
 
-    def set_key(self, key, value, save=True):
+    def set_key(self, key: Union[str, ConfigVar, ConfigVarWithConfig], value, *, save=True) -> None:
+        """Set the value for an arbitrary string config key.
+        note: try to use explicit predefined ConfigVars instead of this method, whenever possible.
+              This method side-steps ConfigVars completely, and is mainly kept for situations
+              where the config key is dynamically constructed.
+        """
+        if isinstance(key, (ConfigVar, ConfigVarWithConfig)):
+            key = key.key()
+        assert isinstance(key, str), key
         if not self.is_modifiable(key):
             self.logger.warning(f"not changing config key '{key}' set on the command line")
             return
         try:
             json.dumps(key)
             json.dumps(value)
-        except:
+        except Exception:
             self.logger.info(f"json error: cannot save {repr(key)} ({repr(value)})")
             return
-        self._set_key_in_user_config(key, value, save)
+        self._set_key_in_user_config(key, value, save=save)
 
-    def _set_key_in_user_config(self, key, value, save=True):
+    def _set_key_in_user_config(self, key: str, value, *, save=True) -> None:
+        assert isinstance(key, str), key
         with self.lock:
             if value is not None:
                 self.user_config[key] = value
@@ -180,18 +261,33 @@ class SimpleConfig(Logger):
             if save:
                 self.save_user_config()
 
-    def get(self, key, default=None):
+    def get(self, key: str, default=None) -> Any:
+        """Get the value for an arbitrary string config key.
+        note: try to use explicit predefined ConfigVars instead of this method, whenever possible.
+              This method side-steps ConfigVars completely, and is mainly kept for situations
+              where the config key is dynamically constructed.
+        """
+        assert isinstance(key, str), key
         with self.lock:
             out = self.cmdline_options.get(key)
             if out is None:
                 out = self.user_config.get(key, default)
         return out
 
+    def is_set(self, key: Union[str, ConfigVar, ConfigVarWithConfig]) -> bool:
+        """Returns whether the config key has any explicit value set/defined."""
+        if isinstance(key, (ConfigVar, ConfigVarWithConfig)):
+            key = key.key()
+        assert isinstance(key, str), key
+        return self.get(key, default=...) is not ...
+
     def _check_dependent_keys(self) -> None:
-        if self.get('serverfingerprint'):
-            if not self.get('server'):
-                raise Exception("config key 'serverfingerprint' requires 'server' to also be set")
-            self.make_key_not_modifiable('server')
+        if self.NETWORK_SERVERFINGERPRINT:
+            if not self.NETWORK_SERVER:
+                raise Exception(
+                    f"config key {self.__class__.NETWORK_SERVERFINGERPRINT.key()!r} requires "
+                    f"{self.__class__.NETWORK_SERVER.key()!r} to also be set")
+            self.make_key_not_modifiable(self.__class__.NETWORK_SERVER)
 
     def requires_upgrade(self):
         return self.get_config_version() < FINAL_CONFIG_VERSION
@@ -231,7 +327,7 @@ class SimpleConfig(Logger):
         base_unit = self.user_config.get('base_unit')
         if isinstance(base_unit, str):
             self._set_key_in_user_config('base_unit', None)
-            map_ = {'xna': 8}  # , 'mbtc':5, 'ubtc':2, 'bits':2, 'sat':0}
+            map_ = {'btc':8, 'mbtc':5, 'ubtc':2, 'bits':2, 'sat':0}
             decimal_point = map_.get(base_unit.lower())
             self._set_key_in_user_config('decimal_point', decimal_point)
 
@@ -255,15 +351,20 @@ class SimpleConfig(Logger):
                                 .format(config_version, FINAL_CONFIG_VERSION))
         return config_version
 
-    def is_modifiable(self, key) -> bool:
+    def is_modifiable(self, key: Union[str, ConfigVar, ConfigVarWithConfig]) -> bool:
+        if isinstance(key, (ConfigVar, ConfigVarWithConfig)):
+            key = key.key()
         return (key not in self.cmdline_options
                 and key not in self._not_modifiable_keys)
 
-    def make_key_not_modifiable(self, key) -> None:
+    def make_key_not_modifiable(self, key: Union[str, ConfigVar, ConfigVarWithConfig]) -> None:
+        if isinstance(key, (ConfigVar, ConfigVarWithConfig)):
+            key = key.key()
+        assert isinstance(key, str), key
         self._not_modifiable_keys.add(key)
 
     def save_user_config(self):
-        if self.get('forget_config'):
+        if self.CONFIG_FORGET_CHANGES:
             return
         if not self.path:
             return
@@ -272,19 +373,19 @@ class SimpleConfig(Logger):
         try:
             with open(path, "w", encoding='utf-8') as f:
                 f.write(s)
-            os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+            os_chmod(path, stat.S_IREAD | stat.S_IWRITE)
         except FileNotFoundError:
             # datadir probably deleted while running...
             if os.path.exists(self.path):  # or maybe not?
                 raise
 
-    def get_backup_dir(self):
+    def get_backup_dir(self) -> Optional[str]:
         # this is used to save wallet file backups (without active lightning channels)
         # on Android, the export backup button uses android_backup_dir()
         if 'ANDROID_DATA' in os.environ:
             return None
         else:
-            return self.get('backup_dir')
+            return self.WALLET_BACKUP_DIRECTORY
 
     def get_wallet_path(self, *, use_gui_last_wallet=False):
         """Set the path of the wallet."""
@@ -294,7 +395,7 @@ class SimpleConfig(Logger):
             return os.path.join(self.get('cwd', ''), self.get('wallet_path'))
 
         if use_gui_last_wallet:
-            path = self.get('gui_last_wallet')
+            path = self.GUI_LAST_WALLET
             if path and os.path.exists(path):
                 return path
 
@@ -314,23 +415,33 @@ class SimpleConfig(Logger):
         path = os.path.join(self.path, "wallets", "default_wallet")
         return path
 
+    def get_ipfs_data_path(self):
+        util.assert_datadir_available(self.path)
+        path = os.path.join(self.path, 'ipfs_metadata')
+        return path
+
+    def get_ipfs_raw_path(self):
+        util.assert_datadir_available(self.path)
+        path = os.path.join(self.path, 'raw_ipfs')
+        return path
+
     def remove_from_recently_open(self, filename):
-        recent = self.get('recently_open', [])
+        recent = self.RECENTLY_OPEN_WALLET_FILES or []
         if filename in recent:
             recent.remove(filename)
-            self.set_key('recently_open', recent)
+            self.RECENTLY_OPEN_WALLET_FILES = recent
 
     def set_session_timeout(self, seconds):
         self.logger.info(f"session timeout -> {seconds} seconds")
-        self.set_key('session_timeout', seconds)
+        self.HWD_SESSION_TIMEOUT = seconds
 
     def get_session_timeout(self):
-        return self.get('session_timeout', 300)
+        return self.HWD_SESSION_TIMEOUT
 
     def save_last_wallet(self, wallet):
         if self.get('wallet_path') is None:
             path = wallet.storage.path
-            self.set_key('gui_last_wallet', path)
+            self.GUI_LAST_WALLET = path
 
     def impose_hard_limits_on_fee(func):
         def get_fee_within_limits(self, *args, **kwargs):
@@ -434,7 +545,7 @@ class SimpleConfig(Logger):
             return -1
         dist = map(lambda x: (x[0], abs(x[1] - fee_per_kb)), lst)
         min_target, min_value = min(dist, key=operator.itemgetter(1))
-        if fee_per_kb * 1000 < self.fee_estimates.get(FEE_ETA_TARGETS[0])/2:
+        if fee_per_kb < self.fee_estimates.get(FEE_ETA_TARGETS[0])/2:
             min_target = -1
         return min_target
 
@@ -512,13 +623,13 @@ class SimpleConfig(Logger):
                 tooltip = ''
         return text, tooltip
 
-    def get_depth_level(self):
+    def get_depth_level(self) -> int:
         maxp = len(FEE_DEPTH_TARGETS) - 1
-        return min(maxp, self.get('depth_level', 2))
+        return min(maxp, self.FEE_EST_DYNAMIC_MEMPOOL_SLIDERPOS)
 
-    def get_fee_level(self):
+    def get_fee_level(self) -> int:
         maxp = len(FEE_ETA_TARGETS)  # not (-1) to have "next block"
-        return min(maxp, self.get('fee_level', 2))
+        return min(maxp, self.FEE_EST_DYNAMIC_ETA_SLIDERPOS)
 
     def get_fee_slider(self, dyn, mempool) -> Tuple[int, int, Optional[int]]:
         if dyn:
@@ -557,11 +668,11 @@ class SimpleConfig(Logger):
         else:
             return self.has_fee_etas()
 
-    def is_dynfee(self):
-        return bool(self.get('dynamic_fees', True))
+    def is_dynfee(self) -> bool:
+        return self.FEE_EST_DYNAMIC
 
-    def use_mempool_fees(self):
-        return bool(self.get('mempool_fees', False))
+    def use_mempool_fees(self) -> bool:
+        return self.FEE_EST_USE_MEMPOOL
 
     def _feerate_from_fractional_slider_position(self, fee_level: float, dyn: bool,
                                                  mempool: bool) -> Union[int, None]:
@@ -583,6 +694,8 @@ class SimpleConfig(Logger):
 
         fee_level: float between 0.0 and 1.0, representing fee slider position
         """
+        #if constants.net is constants.BitcoinRegtest:
+        #    return FEERATE_REGTEST_HARDCODED
         if dyn is None:
             dyn = self.is_dynfee()
         if mempool is None:
@@ -598,7 +711,7 @@ class SimpleConfig(Logger):
             else:
                 fee_rate = self.eta_to_fee(self.get_fee_level())
         else:
-            fee_rate = self.get('fee_per_kb', FEERATE_FALLBACK_STATIC_FEE)
+            fee_rate = self.FEE_EST_STATIC_FEERATE_FALLBACK
         if fee_rate is not None:
             fee_rate = int(fee_rate)
         return fee_rate
@@ -629,7 +742,6 @@ class SimpleConfig(Logger):
         # to be consistent with what is displayed in the GUI,
         # the calculation needs to use the same precision:
         fee_per_byte = quantize_feerate(fee_per_byte)
-        fee_per_byte = quantize_feerate(fee_per_byte)
         return round(fee_per_byte * size)
 
     def update_fee_estimates(self, nblock_target: int, fee_per_kb: int):
@@ -648,59 +760,36 @@ class SimpleConfig(Logger):
         self.last_time_fee_estimates_requested = time.time()
 
     def get_video_device(self):
-        device = self.get("video_device", "default")
+        device = self.VIDEO_DEVICE_PATH
         if device == 'default':
             device = ''
         return device
 
-    def get_ssl_context(self):
-        ssl_keyfile = self.get('ssl_keyfile')
-        ssl_certfile = self.get('ssl_certfile')
-        if ssl_keyfile and ssl_certfile:
-            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            ssl_context.load_cert_chain(ssl_certfile, ssl_keyfile)
-            return ssl_context
-
-    def get_ssl_domain(self):
-        from .paymentrequest import check_ssl_config
-        if self.get('ssl_keyfile') and self.get('ssl_certfile'):
-            SSL_identity = check_ssl_config(self)
-        else:
-            SSL_identity = None
-        return SSL_identity
-
-    def get_netaddress(self, key: str) -> Optional[NetAddress]:
-        text = self.get(key)
-        if text:
-            try:
-                return NetAddress.from_string(text)
-            except:
-                pass
-
-    def format_amount(self, x, is_diff=False, whitespaces=False):
-        suffix = ''
-        if isinstance(x, NeuraiValue):
-            if x.assets:
-                suffix = f' ({len(x.assets)} asset' + ('s' if len(x.assets) > 1 else '') + ')'
-            x = x.xna_value.value
-        
+    def format_amount(
+        self,
+        amount_sat,
+        *,
+        is_diff=False,
+        whitespaces=False,
+        precision=None,
+        add_thousands_sep: bool = None,
+    ) -> str:
+        if precision is None:
+            precision = self.amt_precision_post_satoshi
+        if add_thousands_sep is None:
+            add_thousands_sep = self.amt_add_thousands_sep
         return format_satoshis(
-            x,
+            amount_sat,
             num_zeros=self.num_zeros,
             decimal_point=self.decimal_point,
             is_diff=is_diff,
             whitespaces=whitespaces,
-            precision=self.amt_precision_post_satoshi,
-            add_thousands_sep=self.amt_add_thousands_sep,
-        ) + suffix
+            precision=precision,
+            add_thousands_sep=add_thousands_sep,
+        )
 
-    def format_amount_and_units(self, amount):
-        suffix = ''
-        if isinstance(amount, NeuraiValue):
-            if amount.assets:
-                suffix = f' ({len(amount.assets)} asset' + ('s' if len(amount.assets) > 1 else '') + ')'
-            amount = amount.xna_value.value
-        return self.format_amount(amount) + ' ' + self.get_base_unit() + suffix
+    def format_amount_and_units(self, *args, **kwargs) -> str:
+        return self.format_amount(*args, **kwargs) + ' ' + self.get_base_unit()
 
     def format_fee_rate(self, fee_rate):
         return format_fee_satoshis(fee_rate/1000, num_zeros=self.num_zeros) + ' sat/byte'
@@ -709,15 +798,193 @@ class SimpleConfig(Logger):
         return decimal_point_to_base_unit_name(self.decimal_point)
 
     def set_base_unit(self, unit):
-        assert unit in base_units.keys()
+        assert unit in base_units().keys()
         self.decimal_point = base_unit_name_to_decimal_point(unit)
-        self.set_key('decimal_point', self.decimal_point, True)
+        self.BTC_AMOUNTS_DECIMAL_POINT = self.decimal_point
 
     def get_decimal_point(self):
         return self.decimal_point
 
+    @cached_property
+    def cv(config):
+        """Allows getting a reference to a config variable without dereferencing it.
 
-def read_user_config(path):
+        Compare:
+        >>> config.NETWORK_SERVER
+        'testnet.hsmiths.com:53012:s'
+        >>> config.cv.NETWORK_SERVER
+        <ConfigVarWithConfig key='server'>
+        """
+        class CVLookupHelper:
+            def __getattribute__(self, name: str) -> ConfigVarWithConfig:
+                config_var = config.__class__.__getattribute__(type(config), name)
+                if not isinstance(config_var, ConfigVar):
+                    raise AttributeError()
+                return ConfigVarWithConfig(config=config, config_var=config_var)
+            def __setattr__(self, name, value):
+                raise Exception(
+                    f"Cannot assign value to config.cv.{name} directly. "
+                    f"Either use config.cv.{name}.set() or assign to config.{name} instead.")
+        return CVLookupHelper()
+
+    def get_swapserver_url(self):
+        if constants.net == constants.BitcoinMainnet:
+            default = 'https://swaps.electrum.org/api'
+        elif constants.net == constants.BitcoinTestnet:
+            default = 'https://swaps.electrum.org/testnet'
+        else:
+            default = 'http://localhost:5455'
+        return self.SWAPSERVER_URL or default
+
+    # config variables ----->
+    NETWORK_AUTO_CONNECT = ConfigVar('auto_connect', default=True, type_=bool)
+    NETWORK_ONESERVER = ConfigVar('oneserver', default=False, type_=bool)
+    NETWORK_PROXY = ConfigVar('proxy', default=None)
+    NETWORK_SERVER = ConfigVar('server', default=None, type_=str)
+    NETWORK_NOONION = ConfigVar('noonion', default=False, type_=bool)
+    NETWORK_OFFLINE = ConfigVar('offline', default=False, type_=bool)
+    NETWORK_SKIPMERKLECHECK = ConfigVar('skipmerklecheck', default=False, type_=bool)
+    NETWORK_SERVERFINGERPRINT = ConfigVar('serverfingerprint', default=None, type_=str)
+    NETWORK_MAX_INCOMING_MSG_SIZE = ConfigVar('network_max_incoming_msg_size', default=1_000_000, type_=int)  # in bytes
+    NETWORK_TIMEOUT = ConfigVar('network_timeout', default=None, type_=int)
+
+    WALLET_BATCH_RBF = ConfigVar('batch_rbf', default=False, type_=bool)
+    WALLET_SPEND_CONFIRMED_ONLY = ConfigVar('confirmed_only', default=False, type_=bool)
+    WALLET_COIN_CHOOSER_POLICY = ConfigVar('coin_chooser', default='Privacy', type_=str)
+    WALLET_COIN_CHOOSER_OUTPUT_ROUNDING = ConfigVar('coin_chooser_output_rounding', default=True, type_=bool)
+    WALLET_UNCONF_UTXO_FREEZE_THRESHOLD_SAT = ConfigVar('unconf_utxo_freeze_threshold', default=5_000, type_=int)
+    WALLET_BIP21_LIGHTNING = ConfigVar('bip21_lightning', default=False, type_=bool)
+    WALLET_BOLT11_FALLBACK = ConfigVar('bolt11_fallback', default=True, type_=bool)
+    WALLET_PAYREQ_EXPIRY_SECONDS = ConfigVar('request_expiry', default=invoices.PR_DEFAULT_EXPIRATION_WHEN_CREATING, type_=int)
+    WALLET_USE_SINGLE_PASSWORD = ConfigVar('single_password', default=False, type_=bool)
+    # note: 'use_change' and 'multiple_change' are per-wallet settings
+
+    FX_USE_EXCHANGE_RATE = ConfigVar('use_exchange_rate', default=False, type_=bool)
+    FX_CURRENCY = ConfigVar('currency', default='EUR', type_=str)
+    FX_EXCHANGE = ConfigVar('use_exchange', default='CoinGecko', type_=str)  # default exchange should ideally provide historical rates
+    FX_HISTORY_RATES = ConfigVar('history_rates', default=False, type_=bool)
+    FX_HISTORY_RATES_CAPITAL_GAINS = ConfigVar('history_rates_capital_gains', default=False, type_=bool)
+    FX_SHOW_FIAT_BALANCE_FOR_ADDRESSES = ConfigVar('fiat_address', default=False, type_=bool)
+
+    LIGHTNING_LISTEN = ConfigVar('lightning_listen', default=None, type_=str)
+    LIGHTNING_PEERS = ConfigVar('lightning_peers', default=None)
+    LIGHTNING_USE_GOSSIP = ConfigVar('use_gossip', default=False, type_=bool)
+    LIGHTNING_USE_RECOVERABLE_CHANNELS = ConfigVar('use_recoverable_channels', default=True, type_=bool)
+    LIGHTNING_ALLOW_INSTANT_SWAPS = ConfigVar('allow_instant_swaps', default=False, type_=bool)
+    LIGHTNING_TO_SELF_DELAY_CSV = ConfigVar('lightning_to_self_delay', default=7 * 144, type_=int)
+    LIGHTNING_MAX_FUNDING_SAT = ConfigVar('lightning_max_funding_sat', default=LN_MAX_FUNDING_SAT_LEGACY, type_=int)
+    LIGHTNING_LEGACY_ADD_TRAMPOLINE = ConfigVar('lightning_legacy_add_trampoline', default=False, type_=bool)
+
+    EXPERIMENTAL_LN_FORWARD_PAYMENTS = ConfigVar('lightning_forward_payments', default=False, type_=bool)
+    EXPERIMENTAL_LN_FORWARD_TRAMPOLINE_PAYMENTS = ConfigVar('lightning_forward_trampoline_payments', default=False, type_=bool)
+    TEST_FAIL_HTLCS_WITH_TEMP_NODE_FAILURE = ConfigVar('test_fail_htlcs_with_temp_node_failure', default=False, type_=bool)
+    TEST_FAIL_HTLCS_AS_MALFORMED = ConfigVar('test_fail_malformed_htlc', default=False, type_=bool)
+    TEST_FORCE_MPP = ConfigVar('test_force_mpp', default=False, type_=bool)
+    TEST_FORCE_DISABLE_MPP = ConfigVar('test_force_disable_mpp', default=False, type_=bool)
+    TEST_SHUTDOWN_FEE = ConfigVar('test_shutdown_fee', default=None, type_=int)
+    TEST_SHUTDOWN_FEE_RANGE = ConfigVar('test_shutdown_fee_range', default=None)
+    TEST_SHUTDOWN_LEGACY = ConfigVar('test_shutdown_legacy', default=False, type_=bool)
+
+    FEE_EST_DYNAMIC = ConfigVar('dynamic_fees', default=True, type_=bool)
+    FEE_EST_USE_MEMPOOL = ConfigVar('mempool_fees', default=False, type_=bool)
+    FEE_EST_STATIC_FEERATE_FALLBACK = ConfigVar('fee_per_kb', default=FEERATE_FALLBACK_STATIC_FEE, type_=int)
+    FEE_EST_DYNAMIC_ETA_SLIDERPOS = ConfigVar('fee_level', default=2, type_=int)
+    FEE_EST_DYNAMIC_MEMPOOL_SLIDERPOS = ConfigVar('depth_level', default=2, type_=int)
+
+    RPC_USERNAME = ConfigVar('rpcuser', default=None, type_=str)
+    RPC_PASSWORD = ConfigVar('rpcpassword', default=None, type_=str)
+    RPC_HOST = ConfigVar('rpchost', default='127.0.0.1', type_=str)
+    RPC_PORT = ConfigVar('rpcport', default=0, type_=int)
+    RPC_SOCKET_TYPE = ConfigVar('rpcsock', default='auto', type_=str)
+    RPC_SOCKET_FILEPATH = ConfigVar('rpcsockpath', default=None, type_=str)
+
+    GUI_NAME = ConfigVar('gui', default='qt', type_=str)
+    GUI_LAST_WALLET = ConfigVar('gui_last_wallet', default=None, type_=str)
+
+    GUI_QT_COLOR_THEME = ConfigVar('qt_gui_color_theme', default='default', type_=str)
+    GUI_QT_DARK_TRAY_ICON = ConfigVar('dark_icon', default=False, type_=bool)
+    GUI_QT_WINDOW_IS_MAXIMIZED = ConfigVar('is_maximized', default=False, type_=bool)
+    GUI_QT_HIDE_ON_STARTUP = ConfigVar('hide_gui', default=False, type_=bool)
+    GUI_QT_HISTORY_TAB_SHOW_TOOLBAR = ConfigVar('show_toolbar_history', default=False, type_=bool)
+    GUI_QT_ADDRESSES_TAB_SHOW_TOOLBAR = ConfigVar('show_toolbar_addresses', default=False, type_=bool)
+    GUI_QT_TX_DIALOG_FETCH_TXIN_DATA = ConfigVar('tx_dialog_fetch_txin_data', default=False, type_=bool)
+    GUI_QT_TX_DIALOG_SHOW_ALL_DATA = ConfigVar('tx_dialog_show_all_data', default=False, type_=bool)
+    GUI_QT_RECEIVE_TABS_INDEX = ConfigVar('receive_tabs_index', default=0, type_=int)
+    GUI_QT_RECEIVE_TAB_QR_VISIBLE = ConfigVar('receive_qr_visible', default=False, type_=bool)
+    GUI_QT_TX_EDITOR_SHOW_IO = ConfigVar('show_tx_io', default=False, type_=bool)
+    GUI_QT_TX_EDITOR_SHOW_FEE_DETAILS = ConfigVar('show_tx_fee_details', default=False, type_=bool)
+    GUI_QT_TX_EDITOR_SHOW_LOCKTIME = ConfigVar('show_tx_locktime', default=False, type_=bool)
+    GUI_QT_SHOW_TAB_ADDRESSES = ConfigVar('show_addresses_tab', default=False, type_=bool)
+    GUI_QT_SHOW_TAB_CHANNELS = ConfigVar('show_channels_tab', default=False, type_=bool)
+    GUI_QT_SHOW_TAB_UTXO = ConfigVar('show_utxo_tab', default=False, type_=bool)
+    GUI_QT_SHOW_TAB_CONTACTS = ConfigVar('show_contacts_tab', default=False, type_=bool)
+    GUI_QT_SHOW_TAB_CONSOLE = ConfigVar('show_console_tab', default=False, type_=bool)
+    GUI_QT_SHOW_TAB_BROADCASTS = ConfigVar('show_broadcasts_tab', default=True, type_=bool)
+    GUI_QT_SHOW_TAB_ATOMIC_SWAPS = ConfigVar('show_atomic_swap_tab', default=True, type_=bool)
+
+    GUI_QML_PREFERRED_REQUEST_TYPE = ConfigVar('preferred_request_type', default='bolt11', type_=str)
+    GUI_QML_USER_KNOWS_PRESS_AND_HOLD = ConfigVar('user_knows_press_and_hold', default=False, type_=bool)
+
+    BTC_AMOUNTS_DECIMAL_POINT = ConfigVar('decimal_point', default=DECIMAL_POINT_DEFAULT, type_=int)
+    BTC_AMOUNTS_FORCE_NZEROS_AFTER_DECIMAL_POINT = ConfigVar('num_zeros', default=1, type_=int)
+    BTC_AMOUNTS_PREC_POST_SAT = ConfigVar('amt_precision_post_satoshi', default=0, type_=int)
+    BTC_AMOUNTS_ADD_THOUSANDS_SEP = ConfigVar('amt_add_thousands_sep', default=False, type_=bool)
+
+    BLOCK_EXPLORER = ConfigVar('block_explorer', default='rvn.cryptoscope.io', type_=str)
+    BLOCK_EXPLORER_CUSTOM = ConfigVar('block_explorer_custom', default=None)
+    IPFS_EXPLORER = ConfigVar('ipfs_explorer', default='ipfs.chaintek.net', type_=str)
+    IPFS_EXPLORER_CUSTOM = ConfigVar('ipfs_explorer_custom', default=None)
+    VIDEO_DEVICE_PATH = ConfigVar('video_device', default='default', type_=str)
+    OPENALIAS_ID = ConfigVar('alias', default="", type_=str)
+    HWD_SESSION_TIMEOUT = ConfigVar('session_timeout', default=300, type_=int)
+    CLI_TIMEOUT = ConfigVar('timeout', default=60, type_=float)
+    AUTOMATIC_CENTRALIZED_UPDATE_CHECKS = ConfigVar('check_updates', default=False, type_=bool)
+    WRITE_LOGS_TO_DISK = ConfigVar('log_to_file', default=False, type_=bool)
+    GUI_ENABLE_DEBUG_LOGS = ConfigVar('gui_enable_debug_logs', default=False, type_=bool)
+    LOCALIZATION_LANGUAGE = ConfigVar('language', default="", type_=str)
+    BLOCKCHAIN_PREFERRED_BLOCK = ConfigVar('blockchain_preferred_block', default=None)
+    SHOW_CRASH_REPORTER = ConfigVar('show_crash_reporter', default=True, type_=bool)
+    DONT_SHOW_TESTNET_WARNING = ConfigVar('dont_show_testnet_warning', default=False, type_=bool)
+    DONT_SHOW_INTERNET_WARNING = ConfigVar('dont_show_internet_warning', default=False, type_=bool)
+    RECENTLY_OPEN_WALLET_FILES = ConfigVar('recently_open', default=None)
+    IO_DIRECTORY = ConfigVar('io_dir', default=os.path.expanduser('~'), type_=str)
+    WALLET_BACKUP_DIRECTORY = ConfigVar('backup_dir', default=None, type_=str)
+    CONFIG_PIN_CODE = ConfigVar('pin_code', default=None, type_=str)
+    QR_READER_FLIP_X = ConfigVar('qrreader_flip_x', default=True, type_=bool)
+    WIZARD_DONT_CREATE_SEGWIT = ConfigVar('nosegwit', default=True, type_=bool) # no segwit for RVN
+    CONFIG_FORGET_CHANGES = ConfigVar('forget_config', default=False, type_=bool)
+
+    # submarine swap server
+    SWAPSERVER_URL = ConfigVar('swapserver_url', default='', type_=str)
+    SWAPSERVER_PORT = ConfigVar('swapserver_port', default=5455, type_=int)
+    TEST_SWAPSERVER_REFUND = ConfigVar('test_swapserver_refund', default=False, type_=bool)
+
+    # connect to remote WT
+    WATCHTOWER_CLIENT_ENABLED = ConfigVar('use_watchtower', default=False, type_=bool)
+    WATCHTOWER_CLIENT_URL = ConfigVar('watchtower_url', default=None, type_=str)
+
+    # run WT locally
+    WATCHTOWER_SERVER_ENABLED = ConfigVar('run_watchtower', default=False, type_=bool)
+    WATCHTOWER_SERVER_PORT = ConfigVar('watchtower_port', default=None, type_=int)
+    WATCHTOWER_SERVER_USER = ConfigVar('watchtower_user', default=None, type_=str)
+    WATCHTOWER_SERVER_PASSWORD = ConfigVar('watchtower_password', default=None, type_=str)
+
+    PAYSERVER_PORT = ConfigVar('payserver_port', default=8080, type_=int)
+    PAYSERVER_ROOT = ConfigVar('payserver_root', default='/r', type_=str)
+    PAYSERVER_ALLOW_CREATE_INVOICE = ConfigVar('payserver_allow_create_invoice', default=False, type_=bool)
+
+    PLUGIN_TRUSTEDCOIN_NUM_PREPAY = ConfigVar('trustedcoin_prepay', default=20, type_=int)
+
+    DOWNLOAD_IPFS = ConfigVar('download_ipfs_preview', default=False, type_=bool)
+    MAX_IPFS_DOWNLOAD_SIZE = ConfigVar('download_ipfs_max_size', default=10_000_000, type_=int)
+    SHOW_IPFS = ConfigVar('show_ipfs_preview', default=False, type_=bool)
+    SHOW_CREATE_ASSET_PAY_TO = ConfigVar('show_create_asset_pay_to', default=False, type_=bool)
+    SHOW_REISSUABLE_WARNING = ConfigVar('show_reissuable_warning', default=True, type_=bool)
+    HANDLE_UNCONFIRMED_METADATA = ConfigVar('handle_unconfirmed_metadata', default=True, type_=bool)
+    SHOW_METADATA_SOURCE = ConfigVar('show_metadata_source', default=False, type_=bool)
+    ROUND_ROBIN_ALL_KNOWN_IPFS_GATEWAYS = ConfigVar('round_robin_ipfs', default=True, type_=bool)
+
+def read_user_config(path: Optional[str]) -> Dict[str, Any]:
     """Parse and store the user config settings in electrum.conf into user_config[]."""
     if not path:
         return {}
@@ -728,8 +995,8 @@ def read_user_config(path):
         with open(config_path, "r", encoding='utf-8') as f:
             data = f.read()
         result = json.loads(data)
-    except:
-        _logger.warning(f"Cannot read config file. {config_path}")
+    except Exception as exc:
+        _logger.warning(f"Cannot read config file at {config_path}: {exc}")
         return {}
     if not type(result) is dict:
         return {}

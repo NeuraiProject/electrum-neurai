@@ -31,12 +31,12 @@ from PyQt5.QtWidgets import (QWidget, QLabel, QPushButton, QTextEdit,
                              QMessageBox, QHBoxLayout, QVBoxLayout)
 
 from electrum.i18n import _
-from electrum.base_crash_reporter import BaseCrashReporter, EarlyExceptionsQueue
+from electrum.base_crash_reporter import BaseCrashReporter, EarlyExceptionsQueue, CrashReportResponse
 from electrum.logging import Logger
 from electrum import constants
 from electrum.network import Network
 
-from .util import MessageBoxMixin, read_QIcon, WaitingDialog
+from .util import MessageBoxMixin, read_QIcon, WaitingDialog, font_height
 
 if TYPE_CHECKING:
     from electrum.simple_config import SimpleConfig
@@ -76,22 +76,22 @@ class Exception_Window(BaseCrashReporter, QWidget, MessageBoxMixin, Logger):
         main_box.addWidget(QLabel(BaseCrashReporter.DESCRIBE_ERROR_MESSAGE))
 
         self.description_textfield = QTextEdit()
-        self.description_textfield.setFixedHeight(50)
+        self.description_textfield.setFixedHeight(4 * font_height())
         self.description_textfield.setPlaceholderText(self.USER_COMMENT_PLACEHOLDER)
         main_box.addWidget(self.description_textfield)
 
-        # main_box.addWidget(QLabel(BaseCrashReporter.ASK_CONFIRM_SEND))
+        main_box.addWidget(QLabel(BaseCrashReporter.ASK_CONFIRM_SEND))
 
         buttons = QHBoxLayout()
 
-        # report_button = QPushButton(_('Send Bug Report'))
-        # report_button.clicked.connect(self.send_report)
-        # report_button.setIcon(read_QIcon("tab_send.png"))
-        # buttons.addWidget(report_button)
+        report_button = QPushButton(_('Send Bug Report'))
+        report_button.clicked.connect(self.send_report)
+        report_button.setIcon(read_QIcon("tab_send.png"))
+        buttons.addWidget(report_button)
 
-        # never_button = QPushButton(_('Never'))
-        # never_button.clicked.connect(self.show_never)
-        # buttons.addWidget(never_button)
+        never_button = QPushButton(_('Never'))
+        never_button.clicked.connect(self.show_never)
+        buttons.addWidget(never_button)
 
         close_button = QPushButton(_('Not Now'))
         close_button.clicked.connect(self.close)
@@ -103,12 +103,13 @@ class Exception_Window(BaseCrashReporter, QWidget, MessageBoxMixin, Logger):
         self.show()
 
     def send_report(self):
-        def on_success(response):
-            # note: 'response' coming from (remote) crash reporter server.
-            # It contains a URL to the GitHub issue, so we allow rich text.
+        def on_success(response: CrashReportResponse):
+            text = response.text
+            if response.url:
+                text += f" You can track further progress on <a href='{response.url}'>GitHub</a>."
             self.show_message(parent=self,
                               title=_("Crash report"),
-                              msg=response,
+                              msg=text,
                               rich_text=True)
             self.close()
         def on_failure(exc_info):
@@ -131,7 +132,7 @@ class Exception_Window(BaseCrashReporter, QWidget, MessageBoxMixin, Logger):
         self.close()
 
     def show_never(self):
-        self.config.set_key(BaseCrashReporter.config_key, False)
+        self.config.SHOW_CRASH_REPORTER = False
         self.close()
 
     def closeEvent(self, event):
@@ -176,7 +177,7 @@ class Exception_Hook(QObject, Logger):
 
     @classmethod
     def maybe_setup(cls, *, config: 'SimpleConfig', wallet: 'Abstract_Wallet' = None) -> None:
-        if not config.get(BaseCrashReporter.config_key, default=True):
+        if not config.SHOW_CRASH_REPORTER:
             EarlyExceptionsQueue.set_hook_as_ready()  # flush already queued exceptions
             return
         if not cls._INSTANCE:

@@ -88,11 +88,11 @@ def base_units_list():
     from . import constants
     return [constants.net.SHORT_NAME]
 
-#base_units = {'RVN':8} #, 'mBTC':5, 'bits':2, 'sat':0}
+#base_units = {'XNA':8} #, 'mBTC':5, 'bits':2, 'sat':0}
 #base_units_inverse = inv_dict(base_units)
-#base_units_list = ['RVN'] #, 'mBTC', 'bits', 'sat']  # list(dict) does not guarantee order
+#base_units_list = ['XNA'] #, 'mBTC', 'bits', 'sat']  # list(dict) does not guarantee order
 
-DECIMAL_POINT_DEFAULT = 8  # RVN
+DECIMAL_POINT_DEFAULT = 8  # XNA
 
 
 class UnknownBaseUnit(Exception): pass
@@ -637,11 +637,11 @@ def user_dir():
     elif 'ANDROID_DATA' in os.environ:
         return android_data_dir()
     elif os.name == 'posix':
-        return os.path.join(os.environ["HOME"], ".electrum-ravencoin")
+        return os.path.join(os.environ["HOME"], ".electrum-neurai")
     elif "APPDATA" in os.environ:
-        return os.path.join(os.environ["APPDATA"], "Electrum-Ravencoin")
+        return os.path.join(os.environ["APPDATA"], "Electrum-Neurai")
     elif "LOCALAPPDATA" in os.environ:
-        return os.path.join(os.environ["LOCALAPPDATA"], "Electrum-Ravencoin")
+        return os.path.join(os.environ["LOCALAPPDATA"], "Electrum-Neurai")
     else:
         #raise Exception("No home directory found in environment variables.")
         return
@@ -926,17 +926,11 @@ def age(
             return _("in over {} years").format(round(distance_in_minutes / 525600))
 
 mainnet_block_explorers = {
-    'rvn.cryptoscope.io': ('https://rvn.cryptoscope.io/',
+    'xna.cryptoscope.io': ('https://xna.cryptoscope.io/',
                         {'tx': 'tx/?txid=', 'addr': 'address/?address='}),
-    'ravencoin.network': ('https://ravencoin.network/',
-                        {'tx': 'tx/', 'addr': 'address/'}),
 }
 
 testnet_block_explorers = {
-    'rvn.cryptoscope.io': ('https://rvnt.cryptoscope.io/',
-                        {'tx': 'tx/?txid=', 'addr': 'address/?address='}),
-    'ravencoin.network': ('https://testnet.ravencoin.network/',
-                        {'tx': 'tx/', 'addr': 'address/'}),
 }
 
 _block_explorer_default_api_loc = {'tx': 'tx/', 'addr': 'address/'}

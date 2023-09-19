@@ -659,9 +659,18 @@ class Interface(Logger):
         assert_non_negative_integer(res['count'])
         assert_non_negative_integer(res['max'])
         assert_hex_str(res['hex'])
-        if height + size >= constants.net.KawpowActivationHeight and len(res['hex']) != HEADER_SIZE * 2 * res['count']:
+        if height < constants.net.KawpowActivationHeight and height + size >= constants.net.KawpowActivationHeight:
+            expected_size = 0
+            for i in range(size):
+                if height + i >= constants.net.KawpowActivationHeight:
+                    expected_size += HEADER_SIZE * 2
+                else:
+                    expected_size += LEGACY_HEADER_SIZE * 2
+            if len(res['hex']) != expected_size:
+                raise RequestCorrupted('inconsistent chunk hex and count (mixed)')
+        elif height + size >= constants.net.KawpowActivationHeight and len(res['hex']) != HEADER_SIZE * 2 * res['count']:
             raise RequestCorrupted('inconsistent chunk hex and count')
-        if height + size < constants.net.KawpowActivationHeight and len(res['hex']) != LEGACY_HEADER_SIZE * 2 * res['count']:
+        elif height + size < constants.net.KawpowActivationHeight and len(res['hex']) != LEGACY_HEADER_SIZE * 2 * res['count']:
             raise RequestCorrupted('inconsistent chunk hex and count (legacy)')
         # we never request more than 2016 headers, but we enforce those fit in a single response
         if res['max'] < 2016:

@@ -359,7 +359,7 @@ class Request(BaseInvoice):
         if lightning_invoice:
             extra['lightning'] = lightning_invoice
         if not addr and lightning_invoice:
-            return "raven:?lightning="+lightning_invoice
+            return "nuerai:?lightning="+lightning_invoice
         if not addr and not lightning_invoice:
             return None
         uri = create_bip21_uri(addr, amount, message, extra_query_params=extra)

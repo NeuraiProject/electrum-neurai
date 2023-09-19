@@ -16,25 +16,26 @@ from .json_db import StoredObject, stored_as
 
 from .util import ByteReader
 
-# https://github.com/RavenProject/Ravencoin/blob/master/src/assets/assets.cpp
+# https://github.com/RavenProject/Neurai/blob/master/src/assets/assets.cpp
 
 MAX_NAME_LENGTH = 32
 MAX_CHANNEL_NAME_LENGTH = 12
 MIN_ASSET_LENGTH = 3
 MAX_VERIFIER_STING_LENGTH = 0x4c - 1
+MAX_ASSET_DIVISIONS = 8
 
 DEFAULT_ASSET_AMOUNT_MAX = TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
 UNIQUE_ASSET_AMOUNT_MAX = 1
 QUALIFIER_ASSET_AMOUNT_MAX = 10
 
-RVN_ASSET_TYPE_CREATE = b'q'
-RVN_ASSET_TYPE_CREATE_INT = RVN_ASSET_TYPE_CREATE[0]
-RVN_ASSET_TYPE_OWNER = b'o'
-RVN_ASSET_TYPE_OWNER_INT = RVN_ASSET_TYPE_OWNER[0]
-RVN_ASSET_TYPE_TRANSFER = b't'
-RVN_ASSET_TYPE_TRANSFER_INT = RVN_ASSET_TYPE_TRANSFER[0]
-RVN_ASSET_TYPE_REISSUE = b'r'
-RVN_ASSET_TYPE_REISSUE_INT = RVN_ASSET_TYPE_REISSUE[0]
+XNA_ASSET_TYPE_CREATE = b'q'
+XNA_ASSET_TYPE_CREATE_INT = XNA_ASSET_TYPE_CREATE[0]
+XNA_ASSET_TYPE_OWNER = b'o'
+XNA_ASSET_TYPE_OWNER_INT = XNA_ASSET_TYPE_OWNER[0]
+XNA_ASSET_TYPE_TRANSFER = b't'
+XNA_ASSET_TYPE_TRANSFER_INT = XNA_ASSET_TYPE_TRANSFER[0]
+XNA_ASSET_TYPE_REISSUE = b'r'
+XNA_ASSET_TYPE_REISSUE_INT = XNA_ASSET_TYPE_REISSUE[0]
 
 ASSET_OWNER_IDENTIFIER = '!'
 
@@ -64,7 +65,7 @@ _QUALIFIER_INDICATOR = r'^[#][A-Z0-9._]{3,}$'
 _SUB_QUALIFIER_INDICATOR = r'^#[A-Z0-9._]+\/#[A-Z0-9._]+$'
 _RESTRICTED_INDICATOR = r'^[\$][A-Z0-9._]{3,}$'
 
-_BAD_NAMES = '^RVN$|^RAVEN$|^RAVENCOIN$|^RVNS$|^RAVENS$|^RAVENCOINS$|^#RVN$|^#RAVEN$|^#RAVENCOIN$|^#RVNS$|^#RAVENS$|^#RAVENCOINS$'
+_BAD_NAMES = '^XNA$|^RAVEN$|^RAVENCOIN$|^XNAS$|^RAVENS$|^RAVENCOINS$|^#XNA$|^#RAVEN$|^#RAVENCOIN$|^#XNAS$|^#RAVENS$|^#RAVENCOINS$'
 
 def _isMatchAny(symbol: str, badMatches: Sequence[str]) -> bool:
     return any((re.match(x, symbol) for x in badMatches))
@@ -219,7 +220,7 @@ def generate_create_script(address: str, asset: str, amount: int, divisions: int
     if associated_data and len(associated_data) != 34:
         raise AssetException('Bad data')
 
-    asset_data = (f'{constants.net.ASSET_PREFIX.hex()}{RVN_ASSET_TYPE_CREATE.hex()}'
+    asset_data = (f'{constants.net.ASSET_PREFIX.hex()}{XNA_ASSET_TYPE_CREATE.hex()}'
                   f'{int_to_hex(len(asset))}{asset.encode().hex()}'
                   f'{int_to_hex(amount, 8)}{int_to_hex(divisions)}'
                   f"{'01' if reissuable else '00'}{'01' if associated_data else '00'}"
@@ -238,7 +239,7 @@ def generate_reissue_script(address: str, asset: str, amount: int, divisions: in
     if associated_data and len(associated_data) != 34:
         raise AssetException('Bad data')
 
-    asset_data = (f'{constants.net.ASSET_PREFIX.hex()}{RVN_ASSET_TYPE_REISSUE.hex()}'
+    asset_data = (f'{constants.net.ASSET_PREFIX.hex()}{XNA_ASSET_TYPE_REISSUE.hex()}'
                   f'{int_to_hex(len(asset))}{asset.encode().hex()}'
                   f'{int_to_hex(amount, 8)}{int_to_hex(divisions)}'
                   f"{'01' if reissuable else '00'}"
@@ -257,14 +258,14 @@ def generate_owner_script_from_base(asset: str, base_script: str) -> 'str':
     if error := get_error_for_asset_name(asset):
         raise AssetException(f'Bad asset: {asset} {error}')
     
-    asset_data = (f'{constants.net.ASSET_PREFIX.hex()}{RVN_ASSET_TYPE_OWNER.hex()}'
+    asset_data = (f'{constants.net.ASSET_PREFIX.hex()}{XNA_ASSET_TYPE_OWNER.hex()}'
                   f'{int_to_hex(len(asset))}{asset.encode().hex()}')
     
     asset_script = construct_script([opcodes.OP_ASSET, asset_data, opcodes.OP_DROP])
     return base_script + asset_script
 
 def _asset_portion_of_transfer_script(asset: str, amount: int, *, memo: 'AssetMemo' = None) -> str:
-    asset_data = (f'{constants.net.ASSET_PREFIX.hex()}{RVN_ASSET_TYPE_TRANSFER.hex()}'
+    asset_data = (f'{constants.net.ASSET_PREFIX.hex()}{XNA_ASSET_TYPE_TRANSFER.hex()}'
                   f'{int_to_hex(len(asset))}{asset.encode().hex()}'
                   f'{int_to_hex(amount, 8)}{memo.hex() if memo else ""}')
     asset_script = construct_script([opcodes.OP_ASSET, asset_data, opcodes.OP_DROP])
@@ -484,13 +485,13 @@ def get_asset_info_from_script(script: bytes) -> BaseAssetVoutInformation:
                     if len(asset_portion) < len(constants.net.ASSET_PREFIX) + 3: break
                     reader = ByteReader(asset_portion[asset_prefix_position + len(constants.net.ASSET_PREFIX):])
                     vout_type = reader.read_bytes(1)
-                    if vout_type == RVN_ASSET_TYPE_CREATE:
+                    if vout_type == XNA_ASSET_TYPE_CREATE:
                         asset_vout_type = AssetVoutType.CREATE
-                    elif vout_type == RVN_ASSET_TYPE_OWNER:
+                    elif vout_type == XNA_ASSET_TYPE_OWNER:
                         asset_vout_type = AssetVoutType.OWNER
-                    elif vout_type == RVN_ASSET_TYPE_TRANSFER:
+                    elif vout_type == XNA_ASSET_TYPE_TRANSFER:
                         asset_vout_type = AssetVoutType.TRANSFER
-                    elif vout_type == RVN_ASSET_TYPE_REISSUE:
+                    elif vout_type == XNA_ASSET_TYPE_REISSUE:
                         asset_vout_type = AssetVoutType.REISSUE
                     else: break
 

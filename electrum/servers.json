@@ -1,21 +1,39 @@
 {
-    "rvn4lyfe.com": {
-      "pruning": "-",
-      "s": "50002",
-      "t": "50001",
-      "version": "1.11"
-    },
-    "aq7vuqykup2voklcrpqljf6jnjkzrouowsjfrmybdou5kdhrpr6sjjid.onion": {
-      "pruning": "-",
-      "s": "50002",
-      "t": "50001",
-      "version": "1.11"
-    },
-    "162.19.153.65": {
-      "pruning": "-",
-      "s": "50002",
-      "t": "50001",
-      "version": "1.11"
-    }
+  "electrumx1.neurai.org": {
+    "pruning": "-",
+    "s": "19012",
+    "t": "19011",
+    "version": "1.0"
+  },
+  "electrumx2.neurai.org": {
+    "pruning": "-",
+    "s": "19012",
+    "t": "19011",
+    "version": "1.0"
+  },
+  "electrumx3.neurai.org": {
+    "pruning": "-",
+    "s": "19012",
+    "t": "19011",
+    "version": "1.0"
+  },
+  "electrumx4.neurai.org": {
+    "pruning": "-",
+    "s": "19012",
+    "t": "19011",
+    "version": "1.0"
+  },
+  "electrumx.neuraiexplorer.com": {
+    "pruning": "-",
+    "s": "19012",
+    "t": "19011",
+    "version": "1.0"
+  },
+  "electrumx2.neuraiexplorer.com": {
+    "pruning": "-",
+    "s": "19012",
+    "t": "19011",
+    "version": "1.0"
   }
-  
+
+}

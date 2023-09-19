@@ -3,20 +3,20 @@
 <component type="desktop-application">
   <id>org.electrum.electrum</id>
 
-  <name>Electrum-Ravencoin</name>
-  <summary>Ravencoin Wallet</summary>
+  <name>Electrum-Neurai</name>
+  <summary>Neurai Wallet</summary>
 
   <metadata_license>MIT</metadata_license>
   <project_license>MIT</project_license>
 
   <description>
     <p>
-      Electrum is a lightweight Bitcoin wallet focused is speed, with low resource usage and simplifying Bitcoin.
+      Electrum is a lightweight Neurai wallet focused is speed, with low resource usage and simplifying Neurai.
       Startup times are instant because it operates in conjunction with high-performance servers that handle the most complicated parts of the Bitcoin system.
     </p>
   </description>
 
-  <launchable type="desktop-id">electrum-ravencoin.desktop</launchable>
+  <launchable type="desktop-id">electrum-neurai.desktop</launchable>
 
   <content_rating type="oars-1.1" />
 </component>

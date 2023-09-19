@@ -827,7 +827,7 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
         channel_id = tx_item.get('channel_id')
         if channel_id and self.wallet.lnworker and (chan := self.wallet.lnworker.get_channel_by_id(bytes.fromhex(channel_id))):
             menu.addAction(_("View Channel"), lambda: self.main_window.show_channel_details(chan))
-        # RVN cannot replace mempool conflicts
+        # XNA cannot replace mempool conflicts
         #if is_unconfirmed and tx:
         #    if tx_details.can_bump:
         #        menu.addAction(_("Increase fee"), lambda: self.main_window.bump_fee_dialog(tx))

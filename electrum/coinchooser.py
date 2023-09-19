@@ -142,7 +142,7 @@ class CoinChooserBase(Logger):
         def make_Bucket(desc: str, coins: List[PartialTxInput]):
             witness = any(coin.is_segwit(guess_for_address=True) for coin in coins)
 
-            # For RVN: No witnesses
+            # For XNA: No witnesses
             witness = False
 
             # note that we're guessing whether the tx uses segwit based
@@ -182,7 +182,7 @@ class CoinChooserBase(Logger):
         raise NotImplementedError
 
     def _change_amounts(self, tx: PartialTransaction, count: int, fee_estimator_numchange) -> List[Tuple[Optional[str], int]]:
-        # TODO RVN: Just use one change addr per asset for now
+        # TODO XNA: Just use one change addr per asset for now
         output_counts = defaultdict(int)
         change_amounts = []
 
@@ -202,7 +202,7 @@ class CoinChooserBase(Logger):
         addrs_left = count - len(keys)
         assert addrs_left > 0
 
-        # RVN starts here
+        # XNA starts here
 
         # Break change up if bigger than max_change
         output_amounts = [o.value for o in tx.outputs() if o.asset is None]
@@ -344,7 +344,7 @@ class CoinChooserBase(Logger):
         assert outputs, 'tx outputs cannot be empty'
 
         needed_assets = {output.asset for output in outputs}
-        needed_assets.add(None)  # We always need RVN
+        needed_assets.add(None)  # We always need XNA
 
         # Filter out un-needed coins
         coins = [c for c in coins if c.asset in needed_assets]

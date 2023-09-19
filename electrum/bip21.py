@@ -9,7 +9,7 @@ from .bitcoin import COIN, TOTAL_COIN_SUPPLY_LIMIT_IN_BTC
 from .lnaddr import lndecode, LnDecodeException
 
 # note: when checking against these, use .lower() to support case-insensitivity
-BITCOIN_BIP21_URI_SCHEME = 'raven'
+BITCOIN_BIP21_URI_SCHEME = 'neurai'
 LIGHTNING_URI_SCHEME = 'not_implemented_lightning'
 
 

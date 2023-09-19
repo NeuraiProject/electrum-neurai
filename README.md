@@ -1,4 +1,4 @@
-# Electrum Ravencoin - Lightweight Ravencoin client
+# Electrum Neurai - Lightweight Neurai client
 
 ```
 Licence: MIT Licence
@@ -14,16 +14,16 @@ Homepage: https://electrum.org/
 
 ## Run your own server!
 
-https://github.com/Electrum-RVN-SIG/electrumx-ravencoin
+https://github.com/NeuraiProject/electrumx-neurai
 
 ## Need help?
 
-Find @kralverde on [discord](https://discord.com/invite/jn6uhur).
+Check out [discord](https://discord.gg/dxJSrSeXjF).
 
 ## Getting started
 
 _(If you've come here looking to simply run Electrum,
-[you may download it here](https://github.com/Electrum-RVN-SIG/electrum-ravencoin/releases/latest).)_
+[you may download it here](https://github.com/NeuraiProject/electrum-neurai/releases/latest).)_
 
 Electrum itself is pure Python, and so are most of the required dependencies,
 but not everything. The following sections describe how to run from source, but here

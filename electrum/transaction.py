@@ -125,13 +125,22 @@ class Sighash(IntEnum):
 
 class TxOutput:
     scriptpubkey: bytes
-    value: Union[int, str]
+    _value: Union[int, str]
 
     def __init__(self, *, scriptpubkey: bytes, value: Union[int, str]):
         self.scriptpubkey = scriptpubkey
         if not (isinstance(value, int) or parse_max_spend(value) is not None):
             raise ValueError(f"bad txout value: {value!r}")
         self.value = value  # int in satoshis; or spend-max-like str
+
+    @property
+    def value(self):
+        return self._value
+
+    @value.setter
+    def value(self, value: Union[int, str]):
+        self._asset_value = _NEEDS_RECALC
+        self._value = value
 
     @property
     def asset(self):

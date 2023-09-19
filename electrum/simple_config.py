@@ -860,7 +860,7 @@ class SimpleConfig(Logger):
     # note: 'use_change' and 'multiple_change' are per-wallet settings
 
     FX_USE_EXCHANGE_RATE = ConfigVar('use_exchange_rate', default=False, type_=bool)
-    FX_CURRENCY = ConfigVar('currency', default='EUR', type_=str)
+    FX_CURRENCY = ConfigVar('currency', default='BTC', type_=str)
     FX_EXCHANGE = ConfigVar('use_exchange', default='CoinGecko', type_=str)  # default exchange should ideally provide historical rates
     FX_HISTORY_RATES = ConfigVar('history_rates', default=False, type_=bool)
     FX_HISTORY_RATES_CAPITAL_GAINS = ConfigVar('history_rates_capital_gains', default=False, type_=bool)
@@ -930,7 +930,7 @@ class SimpleConfig(Logger):
     BTC_AMOUNTS_PREC_POST_SAT = ConfigVar('amt_precision_post_satoshi', default=0, type_=int)
     BTC_AMOUNTS_ADD_THOUSANDS_SEP = ConfigVar('amt_add_thousands_sep', default=False, type_=bool)
 
-    BLOCK_EXPLORER = ConfigVar('block_explorer', default='rvn.cryptoscope.io', type_=str)
+    BLOCK_EXPLORER = ConfigVar('block_explorer', default='xna.cryptoscope.io', type_=str)
     BLOCK_EXPLORER_CUSTOM = ConfigVar('block_explorer_custom', default=None)
     IPFS_EXPLORER = ConfigVar('ipfs_explorer', default='ipfs.chaintek.net', type_=str)
     IPFS_EXPLORER_CUSTOM = ConfigVar('ipfs_explorer_custom', default=None)
@@ -951,7 +951,7 @@ class SimpleConfig(Logger):
     WALLET_BACKUP_DIRECTORY = ConfigVar('backup_dir', default=None, type_=str)
     CONFIG_PIN_CODE = ConfigVar('pin_code', default=None, type_=str)
     QR_READER_FLIP_X = ConfigVar('qrreader_flip_x', default=True, type_=bool)
-    WIZARD_DONT_CREATE_SEGWIT = ConfigVar('nosegwit', default=True, type_=bool) # no segwit for RVN
+    WIZARD_DONT_CREATE_SEGWIT = ConfigVar('nosegwit', default=True, type_=bool) # no segwit for XNA
     CONFIG_FORGET_CHANGES = ConfigVar('forget_config', default=False, type_=bool)
 
     # submarine swap server

@@ -41,7 +41,7 @@ class CrashReportResponse(NamedTuple):
 
 
 class BaseCrashReporter(Logger):
-    report_server = "https://crashhub.rvn4lyfe.com"
+    report_server = "https://crashhub.xna4lyfe.com"
     issue_template = """<h2>Traceback</h2>
 <pre>
 {traceback}
@@ -71,7 +71,7 @@ class BaseCrashReporter(Logger):
 
     def send_report(self, asyncio_loop, proxy, *, timeout=None) -> CrashReportResponse:
         # FIXME the caller needs to catch generic "Exception", as this method does not have a well-defined API...
-        if constants.net.GENESIS[-4:] not in ["df90", "ad5a"] and ".rvn4lyfe.com" in BaseCrashReporter.report_server:
+        if constants.net.GENESIS[-4:] not in ["df90", "ad5a"] and ".xna4lyfe.com" in BaseCrashReporter.report_server:
             # Gah! Some kind of altcoin wants to send us crash reports.
             raise Exception(_("Missing report URL."))
         report = self.get_traceback_info()

@@ -6,9 +6,9 @@
 ;--------------------------------
 ;Variables
 
-  !define PRODUCT_NAME "Electrum Ravencoin"
-  !define PRODUCT_WEB_SITE "https://github.com/Electrum-RVN-SIG/electrum-ravencoin"
-  !define PRODUCT_PUBLISHER "The Ravencoin Community"
+  !define PRODUCT_NAME "Electrum Neurai"
+  !define PRODUCT_WEB_SITE "https://github.com/NeuraiProject/electrum-neurai"
+  !define PRODUCT_PUBLISHER "The Neurai Community"
   !define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
 
 ;--------------------------------
@@ -16,7 +16,7 @@
 
   ;Name and file
   Name "${PRODUCT_NAME}"
-  OutFile "dist/electrum-ravencoin-setup.exe"
+  OutFile "dist/electrum-neurai-setup.exe"
 
   ;Default installation folder
   InstallDir "$PROGRAMFILES\${PRODUCT_NAME}"
@@ -122,25 +122,25 @@ Section
 
   ;Create desktop shortcut
   DetailPrint "Creating desktop shortcut..."
-  CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\electrum-ravencoin-${PRODUCT_VERSION}.exe" ""
+  CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\electrum-neurai-${PRODUCT_VERSION}.exe" ""
 
   ;Create start-menu items
   DetailPrint "Creating start-menu items..."
   CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
   CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\Uninstall.lnk" "$INSTDIR\Uninstall.exe" "" "$INSTDIR\Uninstall.exe" 0
-  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\electrum-ravencoin-${PRODUCT_VERSION}.exe" "" "$INSTDIR\electrum-ravencoin-${PRODUCT_VERSION}.exe" 0
-  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME} Testnet.lnk" "$INSTDIR\electrum-ravencoin-${PRODUCT_VERSION}.exe" "--testnet" "$INSTDIR\electrum-ravencoin-${PRODUCT_VERSION}.exe" 0
+  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\electrum-neurai-${PRODUCT_VERSION}.exe" "" "$INSTDIR\electrum-neurai-${PRODUCT_VERSION}.exe" 0
+  CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME} Testnet.lnk" "$INSTDIR\electrum-neurai-${PRODUCT_VERSION}.exe" "--testnet" "$INSTDIR\electrum-neurai-${PRODUCT_VERSION}.exe" 0
 
 
   ;Links bitcoin: and lightning: URIs to Electrum
-  WriteRegStr HKCU "Software\Classes\raven" "" "URL:raven Protocol"
-  WriteRegStr HKCU "Software\Classes\raven" "URL Protocol" ""
-  WriteRegStr HKCU "Software\Classes\raven" "DefaultIcon" "$\"$INSTDIR\electrum.ico, 0$\""
-  WriteRegStr HKCU "Software\Classes\raven\shell\open\command" "" "$\"$INSTDIR\electrum-ravencoin-${PRODUCT_VERSION}.exe$\" $\"%1$\""
+  WriteRegStr HKCU "Software\Classes\nuerai" "" "URL:nuerai Protocol"
+  WriteRegStr HKCU "Software\Classes\nuerai" "URL Protocol" ""
+  WriteRegStr HKCU "Software\Classes\nuerai" "DefaultIcon" "$\"$INSTDIR\electrum.ico, 0$\""
+  WriteRegStr HKCU "Software\Classes\nuerai\shell\open\command" "" "$\"$INSTDIR\electrum-neurai-${PRODUCT_VERSION}.exe$\" $\"%1$\""
   ;WriteRegStr HKCU "Software\Classes\lightning" "" "URL:lightning Protocol"
   ;WriteRegStr HKCU "Software\Classes\lightning" "URL Protocol" ""
   ;WriteRegStr HKCU "Software\Classes\lightning" "DefaultIcon" "$\"$INSTDIR\electrum.ico, 0$\""
-  ;WriteRegStr HKCU "Software\Classes\lightning\shell\open\command" "" "$\"$INSTDIR\electrum-ravencoin-${PRODUCT_VERSION}.exe$\" $\"%1$\""
+  ;WriteRegStr HKCU "Software\Classes\lightning\shell\open\command" "" "$\"$INSTDIR\electrum-neurai-${PRODUCT_VERSION}.exe$\" $\"%1$\""
 
   ;Adds an uninstaller possibility to Windows Uninstall or change a program section
   WriteRegStr HKCU "${PRODUCT_UNINST_KEY}" "DisplayName" "$(^Name)"

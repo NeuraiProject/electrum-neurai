@@ -35,11 +35,10 @@ from .logging import get_logger, Logger
 
 try:
     import x16r_hash
-    import x16rv2_hash
     import kawpow
 except ImportError as e:
     import sys
-    sys.exit("x16r, x16rv2 and kawpow modules are required")
+    sys.exit("x16r and kawpow modules are required")
     
 if TYPE_CHECKING:
     from .simple_config import SimpleConfig
@@ -114,10 +113,6 @@ def hash_header(header: dict) -> str:
         header['prev_block_hash'] = '00' * 32
     if header['timestamp'] >= constants.net.KawpowActivationTS:
         return hash_raw_header_kawpow(serialize_header(header))
-    elif header['timestamp'] >= constants.net.X16Rv2ActivationTS:
-        hdr = serialize_header(header)[:80 * 2]
-        h = hash_raw_header_v2(hdr)
-        return h
     else:
         hdr = serialize_header(header)[:80 * 2]
         h = hash_raw_header_v1(hdr)
@@ -126,12 +121,6 @@ def hash_header(header: dict) -> str:
 
 def hash_raw_header_v1(header: str) -> str:
     raw_hash = x16r_hash.getPoWHash(bfh(header)[:80])
-    hash_result = hash_encode(raw_hash)
-    return hash_result
-
-
-def hash_raw_header_v2(header: str) -> str:
-    raw_hash = x16rv2_hash.getPoWHash(bfh(header)[:80])
     hash_result = hash_encode(raw_hash)
     return hash_result
 
@@ -424,7 +413,7 @@ class Blockchain(Logger):
             s += 1
 
         # DGW must be received in correct chunk sizes to be valid with our checkpoints
-        if constants.net.DGW_CHECKPOINTS_START <= start_height <= constants.net.max_checkpoint():
+        if constants.net.DGW_CHECKPOINTS_START <= start_height < constants.net.max_checkpoint():
             assert start_height % constants.net.DGW_CHECKPOINTS_SPACING == 0, 'dgw chunk not from start'
             assert s - start_height == constants.net.DGW_CHECKPOINTS_SPACING, 'dgw chunk not correct size'
 

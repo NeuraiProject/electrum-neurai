@@ -61,9 +61,10 @@ from .util import (NotEnoughFunds, UserCancelled, profiler, OldTaskGroup, ignore
                    InvalidPassword, format_time, timestamp_to_datetime, Satoshis,
                    Fiat, bfh, TxMinedInfo, quantize_feerate, OrderedDictWithIndex)
 from .simple_config import SimpleConfig, FEE_RATIO_HIGH_WARNING, FEERATE_WARNING_HIGH_FEE
-from .bitcoin import COIN, TYPE_ADDRESS
+from .bitcoin import COIN, TYPE_ADDRESS, opcodes
 from .bitcoin import (is_address, address_to_script, is_minikey, relayfee, dust_threshold, b58_address_to_hash160, is_b58_address)
-from .asset import get_asset_info_from_script, parse_verifier_string, generate_transfer_script_from_base
+from .asset import (get_asset_info_from_script, parse_verifier_string, generate_transfer_script_from_base, MAX_ASSET_DIVISIONS, 
+                    TransferAssetVoutInformation, AssetMemo)
 from .crypto import sha256d
 from . import keystore
 from .keystore import (load_keystore, Hardware_KeyStore, KeyStore, KeyStoreWithMPK,
@@ -74,7 +75,7 @@ from .wallet_db import WalletDB
 from .ipfs_db import IPFSDB
 from . import transaction, bitcoin, coinchooser, paymentrequest, ecc, bip32
 from .transaction import (Transaction, TxInput, UnknownTxinType, TxOutput,
-                          PartialTransaction, PartialTxInput, PartialTxOutput, TxOutpoint)
+                          PartialTransaction, PartialTxInput, PartialTxOutput, TxOutpoint, script_GetOp)
 from .plugin import run_hook
 from .address_synchronizer import (AddressSynchronizer, TX_HEIGHT_LOCAL, METADATA_VERIFIED, METADATA_UNCONFIRMED, METADATA_UNVERIFIED,
                                    TX_HEIGHT_UNCONF_PARENT, TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_FUTURE, TX_TIMESTAMP_INF)
@@ -1905,13 +1906,44 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         outputs = copy.deepcopy(outputs)
 
         # check outputs
-        i_max = []
-        i_max_sum = 0
+        i_max = defaultdict(list)
+        i_max_sum = defaultdict(int)
+        non_max_amount = defaultdict(int)
         for i, o in enumerate(outputs):
             weight = parse_max_spend(o.value)
             if weight:
-                i_max_sum += weight
-                i_max.append((weight, i))
+                i_max_sum[o.asset] += weight
+                i_max[o.asset].append((weight, i))
+            else:
+                non_max_amount[o.asset] += o.asset_aware_value()
+
+        for asset, i_max_sum_int in i_max_sum.items():
+            if asset is None: continue
+            asset_coins = [coin for coin in itertools.chain(coins, fixed_inputs) if coin.asset == asset]
+            sendable = sum(map(lambda c: c.value_sats(asset_aware=True), asset_coins))
+            for (_,i) in i_max[asset]:
+                outputs[i].value = 0
+            distr_amount = 0
+            amount = sendable - non_max_amount[asset]
+            for (weight, i) in i_max[asset]:
+                metadata = self.adb.db.get_verified_asset_metadata(asset)
+                assert metadata
+                if i == i_max[asset][-1][1]:
+                    val = amount - distr_amount
+                else:
+                    chunk = pow(10, max(0, MAX_ASSET_DIVISIONS - metadata.divisions))
+                    val = int((amount/i_max_sum_int) * weight) // chunk * chunk
+                base_script = None
+                ops = [x for x in script_GetOp(outputs[i].scriptpubkey)]
+                for j, (op, _, _) in enumerate(ops):
+                    if op == opcodes.OP_ASSET:
+                        base_script = outputs[i].scriptpubkey[:ops[j][2]]
+                asset_info: TransferAssetVoutInformation = get_asset_info_from_script(outputs[i].scriptpubkey)
+                assert isinstance(asset_info, TransferAssetVoutInformation)
+                outputs[i].scriptpubkey = bytes.fromhex(generate_transfer_script_from_base(asset, val, base_script.hex(), memo = AssetMemo(asset_info.asset_memo, asset_info.asset_memo_timestamp) if asset_info.asset_memo else None))
+                distr_amount += val
+
+        assert all(output.value == 0 for output in outputs if output.asset)
 
         if fee is None and self.config.fee_per_kb() is None:
             raise NoDynamicFeeEstimates()
@@ -1935,7 +1967,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         # set if we merge with another transaction
         rbf_merge_txid = None
 
-        if len(i_max) == 0:
+        if len(i_max[None]) == 0:
             # Let the coin chooser select the coins to spend
             coin_chooser = coinchooser.get_coin_chooser(self.config)
             # If there is an unconfirmed RBF tx, merge with it
@@ -1998,8 +2030,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                         raise NoQualifiedAddress()
         else:
             # Only for base coin
-            coins = [coin for coin in itertools.chain(coins, fixed_inputs) if coin.asset is None]
-            assert not any(output.asset for output in outputs)
+            base_coins = [coin for coin in itertools.chain(coins, fixed_inputs) if coin.asset is None]
 
             # "spend max" branch
             # note: This *will* spend inputs with negative effective value (if there are any).
@@ -2008,8 +2039,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             #       forever. see #5433
             # note: Actually, it might be the case that not all UTXOs from the wallet are
             #       being spent if the user manually selected UTXOs.
-            sendable = sum(map(lambda c: c.value_sats(), coins))
-            for (_,i) in i_max:
+            sendable = sum(map(lambda c: c.value_sats(), base_coins))
+            for (_,i) in i_max[None]:
                 outputs[i].value = 0
             tx = PartialTransaction.from_io(list(coins), list(outputs))
             fee = fee_estimator(tx.estimated_size())
@@ -2017,12 +2048,12 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             if amount < 0:
                 raise NotEnoughFunds()
             distr_amount = 0
-            for (weight, i) in i_max:
-                val = int((amount/i_max_sum) * weight)
+            for (weight, i) in i_max[None]:
+                val = int((amount/i_max_sum[None]) * weight)
                 outputs[i].value = val
                 distr_amount += val
 
-            (x,i) = i_max[-1]
+            (x,i) = i_max[None][-1]
             outputs[i].value += (amount - distr_amount)
             tx = PartialTransaction.from_io(list(coins), list(outputs))
 

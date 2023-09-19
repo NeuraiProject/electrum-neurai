@@ -1,0 +1,23 @@
+# If you want Electrum to appear in a Linux app launcher ("start menu"), install this by doing:
+# sudo desktop-file-install electrum-neurai.desktop
+# Note: This assumes $HOME/.local/bin is in your $PATH
+
+[Desktop Entry]
+Comment=Lightweight Neurai Client
+Exec=electrum_neurai %u
+GenericName[en_US]=Neurai Wallet
+GenericName=Neurai Wallet
+Icon=electrum
+Name[en_US]=Electrum Neurai Wallet
+Name=Electrum Neurai Wallet
+Categories=Finance;Network;
+StartupNotify=true
+StartupWMClass=electrum_neurai
+Terminal=false
+Type=Application
+MimeType=x-scheme-handler/neurai
+Actions=Testnet;
+
+[Desktop Action Testnet]
+Exec=electrum_neurai --testnet %u
+Name=Testnet mode

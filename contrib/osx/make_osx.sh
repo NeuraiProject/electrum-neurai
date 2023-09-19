@@ -5,8 +5,8 @@ set -e
 # Parameterize
 PYTHON_VERSION=3.10.11
 PY_VER_MAJOR="3.10"  # as it appears in fs paths
-PACKAGE=Electrum-Ravencoin
-GIT_REPO=https://github.com/Electrum-RVN-SIG/electrum-ravencoin
+PACKAGE=Electrum-Neurai
+GIT_REPO=https://github.com/NeuraiProject/electrum-neurai
 
 export GCC_STRIP_BINARIES="1"
 export PYTHONDONTWRITEBYTECODE=1  # don't create __pycache__/ folders with .pyc files
@@ -220,14 +220,14 @@ python3 -m pip install --no-build-isolation --no-dependencies --no-binary :all: 
     -Ir ./contrib/deterministic-build/requirements-binaries-mac.txt \
     || fail "Could not install dependencies specific to binaries"
 
-info "Installing dependencies sepcific to ravencoin..."
+info "Installing dependencies sepcific to neurai..."
 python3 -m pip install --no-build-isolation --no-dependencies --no-binary :all: \
     --no-warn-script-location \
-    -Ir ./contrib/deterministic-build/requirements-ravencoin-pypi.txt \
+    -Ir ./contrib/deterministic-build/requirements-neurai-pypi.txt \
     || fail "Could not install dependencies from pypi"
 python3 -m pip install --no-build-isolation --no-dependencies --no-binary :all: \
     --no-warn-script-location \
-    -Ir ./contrib/deterministic-build/requirements-ravencoin-git.txt \
+    -Ir ./contrib/deterministic-build/requirements-neurai-git.txt \
     || fail "Could not install dependencies from git"
 
 info "Building $PACKAGE..."
@@ -257,9 +257,9 @@ if [ ! -z "$CODESIGN_CERT" ]; then
 fi
 
 info "Creating .DMG"
-hdiutil create -fs HFS+ -volname $PACKAGE -srcfolder dist/$PACKAGE.app dist/electrum-ravencoin-$VERSION.dmg || fail "Could not create .DMG"
+hdiutil create -fs HFS+ -volname $PACKAGE -srcfolder dist/$PACKAGE.app dist/electrum-neurai-$VERSION.dmg || fail "Could not create .DMG"
 
-DoCodeSignMaybe ".DMG" "dist/electrum-ravencoin-${VERSION}.dmg"
+DoCodeSignMaybe ".DMG" "dist/electrum-neurai-${VERSION}.dmg"
 
 if [ -z "$CODESIGN_CERT" ]; then
     warn "App was built successfully but was not code signed. Users may get security warnings from macOS."

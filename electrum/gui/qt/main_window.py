@@ -529,7 +529,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
     @classmethod
     def get_app_name_and_version_str(cls) -> str:
-        name = "Electrum Ravencoin"
+        name = "Electrum Neurai"
         if constants.net.TESTNET:
             name += " " + constants.net.NET_NAME.capitalize()
         return f"{name} {ELECTRUM_VERSION}"
@@ -778,7 +778,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         help_menu = menubar.addMenu(_("&Help"))
         help_menu.addAction(_("&About"), self.show_about)
         help_menu.addAction(_("&Check for updates"), self.show_update_check)
-        help_menu.addAction(_("&Official website"), lambda: webopen("https://github.com/Electrum-RVN-SIG/electrum-ravencoin"))
+        help_menu.addAction(_("&Official website"), lambda: webopen("https://github.com/NeuraiProject/electrum-neurai"))
         help_menu.addSeparator()
         help_menu.addAction(_("&Documentation"), lambda: webopen("http://docs.electrum.org/")).setShortcut(QKeySequence.HelpContents)
         #if not constants.net.TESTNET:
@@ -793,7 +793,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         d = self.network.get_donation_address()
         if d:
             host = self.network.get_parameters().server.host
-            self.handle_payment_identifier('raven:%s?message=donation for %s' % (d, host))
+            self.handle_payment_identifier('nuerai:%s?message=donation for %s' % (d, host))
         else:
             self.show_error(_('No donation address for this server'))
 

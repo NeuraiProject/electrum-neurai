@@ -24,7 +24,7 @@ PY_VER_MAJOR="3.10"  # as it appears in fs paths
 PKG2APPIMAGE_COMMIT="a9c85b7e61a3a883f4a35c41c5decb5af88b6b5d"
 
 VERSION=$(git describe --tags --dirty --always)
-APPIMAGE="$DISTDIR/electrum-ravencoin-$VERSION-x86_64.AppImage"
+APPIMAGE="$DISTDIR/electrum-neurai-$VERSION-x86_64.AppImage"
 
 rm -rf "$BUILDDIR"
 mkdir -p "$APPDIR" "$CACHEDIR" "$PIP_CACHE_DIR" "$DISTDIR" "$DLL_TARGET_DIR"
@@ -169,9 +169,9 @@ info "installing electrum and its dependencies."
 "$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-hw.txt"
 "$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
-    --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-ravencoin-pypi.txt"
+    --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-neurai-pypi.txt"
 "$python" -m pip install --no-build-isolation --no-dependencies --no-binary :all: --no-warn-script-location \
-    --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-ravencoin-git.txt"
+    --cache-dir "$PIP_CACHE_DIR" -r "$CONTRIB/deterministic-build/requirements-neurai-git.txt"
 
 "$python" -m pip install --no-build-isolation --no-dependencies --no-warn-script-location \
     --cache-dir "$PIP_CACHE_DIR" "$PROJECT_ROOT"
@@ -185,7 +185,7 @@ cp "/usr/lib/x86_64-linux-gnu/libzbar.so.0" "$APPDIR/usr/lib/libzbar.so.0"
 
 
 info "desktop integration."
-cp "$PROJECT_ROOT/electrum-ravencoin.desktop" "$APPDIR/electrum-ravencoin.desktop"
+cp "$PROJECT_ROOT/electrum-neurai.desktop" "$APPDIR/electrum-neurai.desktop"
 cp "$PROJECT_ROOT/electrum/gui/icons/electrum.png" "$APPDIR/electrum.png"
 
 

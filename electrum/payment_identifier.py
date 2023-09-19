@@ -484,16 +484,22 @@ class PaymentIdentifier(Logger):
         elif self.spk:
             scriptpubkey = self.spk
             if self.default_asset:
-                scriptpubkey = bytes.fromhex(generate_transfer_script_from_base(self.default_asset, amount, scriptpubkey.hex()))
-                amount = 0
+                if isinstance(amount, str):
+                    scriptpubkey = bytes.fromhex(generate_transfer_script_from_base(self.default_asset, 0, scriptpubkey.hex()))
+                else:
+                    scriptpubkey = bytes.fromhex(generate_transfer_script_from_base(self.default_asset, amount, scriptpubkey.hex()))
+                    amount = 0
             return [PartialTxOutput(scriptpubkey=scriptpubkey, value=amount)]
         elif self.bip21:
             address = self.bip21.get('address')
             scriptpubkey = self.parse_output(address)
             asset = self.bip21.get('asset', None)
             if asset:
-                scriptpubkey = bytes.fromhex(generate_transfer_script_from_base(asset, amount, scriptpubkey.hex()))
-                amount = 0
+                if isinstance(amount, str):
+                    scriptpubkey = bytes.fromhex(generate_transfer_script_from_base(asset, 0, scriptpubkey.hex()))
+                else:
+                    scriptpubkey = bytes.fromhex(generate_transfer_script_from_base(asset, amount, scriptpubkey.hex()))
+                    amount = 0
             return [PartialTxOutput(scriptpubkey=scriptpubkey, value=amount)]
         else:
             raise Exception('not onchain')
@@ -533,8 +539,11 @@ class PaymentIdentifier(Logger):
             raise Exception('Invalid address')
         amount = self.parse_amount(y)
         if self.default_asset:
-            scriptpubkey = bytes.fromhex(generate_transfer_script_from_base(self.default_asset, amount, scriptpubkey.hex()))
-            amount = 0
+            if isinstance(amount, str):
+                scriptpubkey = bytes.fromhex(generate_transfer_script_from_base(self.default_asset, 0, scriptpubkey.hex()))
+            else:
+                scriptpubkey = bytes.fromhex(generate_transfer_script_from_base(self.default_asset, amount, scriptpubkey.hex()))
+                amount = 0
         return PartialTxOutput(scriptpubkey=scriptpubkey, value=amount)
 
     def parse_output(self, x: str) -> bytes:

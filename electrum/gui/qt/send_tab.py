@@ -3,6 +3,7 @@
 # file LICENCE or http://www.opensource.org/licenses/mit-license.php
 
 import asyncio
+from collections import defaultdict
 
 from decimal import Decimal
 from typing import Optional, TYPE_CHECKING, Sequence, List, Callable, Union
@@ -278,16 +279,13 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
             self.fiat_send_e.setVisible(False)
         else:
             self.fiat_send_e.setVisible(self.fx and self.fx.is_enabled())
-        balance = sum(self.current_balance[asset])
         self.amount_e.divisions = divisions
-        self.amount_e.max_amount = balance
         self.amount_e.is_int = divisions == 0
         self.amount_e.numbify()
         self.amount_e.update()
+        self.payto_e._handle_text_change(force=True)
         if self.max_button.isChecked():
             self.spend_max()
-        else:
-            self.payto_e._handle_text_change(force=True)
 
     def spend_max(self):
         assert self.payto_e.payment_identifier is not None
@@ -298,7 +296,6 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
         outputs = self.payto_e.payment_identifier.get_onchain_outputs('!')
         if not outputs:
             return
-                
         assets = {output.asset for output in outputs}.union({None})
         make_tx = lambda fee_est, *, confirmed_only=False: self.wallet.make_unsigned_transaction(
             coins=[coin for coin in self.window.get_coins() if coin.asset in assets],
@@ -319,9 +316,9 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
             return
 
         self.max_button.setChecked(True)
-        amount = tx.output_value()
+        amount = tx.output_value(asset_aware=True)[self._selected_asset()]
         __, x_fee_amount = run_hook('get_tx_extra_fee', self.wallet, tx) or (None, 0)
-        amount_after_all_fees = amount - x_fee_amount
+        amount_after_all_fees = amount - (x_fee_amount if self._selected_asset() else 0)
         self.amount_e.setAmount(amount_after_all_fees)
         # show tooltip explaining max amount
         mining_fee = tx.get_fee()
@@ -365,9 +362,14 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
             outputs=outputs,
             fee=fee_est,
             is_sweep=is_sweep)
-        output_values = [x.value for x in outputs]
-        is_max = any(parse_max_spend(outval) for outval in output_values)
-        output_value = '!' if is_max else sum(output_values)
+        output_values = defaultdict(list)
+        for output in outputs:
+            output_values[output.asset].append(output.asset_aware_value())
+        output_value = dict()
+        for asset, values in output_values.items():
+            is_max = any(parse_max_spend(outval) for outval in values)
+            output_value[asset] = '!' if is_max else sum(values)
+
         conf_dlg = ConfirmTxDialog(window=self.window, make_tx=make_tx, output_value=output_value)
         if conf_dlg.not_enough_funds:
             # note: use confirmed_only=False here, regardless of config setting,

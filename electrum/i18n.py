@@ -44,7 +44,7 @@ except Exception as e:
 else:
     _logger.info(f"gettext setting initial language to {_lang!r}")
 
-def ravencoinifier(func):
+def neuraiifier(func):
     def converter(*args, **kwargs):
         from . import constants
         result = func(*args, **kwargs)
@@ -52,8 +52,8 @@ def ravencoinifier(func):
         result = result.replace('Bitcoin', constants.net.LONG_NAME)
         result = result.replace('btc', constants.net.SHORT_NAME.lower())
         result = result.replace('BTC', constants.net.SHORT_NAME)
-        #result = result.replace('electrum', 'electrum-ravencoin')
-        #result = result.replace('Electrum', 'Electrum-Ravencoin')
+        #result = result.replace('electrum', 'electrum-neurai')
+        #result = result.replace('Electrum', 'Electrum-Neurai')
         return result
     return converter
 
@@ -65,7 +65,7 @@ def ravencoinifier(func):
 # note: f-strings cannot be translated! see https://stackoverflow.com/q/49797658
 #       So this does not work:   _(f"My name: {name}")
 #       instead use .format:     _("My name: {}").format(name)
-@ravencoinifier
+@neuraiifier
 def _(msg: str, *, context=None) -> str:
     if msg == "":
         return ""  # empty string must not be translated. see #7158

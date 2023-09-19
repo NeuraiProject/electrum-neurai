@@ -248,7 +248,7 @@ class TagAddress(QWidget):
         self.in_mempool_label.setVisible(False)
         grid.addWidget(self.in_mempool_label, 2, 2)
 
-        self.send_button = EnterButton(_("Pay") + f" {constants.net.BURN_AMOUNTS.AddNullQualifierTagBurnAmount} RVN...", self.create_tag)
+        self.send_button = EnterButton(_("Pay") + f" {constants.net.BURN_AMOUNTS.AddNullQualifierTagBurnAmount} XNA...", self.create_tag)
         self.send_button.setEnabled(False)
         self.send_button.setMinimumWidth(char_width_in_lineedit() * 16)
         grid.addWidget(self.send_button, 2, 3)

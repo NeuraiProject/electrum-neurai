@@ -313,7 +313,7 @@ class Ledger_Client(HardwareClientBase, ABC):
         hid_device.path = device.path
         hid_device.open()
                     
-        # NOTE: Ravencoin uses legacy commands            
+        # NOTE: Neurai uses legacy commands            
         return Ledger_Client_Legacy(hid_device, *args, **kwargs)
 
         transport = ledger_bitcoin.TransportClient('hid', hid=hid_device)

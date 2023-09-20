@@ -16,7 +16,7 @@ from .json_db import StoredObject, stored_as
 
 from .util import ByteReader
 
-# https://github.com/RavenProject/Neurai/blob/master/src/assets/assets.cpp
+# https://github.com/NeuraiProject/Neurai/blob/master/src/assets/assets.cpp
 
 MAX_NAME_LENGTH = 32
 MAX_CHANNEL_NAME_LENGTH = 12
@@ -65,7 +65,7 @@ _QUALIFIER_INDICATOR = r'^[#][A-Z0-9._]{3,}$'
 _SUB_QUALIFIER_INDICATOR = r'^#[A-Z0-9._]+\/#[A-Z0-9._]+$'
 _RESTRICTED_INDICATOR = r'^[\$][A-Z0-9._]{3,}$'
 
-_BAD_NAMES = '^XNA$|^RAVEN$|^RAVENCOIN$|^XNAS$|^RAVENS$|^RAVENCOINS$|^#XNA$|^#RAVEN$|^#RAVENCOIN$|^#XNAS$|^#RAVENS$|^#RAVENCOINS$'
+_BAD_NAMES = '^XNA$|^NEURAI$|^NEURAICOIN$|^XNAS$|^NEURAIS$|^NEURAICOINS$|^#XNA$|^#NEURAI$|^#NEURAICOIN$|^#XNAS$|^#NEURAIS$|^#NEURAICOINS$'
 
 def _isMatchAny(symbol: str, badMatches: Sequence[str]) -> bool:
     return any((re.match(x, symbol) for x in badMatches))

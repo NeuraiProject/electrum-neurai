@@ -54,7 +54,7 @@ def rpc(method, params):
     return loads(json_response)
 
 INTERVAL = 2016
-START = 168 * INTERVAL
+START = 0
 
 curr_height = START
 

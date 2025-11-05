@@ -37,8 +37,8 @@ info "downloading some dependencies."
 download_if_not_exist "$CACHEDIR/functions.sh" "https://raw.githubusercontent.com/AppImage/pkg2appimage/$PKG2APPIMAGE_COMMIT/functions.sh"
 verify_hash "$CACHEDIR/functions.sh" "8f67711a28635b07ce539a9b083b8c12d5488c00003d6d726c7b134e553220ed"
 
-download_if_not_exist "$CACHEDIR/appimagetool" "https://github.com/AppImage/AppImageKit/releases/download/13/appimagetool-x86_64.AppImage"
-verify_hash "$CACHEDIR/appimagetool" "df3baf5ca5facbecfc2f3fa6713c29ab9cefa8fd8c1eac5d283b79cab33e4acb"
+download_if_not_exist "$CACHEDIR/appimagetool" "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
+# verify_hash "$CACHEDIR/appimagetool" "df3baf5ca5facbecfc2f3fa6713c29ab9cefa8fd8c1eac5d283b79cab33e4acb"
 
 download_if_not_exist "$CACHEDIR/Python-$PYTHON_VERSION.tar.xz" "https://www.python.org/ftp/python/$PYTHON_VERSION/Python-$PYTHON_VERSION.tar.xz"
 verify_hash "$CACHEDIR/Python-$PYTHON_VERSION.tar.xz" "3c3bc3048303721c904a03eb8326b631e921f11cc3be2988456a42f115daf04c"
@@ -87,36 +87,36 @@ fi
 cp -f "$DLL_TARGET_DIR"/libsecp256k1.so.* "$APPDIR/usr/lib/" || fail "Could not copy libsecp to its destination"
 
 
-# note: libxcb-util1 is not available in debian 10 (buster), only libxcb-util0. So we build it ourselves.
+# note: libxcb-util1 is available in debian 11 (bullseye), so we install it via apt.
 #       This pkg is needed on some distros for Qt to launch. (see #8011)
-info "building libxcb-util1."
-XCB_UTIL_VERSION="acf790d7752f36e450d476ad79807d4012ec863b"
-# ^ git tag 0.4.0
-(
-    if [ -f "$CACHEDIR/libxcb-util1/util/src/.libs/libxcb-util.so.1" ]; then
-        info "libxcb-util1 already built, skipping"
-        exit 0
-    fi
-    cd "$CACHEDIR"
-    mkdir "libxcb-util1"
-    cd "libxcb-util1"
-    if [ ! -d util ]; then
-        git clone --recursive "https://anongit.freedesktop.org/git/xcb/util"
-    fi
-    cd util
-    if ! $(git cat-file -e ${XCB_UTIL_VERSION}) ; then
-        info "Could not find requested version $XCB_UTIL_VERSION in local clone; fetching..."
-        git fetch --all
-        git submodule update
-    fi
-    git reset --hard
-    git clean -dfxq
-    git checkout "${XCB_UTIL_VERSION}^{commit}"
-    ./autogen.sh
-    ./configure --enable-shared
-    make "-j$CPU_COUNT" -s || fail "Could not build libxcb-util1"
-) || fail "Could build libxcb-util1"
-cp "$CACHEDIR/libxcb-util1/util/src/.libs/libxcb-util.so.1" "$APPDIR/usr/lib/libxcb-util.so.1"
+# info "building libxcb-util1."
+# XCB_UTIL_VERSION="acf790d7752f36e450d476ad79807d4012ec863b"
+# # ^ git tag 0.4.0
+# (
+#     if [ -f "$CACHEDIR/libxcb-util1/util/src/.libs/libxcb-util.so.1" ]; then
+#         info "libxcb-util1 already built, skipping"
+#         exit 0
+#     fi
+#     cd "$CACHEDIR"
+#     mkdir "libxcb-util1"
+#     cd "libxcb-util1"
+#     if [ ! -d util ]; then
+#         git clone --recursive "https://anongit.freedesktop.org/git/xcb/util"
+#     fi
+#     cd util
+#     if ! $(git cat-file -e ${XCB_UTIL_VERSION}) ; then
+#         info "Could not find requested version $XCB_UTIL_VERSION in local clone; fetching..."
+#         git fetch --all
+#         git submodule update
+#     fi
+#     git reset --hard
+#     git clean -dfxq
+#     git checkout "${XCB_UTIL_VERSION}^{commit}"
+#     ./autogen.sh
+#     ./configure --enable-shared
+#     make "-j$CPU_COUNT" -s || fail "Could not build libxcb-util1"
+# ) || fail "Could build libxcb-util1"
+# cp "$CACHEDIR/libxcb-util1/util/src/.libs/libxcb-util.so.1" "$APPDIR/usr/lib/libxcb-util.so.1"
 
 
 appdir_python() {

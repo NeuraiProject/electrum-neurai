@@ -39,15 +39,16 @@ from typing import Optional, TYPE_CHECKING, Sequence, List, Union, Dict, Set
 import concurrent.futures
 from collections import defaultdict
 
-from PyQt5.QtGui import QPixmap, QKeySequence, QIcon, QCursor, QFont, QFontMetrics
-from PyQt5.QtCore import Qt, QRect, QStringListModel, QSize, pyqtSignal
+from PyQt5.QtGui import QPixmap, QKeySequence, QIcon, QCursor, QFont, QFontMetrics, QColor
+from PyQt5.QtCore import Qt, QRect, QStringListModel, QSize, pyqtSignal, QEvent
 from PyQt5.QtWidgets import (QMessageBox, QSystemTrayIcon, QTabWidget,
                              QMenuBar, QFileDialog, QCheckBox, QLabel,
                              QVBoxLayout, QGridLayout, QLineEdit,
                              QHBoxLayout, QPushButton, QScrollArea, QTextEdit,
                              QShortcut, QMainWindow, QInputDialog,
                              QWidget, QSizePolicy, QStatusBar, QToolTip,
-                             QMenu, QAction, QStackedWidget, QToolButton)
+                             QMenu, QAction, QStackedWidget, QToolButton,
+                             QFrame, QToolBar, QProgressBar, QComboBox)
 
 import electrum
 from electrum.gui import messages
@@ -103,6 +104,7 @@ from .rbf_dialog import BumpFeeDialog, DSCancelDialog
 from .qrreader import scan_qrcode
 from .swap_dialog import SwapDialog, InvalidSwapParameters
 from .balance_dialog import BalanceToolButton, COLOR_FROZEN, COLOR_UNMATURED, COLOR_UNCONFIRMED, COLOR_CONFIRMED, COLOR_LIGHTNING, COLOR_FROZEN_LIGHTNING
+from . import neurai_theme
 
 if TYPE_CHECKING:
     from electrum.simple_config import ConfigVarWithConfig
@@ -113,7 +115,7 @@ LN_NUM_PAYMENT_ATTEMPTS = 10
 
 
 class StatusBarButton(QToolButton):
-    # note: this class has a custom stylesheet applied in stylesheet_patcher.py
+    # note: styled by the "QStatusBar QToolButton" rule of neurai_theme.py
     def __init__(self, icon, tooltip, func, sb_height):
         QToolButton.__init__(self)
         self.setText('')
@@ -121,11 +123,12 @@ class StatusBarButton(QToolButton):
         self.setToolTip(tooltip)
         self.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.setAutoRaise(True)
-        size = max(25, round(0.9 * sb_height))
+        size = max(22, round(0.9 * sb_height))
         self.setMaximumWidth(size)
         self.clicked.connect(self.onPress)
         self.func = func
-        self.setIconSize(QSize(size, size))
+        icon_size = max(14, size - 8)  # room for the padding and border of the theme
+        self.setIconSize(QSize(icon_size, icon_size))
         self.setCursor(QCursor(Qt.PointingHandCursor))
 
     def onPress(self, checked=False):
@@ -135,6 +138,47 @@ class StatusBarButton(QToolButton):
     def keyPressEvent(self, e):
         if e.key() in [Qt.Key_Return, Qt.Key_Enter]:
             self.func()
+
+
+class HeaderBadge(QToolButton):
+    """Wallet state badge of the header (neurai-qt's header icons): an icon
+    tinted with the colour of the state on a background of the same colour."""
+
+    def __init__(self, func=None):
+        QToolButton.__init__(self)
+        self.func = func
+        self._state = None
+        self.setFixedSize(QSize(26, 26))
+        self.setIconSize(QSize(16, 16))
+        self.setCursor(QCursor(Qt.PointingHandCursor))
+        self.setFocusPolicy(Qt.NoFocus)
+        self.clicked.connect(self.onPress)
+
+    def onPress(self, checked=False):
+        if self.func:
+            self.func()
+
+    def set_state(self, icon_name: str, color: QColor, tooltip: str) -> None:
+        state = (icon_name, color.rgba(), tooltip, neurai_theme.is_dark())
+        if state == self._state:
+            return  # update_status runs often: keep the style sheet as it is
+        self._state = state
+        self.setIcon(neurai_theme.single_color_icon(neurai_theme.icon_path(icon_name), color))
+        css = neurai_theme.css
+        self.setStyleSheet(
+            f"QToolButton {{ background-color: {css(neurai_theme.badge_tint(color))}; border: none; "
+            f"border-radius: 7px; padding: 0; }} "
+            f"QToolButton:hover {{ background-color: {css(neurai_theme.badge_tint(color, hover=True))}; }}")
+        self.setToolTip(tooltip)
+
+
+class ClickableLabel(QLabel):
+    clicked = pyqtSignal()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
 
 
 def protected(func):
@@ -208,6 +252,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         coincontrol_sb = self.create_coincontrol_statusbar()
 
         self.tabs = tabs = QTabWidget(self)
+        # The pages are reached from the navigation bar of the header, as in
+        # neurai-qt: the tab bar of the tab widget is hidden.
+        tabs.setObjectName('mainTabs')
+        tabs.tabBar().hide()
         self.send_tab = self.create_send_tab()
         self.asset_tab = self.create_asset_tab()
         self.receive_tab = self.create_receive_tab()
@@ -218,9 +266,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.broadcast_view_tab = self.create_view_broadcasts_tab()
         self.atomic_swap_tab = self.create_atomic_swap_tab()
         #self.channels_tab = self.create_channels_tab()
-        tabs.addTab(self.create_history_tab(), read_QIcon("tab_history.png"), _('History'))
+        self.history_tab = self.create_history_tab()
+        self.overview_tab = self.create_overview_tab()
+        tabs.addTab(self.overview_tab, read_QIcon("neurai/nav_overview.png"), _('Overview'))
         tabs.addTab(self.send_tab, read_QIcon("tab_send.png"), _('Send'))
         tabs.addTab(self.receive_tab, read_QIcon("tab_receive.png"), _('Receive'))
+        tabs.addTab(self.history_tab, read_QIcon("tab_history.png"), _('History'))
         tabs.addTab(self.asset_tab, read_QIcon("bitcoin.png"), _('Assets'))
 
         def add_optional_tab(tabs, tab, icon, description):
@@ -240,17 +291,37 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
 
         tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # Pages sit on the page background; their edges line up with the header card
+        for page in (self.overview_tab, self.send_tab, self.receive_tab, self.history_tab, self.asset_tab,
+                     self.broadcast_view_tab, self.atomic_swap_tab, self.addresses_tab, self.utxo_tab,
+                     self.contacts_tab, self.console_tab):
+            if page.layout() is not None:
+                page.layout().setContentsMargins(0, 0, 0, 0)
 
-        central_widget = QScrollArea()
+        # Header card (brand and wallet state, navigation, network and balance)
+        # above the pages, as in neurai-qt's NeuraiGUI::createToolBars
+        central_widget = QWidget()
         vbox = QVBoxLayout(central_widget)
-        vbox.setContentsMargins(0, 0, 0, 0)
-        vbox.addWidget(tabs)
-        vbox.addWidget(coincontrol_sb)
+        vbox.setContentsMargins(0, 12, 0, 0)
+        vbox.setSpacing(0)
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(neurai_theme.HEADER_MARGIN, 0, neurai_theme.HEADER_MARGIN, 0)
+        header_row.addWidget(self.create_header())
+        vbox.addLayout(header_row)
+        pages = QVBoxLayout()
+        m = neurai_theme.PAGE_MARGIN
+        pages.setContentsMargins(m, m, m, m)
+        pages.setSpacing(8)
+        pages.addWidget(tabs)
+        pages.addWidget(coincontrol_sb)
+        vbox.addLayout(pages, 1)
+        tabs.currentChanged.connect(self._sync_navigation)
+        self._sync_navigation()
 
         self.setCentralWidget(central_widget)
 
         self.setMinimumWidth(640)
-        self.setMinimumHeight(400)
+        self.setMinimumHeight(480)
         if self.config.GUI_QT_WINDOW_IS_MAXIMIZED:
             self.showMaximized()
 
@@ -274,7 +345,6 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.app.update_fiat_signal.connect(self.update_fiat)
 
         self.show_error_signal.connect(self.show_error)
-        self.history_list.setFocus()
 
         # network callbacks
         self.register_callbacks()
@@ -337,6 +407,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
     def on_fx_quotes(self):
         self.update_status()
+        self.overview_tab.refresh_data()  # fiat value of the balance
         # Refresh edits with the new rate
         edit = self.send_tab.fiat_send_e if self.send_tab.fiat_send_e.is_last_edited else self.send_tab.amount_e
         edit.textEdited.emit(edit.text())
@@ -364,6 +435,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         else:
             i = self.tabs.indexOf(tab)
             self.tabs.removeTab(i)
+        # the drop-down menus of the navigation bar list the shown pages only
+        self._update_navigation_menus()
+        self._sync_navigation()
 
     def push_top_level_window(self, window):
         '''Used for e.g. tx dialog box to ensure new dialogs are appropriately
@@ -526,7 +600,15 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             self.setGeometry(*winpos)
         except Exception:
             self.logger.info("using default geometry")
-            self.setGeometry(100, 100, 840, 400)
+            # like neurai-qt: a size that fits the screen, also on scaled laptop displays
+            try:
+                available = self.app.desktop().availableGeometry()
+                width = min(1180, int(available.width() * 0.9))
+                height = min(780, int(available.height() * 0.9))
+                self.setGeometry(available.x() + (available.width() - width) // 2,
+                                 available.y() + (available.height() - height) // 2, width, height)
+            except Exception:
+                self.setGeometry(100, 100, 1180, 780)
 
     @classmethod
     def get_app_name_and_version_str(cls) -> str:
@@ -972,15 +1054,20 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
         network_text = ""
         balance_text = ""
+        t = neurai_theme.tokens()
+        # state of the network badge of the header: colour and tooltip
+        sync_color = t.error
+        sync_details = []
+        synced = False
+        sync_progress = None  # (done, total) while synchronizing
 
         if self.network is None:
             network_text = _("Offline")
-            icon = read_QIcon("status_disconnected.png")
 
         elif self.network.is_connected():
             server_height = self.network.get_server_height()
             server_lag = self.network.get_local_height() - server_height
-            fork_str = "_fork" if len(self.network.get_blockchains())>1 else ""
+            forks = len(self.network.get_blockchains()) > 1
             # Server height can be 0 after switching to a new server
             # until we get a headers subscription request response.
             # Display the synchronizing message in that case.
@@ -988,12 +1075,15 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                 num_sent, num_answered = self.wallet.adb.get_history_sync_state_details()
                 network_text = ("{} ({}/{})"
                                 .format(_("Synchronizing..."), num_answered, num_sent))
-                icon = read_QIcon("status_waiting.png")
+                sync_color = t.warning
+                sync_progress = (num_answered, num_sent)
             elif server_lag > 1:
                 network_text = _("Server is lagging ({} blocks)").format(server_lag)
-                icon = read_QIcon("status_lagging%s.png"%fork_str)
+                sync_color = t.warning
             else:
                 network_text = _("Connected")
+                sync_color = t.success
+                synced = True
                 confirmed, unconfirmed, unmatured, frozen, lightning, f_lightning = self.wallet.get_balances_for_piechart()
                 self.balance_label.update_list([
                     (_('Frozen'), COLOR_FROZEN, frozen),
@@ -1010,16 +1100,17 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                 if self.fx.is_enabled():
                     balance_text += self.fx.get_fiat_status_text(balance,
                         self.base_unit(), self.get_decimal_point()) or ''
-                if not self.network.proxy:
-                    icon = read_QIcon("status_connected%s.png"%fork_str)
-                else:
-                    icon = read_QIcon("status_connected_proxy%s.png"%fork_str)
+            server = self.network.get_parameters().server
+            sync_details.append(_("Server") + f": {server.host}")
+            if self.network.proxy:
+                sync_details.append(_("Proxy enabled"))
+            if forks:
+                sync_details.append(_("Chain split detected"))
         else:
             if self.network.proxy:
                 network_text = "{} ({})".format(_("Not connected"), _("proxy enabled"))
             else:
                 network_text = _("Not connected")
-            icon = read_QIcon("status_disconnected.png")
 
         if self.tray:
             # note: don't include balance in systray tooltip, as some OSes persist tooltips,
@@ -1028,7 +1119,14 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             self.tray.setToolTip(f"{name_and_version} ({network_text})")
         self.balance_label.setText(balance_text or network_text)
         if self.status_button:
-            self.status_button.setIcon(icon)
+            tooltip = '<b>' + network_text + '</b>'
+            if sync_details:
+                tooltip += '<br>' + '<br>'.join(sync_details)
+            tooltip += '<br><br>' + _('Click for the network settings.')
+            self.status_button.set_state('status_sync', sync_color, tooltip)
+        self.update_sync_progress(sync_progress)
+        self.update_header_balance()
+        self.overview_tab.update_status(synced)
 
         num_tasks = self.num_tasks()
         if num_tasks == 0:
@@ -1056,6 +1154,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             wallet = self.wallet
         if wallet != self.wallet:
             return
+        self.overview_tab.refresh_data()
         self.history_model.refresh('update_tabs')
         self.receive_tab.request_list.update()
         self.receive_tab.update_current_request()
@@ -1070,6 +1169,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.update_completions()
 
     def refresh_tabs(self, wallet=None):
+        self.overview_tab.refresh_data()
         self.history_model.refresh('refresh_tabs')
         self.receive_tab.request_list.refresh_all()
         self.send_tab.invoice_list.refresh_all()
@@ -1124,6 +1224,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         from .receive_tab import ReceiveTab
         return ReceiveTab(self)
 
+    def create_overview_tab(self):
+        from .overview_page import OverviewPage
+        return OverviewPage(self)
+
     def do_copy(self, text: str, *, title: str = None) -> None:
         self.app.clipboard().setText(text)
         message = _("Text copied to Clipboard") if title is None else _("{} copied to Clipboard").format(title)
@@ -1148,11 +1252,52 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                 self.qr_window.setVisible(False)
         self.receive_tab.update_receive_qr_window()
 
-    def show_send_tab(self):
+    def show_send_tab(self, asset: str = None):
         self.tabs.setCurrentIndex(self.tabs.indexOf(self.send_tab))
+        if asset and isinstance(asset, str) and self.send_tab.handle_assets:
+            selector = self.send_tab.pay_selector
+            index = selector.findText(asset)
+            if index >= 0:
+                selector.setCurrentIndex(index)
 
     def show_receive_tab(self):
         self.tabs.setCurrentIndex(self.tabs.indexOf(self.receive_tab))
+
+    def show_overview_tab(self):
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.overview_tab))
+
+    def show_history_tab(self):
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.history_tab))
+
+    def show_asset_subtab(self, index: int):
+        """Show a page of the Assets tab (View, Create, Reissue, Tagging, Freezing, Broadcast)."""
+        self.tabs.setCurrentIndex(self.tabs.indexOf(self.asset_tab))
+        sub_tabs = getattr(self.asset_tab, 'tabs', None)
+        if isinstance(sub_tabs, QTabWidget) and 0 <= index < sub_tabs.count():
+            sub_tabs.setCurrentIndex(index)
+
+    def show_create_asset(self):
+        self.show_asset_subtab(1)
+
+    def show_transfer_assets(self):
+        self.show_send_tab()
+        if self.send_tab.handle_assets:
+            self.send_tab.pay_selector.setFocus()
+
+    def show_asset(self, asset: str):
+        """Show an asset in the View page of the Assets tab."""
+        self.show_asset_subtab(0)
+        view = getattr(self.asset_tab, 'view_asset_tab', None)
+        asset_list = getattr(view, 'asset_list', None)
+        if asset_list is None:
+            return
+        model = asset_list.model()
+        for row in range(model.rowCount()):
+            index = model.index(row, 0)
+            if index.data(asset_list.ROLE_ASSET_STR) == asset:
+                asset_list.setCurrentIndex(index)
+                asset_list.scrollTo(index)
+                break
 
     def create_send_tab(self):
         from .send_tab import SendTab
@@ -1671,7 +1816,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         d.run()
 
     def create_status_bar(self):
+        # Restyled like neurai-qt's status bar (page background, muted text).
+        # The network, password and seed buttons moved to the header badges.
         sb = QStatusBar()
+        sb.setSizeGripEnabled(False)
         self.balance_label = BalanceToolButton()
         self.balance_label.setText("Loading wallet...")
         self.balance_label.setAutoRaise(True)
@@ -1679,13 +1827,22 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         sb.addWidget(self.balance_label)
 
         font_height = QFontMetrics(self.balance_label.font()).height()
-        sb_height = max(35, int(2 * font_height))
+        sb_height = max(22, int(1.6 * font_height))  # slim, as neurai-qt's status bar
         sb.setFixedHeight(sb_height)
 
         # remove border of all items in status bar
         self.setStyleSheet("QStatusBar::item { border: 0px;} ")
 
+        # synchronization progress, as the block download progress of neurai-qt
+        self.sync_progress_bar = QProgressBar()
+        self.sync_progress_bar.setMaximumWidth(220)
+        self.sync_progress_bar.setMaximumHeight(16)
+        self.sync_progress_bar.setTextVisible(False)
+        self.sync_progress_bar.setVisible(False)
+        sb.addWidget(self.sync_progress_bar)
+
         self.search_box = QLineEdit()
+        self.search_box.setPlaceholderText(_('Search'))
         self.search_box.textChanged.connect(self.do_search)
         self.search_box.hide()
         sb.addPermanentWidget(self.search_box)
@@ -1700,21 +1857,341 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.tasks_label = QLabel('')
         sb.addPermanentWidget(self.tasks_label)
 
-        self.password_button = StatusBarButton(QIcon(), _("Password"), self.change_password_dialog, sb_height)
-        sb.addPermanentWidget(self.password_button)
-
-        sb.addPermanentWidget(StatusBarButton(read_QIcon("preferences.png"), _("Preferences"), self.settings_dialog, sb_height))
-        self.seed_button = StatusBarButton(read_QIcon("seed.png"), _("Seed"), self.show_seed_dialog, sb_height)
-        sb.addPermanentWidget(self.seed_button)
+        sb.addPermanentWidget(StatusBarButton(
+            neurai_theme.neurai_icon('nav_settings'), _("Preferences"), self.settings_dialog, sb_height))
         self.lightning_button = StatusBarButton(read_QIcon("lightning.png"), _("Lightning Network"), self.gui_object.show_lightning_dialog, sb_height)
         sb.addPermanentWidget(self.lightning_button)
         self.update_lightning_icon()
-        self.status_button = None
-        if self.network:
-            self.status_button = StatusBarButton(read_QIcon("status_disconnected.png"), _("Network"), self.gui_object.show_network_dialog, sb_height)
-            sb.addPermanentWidget(self.status_button)
         run_hook('create_status_bar', sb)
         self.setStatusBar(sb)
+
+    def update_sync_progress(self, progress: Optional[tuple]) -> None:
+        if progress is None or not progress[1]:
+            self.sync_progress_bar.setVisible(False)
+            return
+        done, total = progress
+        self.sync_progress_bar.setMaximum(total)
+        self.sync_progress_bar.setValue(min(done, total))
+        self.sync_progress_bar.setVisible(True)
+
+    # ------------------------------------------------------------------ header
+
+    def create_header(self) -> QFrame:
+        """Header card of neurai-qt: logo, title and wallet state badges on the
+        left, the page navigation in the middle, network, balance and price on
+        the right."""
+        header = QFrame()
+        header.setObjectName('headerCard')
+        self.header_widget = header
+
+        logo = QLabel()
+        logo.setPixmap(QIcon(neurai_theme.icon_path('neurai')).pixmap(QSize(36, 36)))
+        title = QLabel(_('Neurai'))
+        title.setObjectName('headerTitle')
+
+        # Wallet state badges: network/sync, password, seed (HD), watching-only.
+        # Their colour carries the state; clicking them opens the matching dialog.
+        self.status_button = None
+        if self.network:
+            self.status_button = HeaderBadge(self.gui_object.show_network_dialog)
+            self.status_button.setContextMenuPolicy(Qt.CustomContextMenu)
+            self.status_button.customContextMenuRequested.connect(self._network_badge_menu)
+            self.status_button.set_state('status_sync', neurai_theme.tokens().warning, _('Connecting...'))
+        self.password_button = HeaderBadge(self.change_password_dialog)
+        self.seed_button = HeaderBadge(self.show_seed_dialog)
+        self.watching_badge = HeaderBadge(self.show_wallet_info)
+        badges = QHBoxLayout()
+        badges.setSpacing(5)
+        for badge in (self.status_button, self.password_button, self.seed_button, self.watching_badge):
+            if badge is not None:
+                badges.addWidget(badge)
+        badges.addStretch()
+
+        brand_text = QVBoxLayout()
+        brand_text.setSpacing(2)
+        brand_text.addStretch()
+        brand_text.addWidget(title)
+        brand_text.addLayout(badges)
+        brand_text.addStretch()
+        brand = QHBoxLayout()
+        brand.setSpacing(10)
+        brand.addWidget(logo, 0, Qt.AlignVCenter)
+        brand.addLayout(brand_text)
+
+        self.nav_bar = self.create_navigation()
+
+        # wallet name and network chips, balance and market price
+        self.wallet_chip = QLabel(self.wallet.basename())
+        self.wallet_chip.setObjectName('walletChip')
+        storage = getattr(self.wallet, 'storage', None)
+        self.wallet_chip.setToolTip(_('Wallet') + ': ' + (storage.path if storage else self.wallet.basename()))
+        net_name = constants.net.NET_NAME
+        is_mainnet = not constants.net.TESTNET
+        self.network_chip = QLabel(_('MAINNET') if is_mainnet else net_name.upper())
+        self.network_chip.setObjectName('networkChip')
+        self.network_chip.setProperty('mainnet', is_mainnet)
+        for chip in (self.wallet_chip, self.network_chip):
+            chip.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        chips.addStretch()
+        chips.addWidget(self.wallet_chip)
+        chips.addWidget(self.network_chip)
+        self.header_balance = ClickableLabel()
+        self.header_balance.setObjectName('headerBalance')
+        self.header_balance.setCursor(QCursor(Qt.PointingHandCursor))
+        self.header_balance.clicked.connect(self.show_balance_dialog)
+        self.header_price = QLabel()
+        self.header_price.setObjectName('headerPrice')
+        self.header_price.hide()
+        # fiat currency of the exchange rates, as the currency combo of neurai-qt
+        self.header_currency = QComboBox()
+        self.header_currency.setObjectName('headerCurrency')
+        self.header_currency.setFocusPolicy(Qt.ClickFocus)
+        self.header_currency.setToolTip(_('Fiat currency of the exchange rates (see Preferences)'))
+        self.header_currency.setSizeAdjustPolicy(QComboBox.AdjustToContents)
+        self.header_currency.hide()
+        self.header_currency.activated.connect(self._on_header_currency)
+        price_row = QHBoxLayout()
+        price_row.setSpacing(6)
+        price_row.addStretch()
+        price_row.addWidget(self.header_price)
+        price_row.addWidget(self.header_currency)
+        info = QVBoxLayout()
+        info.setSpacing(3)
+        info.addStretch()
+        info.addLayout(chips)
+        info.addWidget(self.header_balance, 0, Qt.AlignRight)
+        info.addLayout(price_row)
+        info.addStretch()
+
+        self._header_brand = brand
+        self._header_info = info
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setSpacing(12)
+        layout.addLayout(brand)
+        layout.addStretch(1)
+        layout.addWidget(self.nav_bar, 0, Qt.AlignVCenter)
+        layout.addStretch(1)
+        layout.addLayout(info)
+        header.installEventFilter(self)
+        return header
+
+    def _network_badge_menu(self, pos):
+        menu = QMenu(self)
+        menu.addAction(_('Network settings'), self.gui_object.show_network_dialog)
+        menu.addAction(_('Wallet information'), self.show_wallet_info)
+        menu.exec_(self.status_button.mapToGlobal(pos))
+
+    def create_navigation(self) -> QToolBar:
+        nav = QToolBar()
+        nav.setObjectName('navBar')
+        nav.setContextMenuPolicy(Qt.PreventContextMenu)
+        nav.setMovable(False)
+        nav.setFloatable(False)
+        nav.setIconSize(QSize(22, 22))
+        nav.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        self._nav_labels_width = 0
+        self._nav_style_applied = None
+
+        def page_action(icon, text, tip, page_name):
+            action = QAction(neurai_theme.navigation_icon(icon), text, self)
+            action.setCheckable(True)
+            action.setToolTip(tip)
+            action.triggered.connect(lambda _checked=False: self._goto_page(getattr(self, page_name)))
+            nav.addAction(action)
+            return action
+
+        self.overview_action = page_action('nav_overview', _('Overview'), _('Show general overview of wallet'), 'overview_tab')
+        self.send_action = page_action('nav_send', _('Send'), _('Send coins and assets to a Neurai address'), 'send_tab')
+        self.receive_action = page_action('nav_receive', _('Receive'), _('Request payments (generates QR codes and neurai: URIs)'), 'receive_tab')
+        self.history_action = page_action('nav_history', _('Transactions'), _('Browse transaction history'), 'history_tab')
+
+        # Asset pages share a single entry with a drop-down menu, as in neurai-qt
+        self.assets_action = QAction(neurai_theme.navigation_icon('nav_assets'), _('Assets'), self)
+        self.assets_action.setCheckable(True)
+        self.assets_action.setToolTip(_('View, create, transfer, reissue and restrict assets'))
+        self.assets_menu = QMenu(self)
+        self.assets_action.setMenu(self.assets_menu)
+        nav.addAction(self.assets_action)
+        # Electrum's other pages (enabled from the View menu)
+        self.more_action = QAction(neurai_theme.navigation_icon('nav_more'), _('More'), self)
+        self.more_action.setCheckable(True)
+        self.more_action.setToolTip(_('Addresses, coins, contacts and console (see the View menu)'))
+        self.more_menu = QMenu(self)
+        self.more_action.setMenu(self.more_menu)
+        nav.addAction(self.more_action)
+        for action in (self.assets_action, self.more_action):
+            button = nav.widgetForAction(action)
+            if isinstance(button, QToolButton):
+                button.setPopupMode(QToolButton.InstantPopup)
+        self._update_navigation_menus()
+        return nav
+
+    def _goto_page(self, page: QWidget) -> None:
+        index = self.tabs.indexOf(page)
+        if index >= 0:
+            self.tabs.setCurrentIndex(index)
+        self._sync_navigation()
+
+    def _update_navigation_menus(self) -> None:
+        """Fill the drop-down menus of the navigation bar with the pages shown."""
+        if not hasattr(self, 'assets_menu'):
+            return
+        shown = lambda tab: self.tabs.indexOf(tab) >= 0
+
+        def add(menu, icon, text, func, tip=''):
+            action = menu.addAction(neurai_theme.navigation_icon(icon), text, func)
+            if tip:
+                action.setStatusTip(tip)
+            return action
+
+        menu = self.assets_menu
+        menu.clear()
+        sub_tabs = getattr(self.asset_tab, 'tabs', None)
+        has_sub_tabs = isinstance(sub_tabs, QTabWidget)
+        add(menu, 'nav_assets', _('View assets'), lambda: self.show_asset_subtab(0),
+            _('Assets of this wallet and their metadata'))
+        if has_sub_tabs:
+            add(menu, 'nav_asset_create', _('Create assets'), lambda: self.show_asset_subtab(1),
+                _('Create new assets'))
+        if self.send_tab.handle_assets:
+            add(menu, 'nav_asset_transfer', _('Transfer assets'), self.show_transfer_assets,
+                _('Transfer assets to Neurai addresses'))
+        if has_sub_tabs:
+            for index, icon, text, tip in (
+                    (2, 'nav_asset_manage', _('Reissue assets'), _('Manage assets you are the administrator of')),
+                    (3, 'nav_restricted', _('Tag addresses'), _('Assign qualifiers to addresses')),
+                    (4, 'status_lock', _('Freeze addresses'), _('Freeze addresses of restricted assets')),
+                    (5, 'nav_broadcast_make', _('Broadcast messages'), _('Broadcast messages to the holders of an asset'))):
+                if index < sub_tabs.count():
+                    add(menu, icon, text, lambda i=index: self.show_asset_subtab(i), tip)
+        extra = [(self.broadcast_view_tab, 'nav_broadcasts', _('Broadcasts')),
+                 (self.atomic_swap_tab, 'nav_swap', _('Atomic Swaps'))]
+        extra = [e for e in extra if shown(e[0])]
+        if extra:
+            menu.addSeparator()
+            for tab, icon, text in extra:
+                add(menu, icon, text, lambda t=tab: self._goto_page(t))
+
+        menu = self.more_menu
+        menu.clear()
+        entries = [(self.addresses_tab, 'nav_addresses', _('Addresses')),
+                   (self.utxo_tab, 'nav_coins', _('Coins')),
+                   (self.contacts_tab, 'nav_contacts', _('Contacts')),
+                   (self.console_tab, 'nav_console', _('Console'))]
+        entries = [e for e in entries if shown(e[0])]
+        for tab, icon, text in entries:
+            add(menu, icon, text, lambda t=tab: self._goto_page(t))
+        self.more_action.setVisible(bool(entries))
+        self._nav_labels_width = 0  # the buttons changed: measure again
+        self._update_navigation_style()
+
+    def _sync_navigation(self, *args) -> None:
+        """Check the navigation entry of the page shown."""
+        if not hasattr(self, 'overview_action'):
+            return
+        page = self.tabs.currentWidget()
+        self.overview_action.setChecked(page is self.overview_tab)
+        self.send_action.setChecked(page is self.send_tab)
+        self.receive_action.setChecked(page is self.receive_tab)
+        self.history_action.setChecked(page is self.history_tab)
+        self.assets_action.setChecked(page in (self.asset_tab, self.broadcast_view_tab, self.atomic_swap_tab))
+        self.more_action.setChecked(page in (self.addresses_tab, self.utxo_tab, self.contacts_tab, self.console_tab))
+
+    def _nav_buttons(self) -> List[QToolButton]:
+        buttons = []
+        for action in self.nav_bar.actions():
+            button = self.nav_bar.widgetForAction(action)
+            if isinstance(button, QToolButton) and action.isVisible():
+                buttons.append(button)
+        return buttons
+
+    def _equalize_navigation_buttons(self) -> None:
+        # Same width for every entry, so that the icons are evenly spaced
+        buttons = self._nav_buttons()
+        width = 0
+        for button in buttons:
+            button.setMinimumWidth(0)
+            button.setMaximumWidth(16777215)
+            width = max(width, button.sizeHint().width())
+        for button in buttons:
+            button.setFixedWidth(width)
+
+    def _update_navigation_style(self) -> None:
+        """Labels under the icons when they fit in the header, icons only otherwise."""
+        header = getattr(self, 'header_widget', None)
+        nav = getattr(self, 'nav_bar', None)
+        if header is None or nav is None:
+            return
+        if not self._nav_labels_width:
+            if not nav.isVisible():
+                return  # measured once the style sheet is in effect
+            nav.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            self._equalize_navigation_buttons()
+            self._nav_labels_width = nav.sizeHint().width()
+            nav.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            self._equalize_navigation_buttons()
+            nav.setMinimumWidth(nav.sizeHint().width())
+            self._nav_style_applied = None
+        layout = header.layout()
+        margins = layout.contentsMargins()
+        available = (header.width() - margins.left() - margins.right() - 4 * layout.spacing()
+                     - self._header_brand.sizeHint().width() - self._header_info.sizeHint().width())
+        style = Qt.ToolButtonTextUnderIcon if self._nav_labels_width <= available else Qt.ToolButtonIconOnly
+        if style != self._nav_style_applied:
+            self._nav_style_applied = style
+            nav.setToolButtonStyle(style)
+            self._equalize_navigation_buttons()
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, 'header_widget', None) and event.type() == QEvent.Resize:
+            self._update_navigation_style()
+        return super().eventFilter(obj, event)
+
+    def update_header_balance(self) -> None:
+        """Balance and market price of the header (and the overview's fiat value)."""
+        if not hasattr(self, 'header_balance'):
+            return
+        # confirmed + unconfirmed + immature, frozen included (cached by the wallet:
+        # this runs with every status update)
+        balance = sum(self.wallet.get_balance())
+        if self.wallet.has_lightning():
+            balance += self.wallet.lnworker.get_balance()
+        unit = self.base_unit()
+        from .overview_page import format_compact
+        text = format_compact(balance, self.get_decimal_point(), unit)
+        if text != self.header_balance.text():
+            self.header_balance.setText(text)
+        self.header_balance.setToolTip(_('Total') + ': ' + self.config.format_amount_and_units(balance)
+                                       + '\n' + _('Click for the details'))
+        price = ''
+        fx_enabled = bool(self.fx and self.fx.is_enabled())
+        if fx_enabled:
+            rate = self.fx.exchange_rate()
+            if not rate.is_nan():
+                fiat = self.fx.format_amount_and_units(balance)
+                price = f"{fiat}  \u00b7  1 {unit} = {self.fx.ccy_amount_str(rate, add_thousands_sep=True)}"
+            ccy = self.fx.get_currency()
+            combo = self.header_currency
+            if combo.count() == 0 or combo.currentText() != ccy:
+                combo.blockSignals(True)
+                combo.clear()
+                currencies = sorted(set(self.fx.get_currencies(self.config.FX_HISTORY_RATES)) | {ccy})
+                combo.addItems(currencies)
+                combo.setCurrentIndex(combo.findText(ccy))
+                combo.blockSignals(False)
+        self.header_currency.setVisible(fx_enabled)
+        self.header_price.setText(price)
+        self.header_price.setVisible(bool(price))
+
+    def _on_header_currency(self, index: int) -> None:
+        ccy = self.header_currency.itemText(index)
+        if self.fx and self.fx.is_enabled() and ccy and ccy != self.fx.get_currency():
+            self.fx.set_currency(ccy)
+            self.app.update_fiat_signal.emit()
+            self.update_status()
 
     def create_coincontrol_statusbar(self):
         self.coincontrol_sb = sb = QStatusBar()
@@ -1768,12 +2245,35 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                                                "Payments are more likely to succeed with a more complete graph."))
 
     def update_lock_icon(self):
-        icon = read_QIcon("lock.png") if self.wallet.has_password() else read_QIcon("unlock.png")
-        self.password_button.setIcon(icon)
+        # neurai-qt's encryption badge: green lock when protected, red otherwise
+        t = neurai_theme.tokens()
+        if self.wallet.has_password():
+            if self.wallet.has_storage_encryption():
+                tip = _('Wallet is <b>encrypted</b> and protected by a password')
+            else:
+                tip = _('Wallet keys are <b>protected</b> by a password')
+            self.password_button.set_state('status_lock', t.success, tip + '<br><br>' + _('Click to change the password.'))
+        else:
+            self.password_button.set_state('status_unlock', t.error, _('Wallet is <b>not</b> protected by a password')
+                                           + '<br><br>' + _('Click to set a password.'))
 
     def update_buttons_on_seed(self):
-        self.seed_button.setVisible(self.wallet.has_seed())
+        t = neurai_theme.tokens()
+        if self.wallet.has_seed():
+            self.seed_button.set_state('status_wallet', t.success, _('HD wallet: the keys come from a <b>seed</b>')
+                                       + '<br><br>' + _('Click to show the seed.'))
+        elif self.wallet.is_deterministic():
+            self.seed_button.set_state('status_wallet', t.success, _('HD key generation is <b>enabled</b> (master key)')
+                                       + '<br><br>' + _('Click for the wallet information.'))
+        else:
+            self.seed_button.set_state('status_wallet', t.text_muted, _('HD key generation is <b>disabled</b> (imported keys)')
+                                       + '<br><br>' + _('Click for the wallet information.'))
+        self.seed_button.func = self.show_seed_dialog if self.wallet.has_seed() else self.show_wallet_info
+        self.seed_button.setVisible(True)
         self.password_button.setVisible(self.wallet.may_have_password())
+        self.watching_badge.set_state('nav_eye', t.warning, _('This wallet is <b>watching-only</b>: it cannot sign transactions.')
+                                      + '<br><br>' + _('Click for the wallet information.'))
+        self.watching_badge.setVisible(self.wallet.is_watching_only())
 
     def change_password_dialog(self):
         from electrum.storage import StorageEncryptionVersion
@@ -2836,6 +3336,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.history_list.update_toolbar_menu()
         self.address_list.refresh_headers()
         self.address_list.update()
+        self.overview_tab.refresh_data()
         self.update_status()
 
     def settings_dialog(self):

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Mapping, Optional, Tuple
 from PyQt5.QtWidgets import QLabel, QVBoxLayout, QGridLayout, QPushButton, QWidget, QComboBox, QCalendarWidget
 from PyQt5.QtCore import QDate, Qt
 
+from . import neurai_theme
 from .util import (ValidatedDelayedCallbackEditor, HelpLabel, EnterButton, char_width_in_lineedit, Buttons,
                    OkButton, CancelButton, WindowModalDialog)
 from .asset_management_panel import OnlyNumberAmountEdit
@@ -79,6 +80,7 @@ class MakeBroadcastPanel(QWidget, Logger):
         self.calendar_button.pressed.connect(self.select_date)
 
         self.send_button = EnterButton(_('Broadcast'), self._create_tx)
+        neurai_theme.make_primary(self.send_button)
         self.send_button.setEnabled(False)
         self.send_button.setMinimumWidth(char_width_in_lineedit() * 16)
 

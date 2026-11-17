@@ -9,7 +9,7 @@ from decimal import Decimal
 from typing import Optional, TYPE_CHECKING, Sequence, List, Callable, Union
 from PyQt5.QtCore import pyqtSignal, QPoint, QSize, Qt
 from PyQt5.QtWidgets import (QLabel, QVBoxLayout, QGridLayout, QHBoxLayout, QComboBox,
-                             QWidget, QToolTip, QPushButton, QApplication)
+                             QWidget, QToolTip, QPushButton, QApplication, QFrame)
 from PyQt5.QtGui import QMovie, QColor
 
 from electrum.i18n import _
@@ -30,6 +30,7 @@ from electrum.wallet import Multisig_Wallet, AmountBelowDustThreshold
 from .asset_management_panel import AssetAmountEdit
 from .amountedit import AmountEdit, BTCAmountEdit, SizedFreezableLineEdit
 from .paytoedit import InvalidPaymentIdentifier
+from . import neurai_theme
 from .util import (WaitingDialog, HelpLabel, MessageBoxMixin, EnterButton,
                    char_width_in_lineedit, get_iconname_camera, get_iconname_qrcode,
                    read_QIcon, ColorScheme, icon_path)
@@ -151,9 +152,10 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
 
         self.paste_button = QPushButton()
         self.paste_button.clicked.connect(self.do_paste)
-        self.paste_button.setIcon(read_QIcon('copy.png'))
+        self.paste_button.setIcon(neurai_theme.neurai_icon('ui_copy'))
         self.paste_button.setToolTip(_('Paste invoice from clipboard'))
-        self.paste_button.setMaximumWidth(35)
+        self.paste_button.setMaximumWidth(40)
+        neurai_theme.mark_compact(self.paste_button)
         grid.addWidget(self.paste_button, 0, 5)
 
         self.spinner = QMovie(icon_path('spinner.gif'))
@@ -168,6 +170,7 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
         self.save_button = EnterButton(_("Save"), self.do_save_invoice)
         self.save_button.setEnabled(False)
         self.send_button = EnterButton(_("Pay") + "...", self.do_pay_or_get_invoice)
+        neurai_theme.make_primary(self.send_button)  # main action of the page, orange
         self.send_button.setEnabled(False)
         self.clear_button = EnterButton(_("Clear"), self.do_clear)
 
@@ -206,10 +209,21 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
         hbox.addLayout(vbox0)
         hbox.addStretch(1)
 
+        # The form in a card, as the send entries of neurai-qt; the invoices below
+        toolbar_title = self.toolbar.itemAt(0).widget() if self.toolbar.count() else None
+        if isinstance(toolbar_title, QLabel) and not toolbar_title.text():
+            toolbar_title.setText(_('Send'))
+        self.form_card, card_vbox = neurai_theme.make_page_card(self.toolbar)
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        card_vbox.addWidget(line)
+        card_vbox.addLayout(hbox)
+        self.invoices_label.setObjectName('sectionTitle')
+
         vbox = QVBoxLayout(self)
-        vbox.addLayout(self.toolbar)
-        vbox.addLayout(hbox)
+        vbox.addWidget(self.form_card)
         vbox.addStretch(1)
+        vbox.addSpacing(6)
         vbox.addWidget(self.invoices_label)
         vbox.addWidget(self.invoice_list)
         vbox.setStretchFactor(self.invoice_list, 1000)

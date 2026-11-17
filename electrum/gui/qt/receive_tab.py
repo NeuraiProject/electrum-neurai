@@ -21,6 +21,7 @@ from electrum.logging import Logger
 from .amountedit import AmountEdit, BTCAmountEdit, SizedFreezableLineEdit
 from .asset_management_panel import AssetAmountEdit
 from .qrcodewidget import QRCodeWidget
+from . import neurai_theme
 from .util import read_QIcon, ColorScheme, HelpLabel, WWLabel, MessageBoxMixin, MONOSPACE_FONT
 from .util import ButtonsTextEdit, get_iconname_qrcode, NonlocalAssetOrBasecoinSelector
 
@@ -98,6 +99,7 @@ class ReceiveTab(QWidget, MessageBoxMixin, Logger):
         self.clear_invoice_button = QPushButton(_('Clear'))
         self.clear_invoice_button.clicked.connect(self.do_clear)
         self.create_invoice_button = QPushButton(_('Create Request'))
+        neurai_theme.make_primary(self.create_invoice_button)
         self.create_invoice_button.clicked.connect(lambda: self.create_invoice())
         self.receive_buttons = buttons = QHBoxLayout()
         buttons.addStretch(1)
@@ -193,16 +195,32 @@ class ReceiveTab(QWidget, MessageBoxMixin, Logger):
         hbox.addWidget(self.receive_widget)
 
         self.searchable_list = self.request_list
+        # The request form and its QR code in a card, the requests below
+        toolbar_title = self.toolbar.itemAt(0).widget() if self.toolbar.count() else None
+        if isinstance(toolbar_title, QLabel) and not toolbar_title.text():
+            toolbar_title.setText(_('Receive'))
+        self.form_card, card_vbox = neurai_theme.make_page_card(self.toolbar)
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        card_vbox.addWidget(line)
+        card_vbox.addLayout(hbox)
+        self.receive_requests_label.setObjectName('sectionTitle')
         vbox = QVBoxLayout(self)
-        vbox.addLayout(self.toolbar)
-        vbox.addLayout(hbox)
+        vbox.addWidget(self.form_card)
         vbox.addStretch()
+        vbox.addSpacing(6)
         vbox.addWidget(self.receive_requests_label)
         vbox.addWidget(self.request_list)
-        vbox.setStretchFactor(hbox, 40)
+        self._page_vbox = vbox
+        vbox.setStretchFactor(self.form_card, 40)
         vbox.setStretchFactor(self.request_list, 60)
         self.request_list.update()  # after parented and put into a layout, can update without flickering
         self.update_expiry_text()
+
+    def update_form_stretch(self, has_requests: bool) -> None:
+        vbox = getattr(self, '_page_vbox', None)
+        if vbox is not None:
+            vbox.setStretchFactor(self.form_card, 40 if has_requests else 0)
 
     def update_expiry_text(self):
         expiry = self.config.WALLET_PAYREQ_EXPIRY_SECONDS
@@ -413,7 +431,8 @@ class ReceiveWidget(QWidget):
         textedit.setFocusPolicy(Qt.NoFocus)
         if isinstance(help_widget, QLabel):
             help_widget.setFrameStyle(QFrame.StyledPanel)
-            help_widget.setStyleSheet("QLabel {border:1px solid gray; border-radius:2px; }")
+            help_widget.setStyleSheet("QLabel {border:1px solid %s; border-radius:%dpx; }" % (
+                neurai_theme.css(neurai_theme.tokens().border), neurai_theme.FIELD_RADIUS))
         hbox = QHBoxLayout()
         hbox.setContentsMargins(0, 0, 0, 0)
         hbox.addWidget(textedit)
@@ -442,4 +461,5 @@ class FramedWidget(QFrame):
     def __init__(self):
         QFrame.__init__(self)
         self.setFrameStyle(QFrame.StyledPanel)
-        self.setStyleSheet("FramedWidget {border:1px solid gray; border-radius:2px; }")
+        self.setStyleSheet("FramedWidget {border:1px solid %s; border-radius:%dpx; }" % (
+            neurai_theme.css(neurai_theme.tokens().border), neurai_theme.FIELD_RADIUS))

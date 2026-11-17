@@ -215,7 +215,7 @@ class NetworkChoiceLayout(object):
         tabs.currentChanged.connect(self._on_tab_changed)
 
         fixed_width_hostname = 24 * char_width_in_lineedit()
-        fixed_width_port = 6 * char_width_in_lineedit()
+        fixed_width_port = 6 * char_width_in_lineedit() + 20  # + the padding of the fields of the theme
 
         # Proxy tab
         grid = QGridLayout(proxy_tab)

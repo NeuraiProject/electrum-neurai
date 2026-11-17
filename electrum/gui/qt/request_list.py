@@ -177,6 +177,10 @@ class RequestList(MyTreeView):
         b = self.std_model.rowCount() > 0
         self.setVisible(b)
         self.receive_tab.receive_requests_label.setVisible(b)
+        # without requests, the form card keeps its natural height
+        update_layout = getattr(self.receive_tab, 'update_form_stretch', None)
+        if update_layout:
+            update_layout(b)
         if not b:
             # list got hidden, so selected item should also be cleared:
             self.item_changed(None)

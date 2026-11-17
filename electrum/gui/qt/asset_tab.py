@@ -7,6 +7,7 @@ from electrum.logging import Logger
 from electrum.i18n import _
 
 from .my_treeview import MyMenu
+from . import neurai_theme
 from .util import MessageBoxMixin, read_QIcon
 from .asset_view_panel import ViewAssetPanel
 from .asset_management_panel import CreateAssetPanel, ReissueAssetPanel
@@ -79,13 +80,15 @@ class AssetTab(QWidget, MessageBoxMixin, Logger):
         is_hardware = self.wallet.keystore and self.wallet.keystore.get_type_text()[:2] == 'hw'
 
         toolbar_button = QToolButton()
-        toolbar_button.setIcon(read_QIcon("preferences.png"))
+        toolbar_button.setIcon(neurai_theme.menu_icon())
         toolbar_button.setMenu(menu)
         toolbar_button.setPopupMode(QToolButton.InstantPopup)
         toolbar_button.setFocusPolicy(Qt.NoFocus)
         toolbar = QHBoxLayout()
         if not is_hardware:
-            toolbar.addWidget(QLabel(_('Select a tab below to view, create, and manage your assets')))
+            hint = QLabel(_('Select a tab below to view, create, and manage your assets'))
+            hint.setObjectName('cardHint')
+            toolbar.addWidget(hint)
         toolbar.addStretch()
         toolbar.addWidget(toolbar_button)
 
@@ -98,12 +101,14 @@ class AssetTab(QWidget, MessageBoxMixin, Logger):
             vbox.addWidget(self.view_asset_tab)
         else:
             self.tabs = tabs = QTabWidget(self)
-            tabs.addTab(self.view_asset_tab, read_QIcon("eye1.png"), _('View'))
-            tabs.addTab(self.create_asset_tab, read_QIcon("unconfirmed.png"), _('Create'))
-            tabs.addTab(self.reissue_asset_tab, read_QIcon("reissue.png"), _('Reissue'))
-            tabs.addTab(self.qualifiy_tab, read_QIcon("tag.png"), _('Tagging'))
-            tabs.addTab(self.freeze_tab, read_QIcon("freeze.png"), _('Freezing'))
-            tabs.addTab(self.broadcast_tab, read_QIcon("broadcast_send.png"), _('Broadcast'))
+            # same icons as the entries of the Assets menu of the navigation bar
+            icon = lambda name: neurai_theme.neurai_icon(name, neurai_theme.tokens().text_muted)
+            tabs.addTab(self.view_asset_tab, icon('nav_assets'), _('View'))
+            tabs.addTab(self.create_asset_tab, icon('nav_asset_create'), _('Create'))
+            tabs.addTab(self.reissue_asset_tab, icon('nav_asset_manage'), _('Reissue'))
+            tabs.addTab(self.qualifiy_tab, icon('nav_restricted'), _('Tagging'))
+            tabs.addTab(self.freeze_tab, icon('status_lock'), _('Freezing'))
+            tabs.addTab(self.broadcast_tab, icon('nav_broadcast_make'), _('Broadcast'))
 
             tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 

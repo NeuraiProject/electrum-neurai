@@ -18,6 +18,7 @@ from electrum.wallet import get_locktime_for_new_transaction
 from electrum.boolean_ast_tree import AbstractBooleanASTError
 
 from .amountedit import AmountEdit
+from . import neurai_theme
 from .util import HelpLabel, char_width_in_lineedit, EnterButton, BooleanExprASTTableViewer
 from .util import ChoicesLayout, ValidatedDelayedCallbackEditor
 from .confirm_tx_dialog import ConfirmTxDialog
@@ -134,7 +135,7 @@ class ManageAssetPanel(QWidget, Logger):
         divisions_label = HelpLabel(_('Divisions'), divisions_message)
 
         self.divisions_e = OnlyNumberAmountEdit(None, 0, 8, parent=self, callback=self._on_divisions_change)
-        divisions_width = char_width_in_lineedit() * 3
+        divisions_width = char_width_in_lineedit() * 3 + 20  # + the padding of the fields of the theme
         self.divisions_e._width = divisions_width
         self.divisions_e.setMaximumWidth(divisions_width)
         self.divisions_e.setAlignment(Qt.AlignCenter)
@@ -320,6 +321,7 @@ class ManageAssetPanel(QWidget, Logger):
         self.payto_e.line_edit.setVisible(self.parent.window.config.SHOW_CREATE_ASSET_PAY_TO)
 
         self.send_button = EnterButton(_("Pay") + f" {self.burn_amount} XNA...", self._create_tx)
+        neurai_theme.make_primary(self.send_button)
         self.send_button.setEnabled(False)
         self.send_button.setMinimumWidth(char_width_in_lineedit() * 16)
 

@@ -1,39 +1,17 @@
 {
-  "electrumx1.neurai.org": {
+  "electrumx1.neurai.top": {
     "pruning": "-",
-    "s": "19012",
-    "t": "19011",
+    "s": "50002",
     "version": "1.0"
   },
-  "electrumx2.neurai.org": {
+  "electrumx2.neurai.top": {
     "pruning": "-",
-    "s": "19012",
-    "t": "19011",
+    "s": "40002",
     "version": "1.0"
   },
-  "electrumx3.neurai.org": {
+  "electrumx3.neurai.top": {
     "pruning": "-",
-    "s": "19012",
-    "t": "19011",
-    "version": "1.0"
-  },
-  "electrumx4.neurai.org": {
-    "pruning": "-",
-    "s": "19012",
-    "t": "19011",
-    "version": "1.0"
-  },
-  "electrumx.neuraiexplorer.com": {
-    "pruning": "-",
-    "s": "19012",
-    "t": "19011",
-    "version": "1.0"
-  },
-  "electrumx2.neuraiexplorer.com": {
-    "pruning": "-",
-    "s": "19012",
-    "t": "19011",
+    "s": "30002",
     "version": "1.0"
   }
-
 }

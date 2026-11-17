@@ -118,7 +118,7 @@ class NeuraiMainnet(AbstractNet):
     SEGWIT_HRP = ""
     BOLT11_HRP = SEGWIT_HRP
     GENESIS = "00000044d33c0c0ba019be5c0249730424a69cb4c222153322f68c6104484806"
-    DEFAULT_PORTS = {'t': '19011', 's': '19012'}
+    DEFAULT_PORTS = {'t': '50001', 's': '50002'}
     DEFAULT_SERVERS = read_json('servers.json', {})
     CHECKPOINTS = []
     DGW_CHECKPOINTS = read_json('checkpoints_dgw.json', [])

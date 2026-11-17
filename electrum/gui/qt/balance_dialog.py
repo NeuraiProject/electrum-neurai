@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (QVBoxLayout, QCheckBox, QHBoxLayout, QLineEdit,
                              QLabel, QCompleter, QDialog, QStyledItemDelegate,
                              QScrollArea, QWidget, QPushButton, QGridLayout, QToolButton)
 from PyQt5.QtCore import QRect, QEventLoop, Qt, pyqtSignal
-from PyQt5.QtGui import QPalette, QPen, QPainter, QPixmap
+from PyQt5.QtGui import QPalette, QPen, QPainter, QPixmap, QColor
 
 
 from electrum.i18n import _
@@ -45,12 +45,13 @@ if TYPE_CHECKING:
 #  show lightning funds that are not usable
 #  pie chart mouse interactive, to prepare a swap
 
-COLOR_CONFIRMED = Qt.green
-COLOR_UNCONFIRMED = Qt.red
-COLOR_UNMATURED = Qt.magenta
-COLOR_FROZEN = ColorScheme.BLUE.as_color(True)
-COLOR_LIGHTNING = Qt.yellow
-COLOR_FROZEN_LIGHTNING = Qt.cyan
+# Colours of the Neurai theme, readable on light and dark backgrounds
+COLOR_CONFIRMED = QColor('#22c55e')
+COLOR_UNCONFIRMED = QColor('#f59e0b')
+COLOR_UNMATURED = QColor('#a855f7')
+COLOR_FROZEN = QColor('#3b82f6')
+COLOR_LIGHTNING = QColor('#f97316')
+COLOR_FROZEN_LIGHTNING = QColor('#06b6d4')
 
 class PieChartObject:
 
@@ -102,7 +103,7 @@ class BalanceToolButton(QToolButton, PieChartObject):
 
     def __init__(self):
         QToolButton.__init__(self)
-        self.size = max(18, font_height())
+        self.size = max(14, font_height() - 2)
         self._list = []
         self.R = QRect(6, 3, self.size, self.size)
 
@@ -116,6 +117,8 @@ class BalanceToolButton(QToolButton, PieChartObject):
 
     def paintEvent(self, event):
         QToolButton.paintEvent(self, event)
+        # centred vertically in the (slim) status bar
+        self.R = QRect(6, max(0, (self.height() - self.size) // 2), self.size, self.size)
         PieChartObject.paintEvent(self, event)
 
 

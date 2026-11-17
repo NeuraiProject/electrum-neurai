@@ -63,6 +63,7 @@ from electrum.logging import Logger
 from electrum.qrreader import MissingQrDetectionLib
 from electrum.simple_config import ConfigVarWithConfig
 
+from . import neurai_theme
 from .util import read_QIcon
 
 if TYPE_CHECKING:
@@ -105,12 +106,14 @@ class MyMenu(QMenu):
 def create_toolbar_with_menu(config: 'SimpleConfig', title):
     menu = MyMenu(config)
     toolbar_button = QToolButton()
-    toolbar_button.setIcon(read_QIcon("preferences.png"))
+    toolbar_button.setIcon(neurai_theme.menu_icon())
     toolbar_button.setMenu(menu)
     toolbar_button.setPopupMode(QToolButton.InstantPopup)
     toolbar_button.setFocusPolicy(Qt.NoFocus)
     toolbar = QHBoxLayout()
-    toolbar.addWidget(QLabel(title))
+    title_label = QLabel(title)
+    title_label.setObjectName('sectionTitle')
+    toolbar.addWidget(title_label)
     toolbar.addStretch()
     toolbar.addWidget(toolbar_button)
     return toolbar, menu
@@ -197,6 +200,10 @@ class MyTreeView(QTreeView):
     ROLE_FILTER_DATA    = Qt.UserRole + 103
 
     filter_columns: Iterable[int]
+    # lists that colour their rows themselves (e.g. the history) turn this off
+    alternating_rows = True
+    # grid lines between rows and columns, as the tables of neurai-qt
+    show_grid_lines = True
 
     class BaseColumnsEnum(enum.IntEnum):
         @staticmethod
@@ -233,6 +240,8 @@ class MyTreeView(QTreeView):
 
         self.setRootIsDecorated(False)  # remove left margin
         self.toolbar_shown = False
+        # rows on alternate backgrounds, as the tables of neurai-qt
+        self.setAlternatingRowColors(self.alternating_rows)
 
         # When figuring out the size of columns, Qt by default looks at
         # the first 1000 rows (at least if resize mode is QHeaderView.ResizeToContents).
@@ -394,6 +403,30 @@ class MyTreeView(QTreeView):
     def hide_rows(self):
         for row in range(self.model().rowCount()):
             self.hide_row(row)
+
+    def drawRow(self, painter, option, index):
+        super().drawRow(painter, option, index)
+        if not self.show_grid_lines:
+            return
+        # light grid lines (gridline-color of neurai-qt's tables), drawn here and
+        # not with a style sheet border on the items, which would hide the
+        # background colours of the cells
+        header = self.header()
+        rect = option.rect
+        painter.save()
+        painter.setPen(neurai_theme.grid_line_color())
+        painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
+        last = None
+        for visual in range(header.count() - 1, -1, -1):
+            if not header.isSectionHidden(header.logicalIndex(visual)):
+                last = header.logicalIndex(visual)
+                break
+        for logical in range(header.count()):
+            if logical == last or header.isSectionHidden(logical):
+                continue
+            x = header.sectionViewportPosition(logical) + header.sectionSize(logical) - 1
+            painter.drawLine(x, rect.top(), x, rect.bottom())
+        painter.restore()
 
     def create_toolbar(self, config: 'SimpleConfig'):
         return

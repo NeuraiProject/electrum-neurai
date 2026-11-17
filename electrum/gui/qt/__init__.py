@@ -71,6 +71,7 @@ from .util import read_QIcon, ColorScheme, custom_message_box, MessageBoxMixin
 from .main_window import ElectrumWindow
 from .network_dialog import NetworkDialog
 from .stylesheet_patcher import patch_qt_stylesheet
+from . import neurai_theme
 from .lightning_dialog import LightningDialog
 from .watchtower_dialog import WatchtowerDialog
 from .exception_window import Exception_Hook
@@ -169,20 +170,15 @@ class ElectrumGui(BaseElectrumGui, Logger):
              - in TxDialog, the receiving/change address colors
         """
         use_dark_theme = self.config.GUI_QT_COLOR_THEME == 'dark'
-        if use_dark_theme:
-            try:
-                import qdarkstyle
-                self.app.setStyleSheet(qdarkstyle.load_stylesheet_pyqt5())
-            except BaseException as e:
-                use_dark_theme = False
-                self.logger.warning(f'Error setting dark theme: {repr(e)}')
-        else:
+        # The Neurai wallet theme (light 'default' or 'dark'), as in neurai-qt
+        try:
+            neurai_theme.apply(self.app, dark=use_dark_theme)
+        except BaseException as e:
+            self.logger.warning(f'Error setting the Neurai theme: {repr(e)}')
             self.app.setStyleSheet(self._default_qtstylesheet)
         # Apply any necessary stylesheet patches
         patch_qt_stylesheet(use_dark_theme=use_dark_theme)
-        # Even if we ourselves don't set the dark theme,
-        # the OS/window manager/etc might set *a dark theme*.
-        # Hence, try to choose colors accordingly:
+        # Colors of amounts, states... follow the theme
         ColorScheme.update_from_widget(QWidget(), force_dark=use_dark_theme)
 
     def build_tray_menu(self):

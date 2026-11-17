@@ -14,7 +14,7 @@ from PyQt5.QtCore import QRect, QEventLoop, Qt, pyqtSignal
 from PyQt5.QtGui import QPalette, QPen, QPainter, QPixmap
 from PyQt5.QtWidgets import (QWidget, QDialog, QLabel, QHBoxLayout, QMessageBox,
                              QVBoxLayout, QLineEdit, QFileDialog, QPushButton,
-                             QGridLayout, QSlider, QScrollArea, QApplication)
+                             QGridLayout, QSlider, QScrollArea, QApplication, QFrame)
 
 from electrum.wallet import Wallet, Abstract_Wallet
 from electrum.storage import WalletStorage, StorageReadWriteError
@@ -25,6 +25,7 @@ from electrum.i18n import _
 
 from .seed_dialog import SeedLayout, KeysLayout
 from .network_dialog import NetworkChoiceLayout
+from . import neurai_theme
 from .util import (MessageBoxMixin, Buttons, icon_path, ChoicesLayout, WWLabel,
                    InfoButton, char_width_in_lineedit, PasswordLineEdit, font_height)
 from .password_dialog import PasswordLayout, PasswordLayoutForHW, PW_NEW
@@ -157,6 +158,7 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         self.config = config
         self.gui_thread = gui_object.gui_thread
         self.setMinimumSize(600, 400)
+        self.resize(680, 500)  # room for the padding of the Neurai theme
         self.accept_signal.connect(self.accept)
         self.title = QLabel()
         self.main_widget = QWidget()
@@ -181,22 +183,35 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
         inner_vbox.addStretch(1)
         scroll_widget = QWidget()
         scroll_widget.setLayout(inner_vbox)
+        inner_vbox.setContentsMargins(16, 14, 16, 14)
         scroll = QScrollArea()
         scroll.setFocusPolicy(Qt.NoFocus)
         scroll.setWidget(scroll_widget)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setWidgetResizable(True)
+        # the pages of the wizard on a card, as the setup dialogs of neurai-qt
+        self.title.setObjectName('cardTitle')
+        scroll.setObjectName('wizardCard')
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.viewport().setAutoFillBackground(False)
+        scroll_widget.setAutoFillBackground(False)
+        scroll_widget.setObjectName('wizardCardContents')
+        t = neurai_theme.tokens()
+        scroll.setStyleSheet(
+            f'QScrollArea#wizardCard {{ background-color: {neurai_theme.css(t.surface)}; '
+            f'border: 1px solid {neurai_theme.css(t.border)}; border-radius: {neurai_theme.CARD_RADIUS}px; }}'
+            ' QWidget#wizardCardContents { background: transparent; }')
         icon_vbox = QVBoxLayout()
         icon_vbox.addWidget(self.logo)
         icon_vbox.addStretch(1)
         hbox = QHBoxLayout()
         hbox.addLayout(icon_vbox)
-        hbox.addSpacing(5)
+        hbox.addSpacing(10)
         hbox.addWidget(scroll)
         hbox.setStretchFactor(scroll, 1)
         outer_vbox.addLayout(hbox)
         outer_vbox.addLayout(Buttons(self.back_button, self.next_button))
-        self.set_icon('electrum.png')
+        self.set_icon('neurai/neurai.png')
         self.show()
         self.raise_()
         self.refresh_gui()  # Need for QT on MacOSX.  Lame.

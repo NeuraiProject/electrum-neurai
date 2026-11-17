@@ -23,6 +23,7 @@ from electrum.atomic_swap import AtomicSwap, RESERVED_MESSAGE
 
 from .asset_management_panel import AssetAmountEdit
 from .confirm_tx_dialog import ConfirmTxDialog
+from . import neurai_theme
 from .util import (MessageBoxMixin, read_QIcon, EnterButton, ColorScheme, NonlocalAssetOrBasecoinSelector, 
                    QHSeperationLine, Buttons, QtEventListener, qt_event_listener)
 from .my_treeview import MyTreeView
@@ -264,6 +265,7 @@ class CreateSwapWidget(QWidget, Logger, MessageBoxMixin, QtEventListener):
         pay_amount_layout.addStretch()
 
         self.create_swap = EnterButton(_('Create Swap...'), self._set_up_swap)
+        neurai_theme.make_primary(self.create_swap)
         self.create_swap.setEnabled(False)
         self.clear_swap = EnterButton(_('Clear'), self._clear)
         self.clear_swap.setEnabled(False)
@@ -490,6 +492,7 @@ class RedeemSwapWidget(QWidget, Logger):
         self.input.textChanged.connect(self._parse_psbt)
         vbox.addWidget(self.input)
         self.button = EnterButton(_('Redeem...'), self._redeem)
+        neurai_theme.make_primary(self.button)
         vbox.addWidget(self.button)
         hbox.addLayout(vbox, stretch=1)
         vbox = QVBoxLayout()
@@ -689,9 +692,10 @@ class AtomicSwapTab(QWidget, MessageBoxMixin, Logger):
         self.swaps_list = SwapsList(self)
 
         self.tabs = tabs = QTabWidget(self)
-        tabs.addTab(self.redeem_tab, read_QIcon('redeem.png'), _('Redeem'))
-        tabs.addTab(self.create_tab, read_QIcon('unconfirmed.png'), _('Create'))
-        tabs.addTab(self.swaps_list, read_QIcon('tab_history.png'), _('My Swaps'))
+        icon = lambda name: neurai_theme.neurai_icon(name, neurai_theme.tokens().text_muted)
+        tabs.addTab(self.redeem_tab, icon('nav_receive'), _('Redeem'))
+        tabs.addTab(self.create_tab, icon('nav_asset_create'), _('Create'))
+        tabs.addTab(self.swaps_list, icon('nav_swap'), _('My Swaps'))
         tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         vbox = QVBoxLayout(self)
         vbox.addWidget(self.tabs)

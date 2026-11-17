@@ -20,6 +20,7 @@ from electrum.logging import Logger
 from electrum.transaction import PartialTxOutput
 from electrum.wallet import get_locktime_for_new_transaction
 
+from . import neurai_theme
 from .util import HelpLabel, HelpButton, ValidatedDelayedCallbackEditor, char_width_in_lineedit
 from .util import QHSeperationLine, read_QIcon, MONOSPACE_FONT, font_height, EnterButton
 from .my_treeview import MyTreeView
@@ -249,6 +250,7 @@ class TagAddress(QWidget):
         grid.addWidget(self.in_mempool_label, 2, 2)
 
         self.send_button = EnterButton(_("Pay") + f" {constants.net.BURN_AMOUNTS.AddNullQualifierTagBurnAmount} XNA...", self.create_tag)
+        neurai_theme.make_primary(self.send_button)
         self.send_button.setEnabled(False)
         self.send_button.setMinimumWidth(char_width_in_lineedit() * 16)
         grid.addWidget(self.send_button, 2, 3)

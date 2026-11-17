@@ -195,11 +195,11 @@ class HistoryNode(CustomNode):
             #    return QVariant(read_QIcon("seal"))
             elif col in (HistoryColumns.DESCRIPTION, HistoryColumns.AMOUNT) \
                     and role == Qt.ForegroundRole and tx_item['value'].value < 0:
-                red_brush = QBrush(QColor("#BC1E1E"))
+                red_brush = QBrush(ColorScheme.RED.as_color())
                 return QVariant(red_brush)
             elif col == HistoryColumns.FIAT_VALUE and role == Qt.ForegroundRole \
                     and not tx_item.get('fiat_default') and tx_item.get('fiat_value') is not None:
-                blue_brush = QBrush(QColor("#1E1EFF"))
+                blue_brush = QBrush(ColorScheme.BLUE.as_color())
                 return QVariant(blue_brush)
             return QVariant()
 
@@ -495,6 +495,7 @@ class HistoryModel(CustomModel, Logger):
 
 
 class HistoryList(MyTreeView, AcceptFileDragDrop):
+    alternating_rows = False  # the rows of a transaction share a background ("offcolor")
 
     class Columns(MyTreeView.BaseColumnsEnum):
         STATUS = enum.auto()

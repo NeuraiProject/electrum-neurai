@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (QAbstractItemView, QWidget, QHBoxLayout, QVBoxLayou
                              QLineEdit, QScrollArea, QLabel)
 
 from .my_treeview import MyTreeView, MyMenu
+from . import neurai_theme
 from .util import IPFSViewer, read_QIcon, EnterButton, MessageBoxMixin, QHSeperationLine, AutoResizingTextEdit
 
 from electrum.asset import get_error_for_asset_typed, AssetType
@@ -254,7 +255,7 @@ class ViewBroadcastTab(QWidget, Logger, MessageBoxMixin):
         menu.addConfig(_('Lookup IPFS using all gateways'), window.config.cv.ROUND_ROBIN_ALL_KNOWN_IPFS_GATEWAYS)
 
         toolbar_button = QToolButton()
-        toolbar_button.setIcon(read_QIcon("preferences.png"))
+        toolbar_button.setIcon(neurai_theme.menu_icon())
         toolbar_button.setMenu(menu)
         toolbar_button.setPopupMode(QToolButton.InstantPopup)
         toolbar_button.setFocusPolicy(Qt.NoFocus)
@@ -274,6 +275,7 @@ class ViewBroadcastTab(QWidget, Logger, MessageBoxMixin):
             self.update()
 
         self.watch_button = EnterButton(_('Watch Asset'), watch_asset)
+        neurai_theme.make_primary(self.watch_button)
         toolbar.addWidget(self.watch_button)
         toolbar.addStretch()
         toolbar.addWidget(toolbar_button)

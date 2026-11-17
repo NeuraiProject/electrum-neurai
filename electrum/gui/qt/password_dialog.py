@@ -34,6 +34,7 @@ from PyQt5.QtWidgets import QLineEdit, QLabel, QGridLayout, QVBoxLayout, QCheckB
 from electrum.i18n import _
 from electrum.plugin import run_hook
 
+from . import neurai_theme
 from .util import (icon_path, WindowModalDialog, OkButton, CancelButton, Buttons,
                    PasswordLineEdit)
 
@@ -105,8 +106,7 @@ class PasswordLayout(object):
                 lockfile = "lock.png"
             else:
                 lockfile = "unlock.png"
-            logo.setPixmap(QPixmap(icon_path(lockfile))
-                           .scaledToWidth(36, mode=Qt.SmoothTransformation))
+            logo.setPixmap(neurai_theme.accent_pixmap(lockfile, 36))
 
         grid.addWidget(QLabel(msgs[0]), 1, 0)
         grid.addWidget(self.new_pw, 1, 1)
@@ -203,8 +203,7 @@ class PasswordLayoutForHW(object):
             lockfile = "lock.png"
         else:
             lockfile = "unlock.png"
-        logo.setPixmap(QPixmap(icon_path(lockfile))
-                       .scaledToWidth(36, mode=Qt.SmoothTransformation))
+        logo.setPixmap(neurai_theme.accent_pixmap(lockfile, 36))
 
         vbox.addLayout(grid)
 
@@ -307,6 +306,8 @@ class PasswordDialog(WindowModalDialog):
         vbox.addLayout(grid)
         vbox.addLayout(Buttons(CancelButton(self), OkButton(self)))
         self.setLayout(vbox)
+        # e.g. the small keys of the virtual keyboard plugin
+        neurai_theme.watch_compact_buttons(self)
         run_hook('password_dialog', pw, grid, 1)
 
     def run(self):

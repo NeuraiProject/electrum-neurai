@@ -41,6 +41,8 @@ from electrum.ipfs_db import IPFSDB
 from electrum.bitcoin import base_encode
 from electrum.boolean_ast_tree import AbstractBooleanASTNode
 
+from . import neurai_theme
+
 if TYPE_CHECKING:
     from .main_window import ElectrumWindow
     from .installwizard import InstallWizard
@@ -198,6 +200,7 @@ class InfoButton(HelpMixin, QPushButton):
         HelpMixin.__init__(self, text, help_title=_('Info'))
         self.setFocusPolicy(Qt.NoFocus)
         self.setFixedWidth(6 * char_width_in_lineedit())
+        neurai_theme.mark_compact(self)
         self.clicked.connect(self.show_help)
 
 class Buttons(QHBoxLayout):
@@ -674,13 +677,18 @@ class GenericInputHandler:
 
 
 class OverlayControlMixin(GenericInputHandler):
+    # small flat buttons inside the field (Neurai theme)
     STYLE_SHEET_COMMON = '''
-    QPushButton { border-width: 1px; padding: 0px; margin: 0px; }
+    QPushButton { border: 1px solid transparent; border-radius: 6px; background: transparent; padding: 2px; margin: 0px; }
+    QPushButton::menu-indicator { width: 0px; image: none; }
     '''
 
     STYLE_SHEET_LIGHT = '''
-    QPushButton { border: 1px solid transparent; }
-    QPushButton:hover { border: 1px solid #3daee9; }
+    QPushButton:hover { background-color: #f6f2ec; border: 1px solid #ddd5ca; }
+    '''
+
+    STYLE_SHEET_DARK = '''
+    QPushButton:hover { background-color: #2c3748; border: 1px solid #3c495c; }
     '''
 
     def __init__(self, middle: bool = False):
@@ -690,8 +698,7 @@ class OverlayControlMixin(GenericInputHandler):
         self.middle = middle
         self.overlay_widget = QWidget(self)
         style_sheet = self.STYLE_SHEET_COMMON
-        if not ColorScheme.dark_scheme:
-            style_sheet = style_sheet + self.STYLE_SHEET_LIGHT
+        style_sheet += self.STYLE_SHEET_DARK if ColorScheme.dark_scheme else self.STYLE_SHEET_LIGHT
         self.overlay_widget.setStyleSheet(style_sheet)
         self.overlay_layout = QHBoxLayout(self.overlay_widget)
         self.overlay_layout.setContentsMargins(0, 0, 0, 0)
@@ -1023,11 +1030,15 @@ class TaskThread(QThread, Logger):
 
 
 class ColorSchemeItem:
-    def __init__(self, fg_color, bg_color):
+    """A foreground and a background colour, for the light and the dark theme.
+    Without explicit dark colours, the dark theme swaps the light ones."""
+    def __init__(self, fg_color, bg_color, dark_fg_color=None, dark_bg_color=None):
         self.colors = (fg_color, bg_color)
+        self.dark_colors = (dark_fg_color or bg_color, dark_bg_color or fg_color)
 
     def _get_color(self, background):
-        return self.colors[(int(background) + int(ColorScheme.dark_scheme)) % 2]
+        colors = self.dark_colors if ColorScheme.dark_scheme else self.colors
+        return colors[int(bool(background))]
 
     def as_stylesheet(self, background=False):
         css_prefix = "background-" if background else ""
@@ -1039,17 +1050,34 @@ class ColorSchemeItem:
         return QColor(color)
 
 
+def _theme_item(token: str, *, bg_token: str = None, tint: float = None) -> ColorSchemeItem:
+    """ColorSchemeItem from the Neurai theme tokens (see neurai_theme.py): the
+    token as foreground and, as background, either another token or the token
+    blended over the card surface."""
+    colors = []
+    for t in (neurai_theme.LIGHT_TOKENS, neurai_theme.DARK_TOKENS):
+        fg = getattr(t, token)
+        if bg_token is not None:
+            bg = getattr(t, bg_token)
+        else:
+            bg = neurai_theme.blend(fg, t.surface, tint if t is neurai_theme.LIGHT_TOKENS else tint * 1.6)
+        colors += [fg.name(), bg.name()]
+    return ColorSchemeItem(*colors)
+
+
 class ColorScheme:
     dark_scheme = False
 
-    GREEN = ColorSchemeItem("#117c11", "#8af296")
-    YELLOW = ColorSchemeItem("#897b2a", "#ffff00")
-    RED = ColorSchemeItem("#7c1111", "#f18c8c")
-    BLUE = ColorSchemeItem("#123b7c", "#8cb3f2")
-    LIGHTBLUE = ColorSchemeItem("black", "#d0f0ff")
-    DEFAULT = ColorSchemeItem("black", "white")
-    GRAY = ColorSchemeItem("gray", "gray")
-    LIGHT_GRAY = ColorSchemeItem("#303044", "#f0f0f0")
+    # Colours of the Neurai theme: status colours on tinted backgrounds,
+    # neutral greys from the card/page tokens.
+    GREEN = _theme_item('success', tint=0.16)
+    YELLOW = _theme_item('warning', tint=0.20)
+    RED = _theme_item('error', tint=0.16)
+    BLUE = ColorSchemeItem("#2563eb", "#dbeafe", "#60a5fa", "#1e3352")
+    LIGHTBLUE = _theme_item('text', bg_token='surface_alt')
+    DEFAULT = _theme_item('text', bg_token='surface')
+    GRAY = _theme_item('text_muted', bg_token='border')
+    LIGHT_GRAY = _theme_item('text_muted', bg_token='surface_alt')
 
     @staticmethod
     def has_dark_background(widget):
@@ -1177,8 +1205,16 @@ def icon_path(icon_basename: str):
     return resource_path('gui', 'icons', icon_basename)
 
 
-@lru_cache(maxsize=1000)
 def read_QIcon(icon_basename: str) -> QIcon:
+    return _read_QIcon(icon_basename, neurai_theme.is_dark())
+
+
+@lru_cache(maxsize=1000)
+def _read_QIcon(icon_basename: str, dark: bool) -> QIcon:
+    # status icons follow the Neurai theme (single colour, tinted by meaning)
+    themed = neurai_theme.themed_icon(icon_basename)
+    if themed is not None:
+        return themed
     return QIcon(icon_path(icon_basename))
 
 class IconLabel(QWidget):

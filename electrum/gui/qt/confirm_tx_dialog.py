@@ -40,6 +40,7 @@ from electrum.transaction import Transaction, PartialTransaction
 from electrum.wallet import InternalAddressCorruption, AmountBelowDustThreshold
 from electrum.simple_config import SimpleConfig
 
+from . import neurai_theme
 from .util import (WindowModalDialog, ColorScheme, HelpLabel, Buttons, CancelButton,
                    BlockingWaitingDialog, PasswordLineEdit, WWLabel, read_QIcon)
 
@@ -440,7 +441,7 @@ class TxEditor(WindowModalDialog):
             _('This might improve your privacy somewhat.') + '\n' + \
             _('If enabled, at most 100 satoshis might be lost due to this, per transaction.'))
         self.pref_button = QToolButton()
-        self.pref_button.setIcon(read_QIcon("preferences.png"))
+        self.pref_button.setIcon(neurai_theme.menu_icon())
         self.pref_button.setMenu(self.pref_menu)
         self.pref_button.setPopupMode(QToolButton.InstantPopup)
         self.pref_button.setFocusPolicy(Qt.NoFocus)

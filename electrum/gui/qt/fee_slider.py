@@ -91,22 +91,15 @@ class FeeSlider(QSlider):
         self._active = False
         # TODO it would be nice to find a platform-independent solution
         # that makes the slider look as if it was disabled
+        # the slider of the Neurai theme in the colours of disabled widgets
+        from . import neurai_theme
+        t = neurai_theme.tokens()
         self.setStyleSheet(
-            """
-            QSlider::groove:horizontal {
-                border: 1px solid #999999;
-                height: 8px;
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #B1B1B1, stop:1 #B1B1B1);
-                margin: 2px 0;
-            }
-
-            QSlider::handle:horizontal {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #b4b4b4, stop:1 #8f8f8f);
-                border: 1px solid #5c5c5c;
-                width: 12px;
-                margin: -2px 0;
-                border-radius: 3px;
-            }
+            f"""
+            QSlider::groove:horizontal {{ height: 4px; background-color: {neurai_theme.css(t.border)}; border-radius: 2px; }}
+            QSlider::sub-page:horizontal {{ background-color: {neurai_theme.css(t.field_border)}; border-radius: 2px; }}
+            QSlider::handle:horizontal {{ background-color: {neurai_theme.css(t.text_muted)}; width: 16px; height: 16px;
+                                          margin: -6px 0; border-radius: 8px; }}
             """
         )
 

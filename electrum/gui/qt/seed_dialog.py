@@ -37,6 +37,7 @@ from electrum.util import UserFacingException
 from electrum import old_mnemonic
 from electrum import slip39
 
+from . import neurai_theme
 from .util import (Buttons, OkButton, WWLabel, ButtonsTextEdit, icon_path,
                    EnterButton, CloseButton, WindowModalDialog, ColorScheme,
                    ChoicesLayout, HelpButton, font_height)
@@ -257,8 +258,7 @@ class SeedLayout(QVBoxLayout):
         hbox = QHBoxLayout()
         if icon:
             logo = QLabel()
-            logo.setPixmap(QPixmap(icon_path("seed.png"))
-                           .scaledToWidth(64, mode=Qt.SmoothTransformation))
+            logo.setPixmap(neurai_theme.accent_pixmap("seed.png", 48))
             logo.setMaximumWidth(60)
             hbox.addWidget(logo)
         hbox.addWidget(self.seed_e)

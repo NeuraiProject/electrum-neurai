@@ -42,6 +42,7 @@ datas = [
     (home+'electrum/locale', 'electrum/locale'),
     (home+'electrum/plugins', 'electrum/plugins'),
     (home+'electrum/gui/icons', 'electrum/gui/icons'),
+    (home+'electrum/gui/fonts', 'electrum/gui/fonts'),
 ]
 datas += collect_data_files('trezorlib')
 datas += collect_data_files('safetlib')

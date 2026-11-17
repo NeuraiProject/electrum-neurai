@@ -13,6 +13,7 @@ from electrum.util import format_satoshis_plain, profiler
 from electrum.address_synchronizer import METADATA_UNCONFIRMED, METADATA_UNVERIFIED
 from electrum.logging import Logger
 
+from . import neurai_theme
 from .util import HelpLabel, ColorScheme, HelpButton, AutoResizingTextEdit
 from .util import QHSeperationLine, read_QIcon, MONOSPACE_FONT, IPFSViewer, EnterButton
 from .my_treeview import MyTreeView
@@ -442,6 +443,7 @@ class MetadataViewer(QFrame):
         scroll.setWidget(self.metadata_info)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        neurai_theme.make_transparent_scroll_area(scroll)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(scroll)

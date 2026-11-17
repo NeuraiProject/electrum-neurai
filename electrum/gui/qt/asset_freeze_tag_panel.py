@@ -20,6 +20,7 @@ from electrum.logging import Logger
 from electrum.transaction import PartialTxOutput
 from electrum.wallet import get_locktime_for_new_transaction
 
+from . import neurai_theme
 from .util import HelpLabel, ColorScheme, HelpButton, AutoResizingTextEdit, qt_event_listener, QtEventListener
 from .util import QHSeperationLine, read_QIcon, MONOSPACE_FONT, EnterButton, webopen_safe
 from .my_treeview import MyTreeView
@@ -120,6 +121,7 @@ class FreezePanel(QWidget):
         vbox = QVBoxLayout(self)
         self.label = QLabel()
         self.b = EnterButton('', self._create_tx)
+        neurai_theme.make_primary(self.b)
         self.b.setMaximumWidth(200)
 
         vbox.addWidget(self.label)

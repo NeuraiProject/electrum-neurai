@@ -34,7 +34,11 @@ class OverlayLabel(QtWidgets.QLabel):
         super().__init__(text, parent)
         self.setMinimumHeight(max(150, 10 * font_height()))
         self.setGeometry(0, 0, self.width(), self.height())
-        self.setStyleSheet(self.STYLESHEET)
+        from . import neurai_theme
+        t = neurai_theme.tokens()
+        self.setStyleSheet(
+            f"QLabel, QLabel link {{ color: {neurai_theme.css(t.text)}; background-color: {neurai_theme.css(t.accent)};"
+            f" border: 1px solid {neurai_theme.css(t.primary)}; border-radius: 8px; padding: 6px; }}")
         self.setMargin(0)
         parent.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.setWordWrap(True)

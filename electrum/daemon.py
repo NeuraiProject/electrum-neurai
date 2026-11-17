@@ -595,8 +595,9 @@ class Daemon(Logger):
                     if self.network:
                         await group.spawn(self.network.stop(full_shutdown=True))
                     await group.spawn(self.taskgroup.cancel_remaining())
-            self.logger.info('saving IPFS metadata')
-            IPFSDB.get_instance().write()
+            if IPFSDB._instance is not None:  # set up by the Qt GUI, absent if it failed to start
+                self.logger.info('saving IPFS metadata')
+                IPFSDB.get_instance().write()
             if self._plugins:
                 self.logger.info("stopping plugins")
                 self._plugins.stop()

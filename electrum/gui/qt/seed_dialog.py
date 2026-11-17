@@ -32,7 +32,8 @@ from PyQt5.QtWidgets import (QVBoxLayout, QCheckBox, QHBoxLayout, QLineEdit,
                              QScrollArea, QWidget, QPushButton, QComboBox)
 
 from electrum.i18n import _
-from electrum.mnemonic import Mnemonic, seed_type, filenames
+from electrum.mnemonic import Mnemonic, seed_type, filenames, unsupported_seed_type_message
+from electrum.util import UserFacingException
 from electrum import old_mnemonic
 from electrum import slip39
 
@@ -76,7 +77,8 @@ class SeedLayout(QVBoxLayout):
             self.wordlist = Mnemonic(self.lang).wordlist
         else:
             self.wordlist = Mnemonic('en').wordlist
-            seed = Mnemonic('en').make_seed(seed_type=self.electrum_seed_type)
+            # always a 'standard' Electrum seed: Neurai has no SegWit yet
+            seed = Mnemonic('en').make_seed(seed_type='standard')
         self.seed_warning.setText(seed_warning_msg(seed))
         self.seed_e.setText(seed)
 
@@ -413,11 +415,14 @@ class SeedLayout(QVBoxLayout):
             t = seed_type(s)
             label = _('Seed Type') + ': ' + t if t else ''
             if t and not b:  # electrum seed, but does not conform to dialog rules
-                msg = ' '.join([
-                    '<b>' + _('Warning') + ':</b>  ',
-                    _("Looks like you have entered a valid seed of type '{}' but this dialog does not support such seeds.").format(t),
-                    _("If unsure, try restoring as '{}'.").format(_("Standard wallet")),
-                ])
+                if reason := unsupported_seed_type_message(t):  # segwit / 2fa seeds
+                    details = [reason]
+                else:
+                    details = [
+                        _("Looks like you have entered a valid seed of type '{}' but this dialog does not support such seeds.").format(t),
+                        _("If unsure, try restoring as '{}'.").format(_("Standard wallet")),
+                    ]
+                msg = ' '.join(['<b>' + _('Warning') + ':</b>  '] + details)
                 self.seed_warning.setText(msg)
             else:
                 self.seed_warning.setText("")
@@ -490,18 +495,28 @@ class KeysLayout(QVBoxLayout):
         else:
             self.addLayout(header_layout)
         self.addWidget(self.text_e)
+        # shows why a well-formed key cannot be used (e.g. SegWit keys on Neurai)
+        self.error_label = WWLabel('')
+        self.error_label.setStyleSheet(ColorScheme.RED.as_stylesheet())
+        self.error_label.setVisible(False)
+        self.addWidget(self.error_label)
 
     def get_text(self):
         return self.text_e.text()
 
     def on_edit(self):
         valid = False
+        error_text = ''
         try:
             valid = self.is_valid(self.get_text())
         except Exception as e:
             self.parent.next_button.setToolTip(f'{_("Error")}: {str(e)}')
+            if isinstance(e, UserFacingException):
+                error_text = str(e)
         else:
             self.parent.next_button.setToolTip('')
+        self.error_label.setText(error_text)
+        self.error_label.setVisible(bool(error_text))
         self.parent.next_button.setEnabled(valid)
 
 

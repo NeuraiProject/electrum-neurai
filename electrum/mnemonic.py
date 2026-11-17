@@ -27,7 +27,7 @@ import math
 import hashlib
 import unicodedata
 import string
-from typing import Sequence, Dict
+from typing import Sequence, Dict, Optional
 from types import MappingProxyType
 
 from .util import resource_path, bfh, randrange
@@ -158,6 +158,28 @@ filenames = {
 }
 
 
+def wordlist_language(lang: Optional[str]) -> Optional[str]:
+    """Map a language code to a key of `filenames`, or None if there is no
+    wordlist for it. Accepts the keys themselves ('zh_s', 'ja', ...), bare
+    languages ('zh', 'es') and locale names ('es_ES', 'zh_CN', 'zh_TW', 'zh-Hant').
+    """
+    if not lang:
+        return 'en'
+    if lang in filenames:
+        return lang
+    norm = lang.replace('-', '_')
+    parts = norm.split('_')
+    base = parts[0].lower()
+    if base == 'zh':
+        region = norm[len(parts[0]):].lower()
+        if any(x in region for x in ('hant', 'tw', 'hk', 'mo')):
+            return 'zh_t'
+        return 'zh_s'
+    if base in filenames:
+        return base
+    return None
+
+
 class Mnemonic(Logger):
     # Seed derivation does not follow BIP39
     # Mnemonic phrase uses a hash based checksum, instead of a wordlist-dependent checksum
@@ -166,9 +188,14 @@ class Mnemonic(Logger):
         Logger.__init__(self)
         lang = lang or 'en'
         self.logger.info(f'language {lang}')
-        filename = filenames.get(lang[0:4], 'english.txt')
+        key = wordlist_language(lang)
+        if key is None:
+            self.logger.warning(f'no wordlist for language {lang!r}, using English')
+            key = 'en'
+        self.lang = key
+        filename = filenames[key]
         self.wordlist = Wordlist.from_file(filename)
-        if lang == 'ja' or lang == 'ko':
+        if key == 'ja' or key == 'ko':
             self.wordlist.space = u"\u3000"
         self.logger.info(f"wordlist {filename} has {len(self.wordlist)} words")
 
@@ -315,3 +342,33 @@ def is_seed(x: str) -> bool:
 
 def is_any_2fa_seed_type(seed_type: str) -> bool:
     return seed_type in ['2fa', '2fa_segwit']
+
+
+# Electrum seed types this client can create or restore on Neurai. SegWit
+# seeds need bech32 addresses (Neurai has no SegWit yet) and 2FA seeds need the
+# TrustedCoin plugin, which this fork does not ship. BIP39/SLIP39 seeds are
+# fine with a legacy (p2pkh) derivation.
+SUPPORTED_SEED_TYPES = ('old', 'standard')
+
+
+def is_supported_seed(x: str, *, allow_old: bool = True) -> bool:
+    t = seed_type(x)
+    if t == 'old':
+        return allow_old
+    return t in SUPPORTED_SEED_TYPES
+
+
+def unsupported_seed_type_message(seed_type: str) -> Optional[str]:
+    """User-facing reason why an Electrum seed of this type cannot be used,
+    or None if the type is supported (or unknown)."""
+    from .i18n import _
+    if is_any_2fa_seed_type(seed_type):
+        reason = _("Two-factor authentication (2FA) wallets are not supported by Electrum-Neurai.")
+    elif seed_type == 'segwit':
+        reason = _("Neurai does not support SegWit yet.")
+    else:
+        return None
+    return ' '.join([
+        _("This is an Electrum '{}' seed, which cannot be used here.").format(seed_type),
+        reason,
+    ])

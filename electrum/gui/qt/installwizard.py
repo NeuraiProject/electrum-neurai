@@ -44,10 +44,10 @@ MSG_HW_STORAGE_ENCRYPTION = _("Set wallet file encryption.") + '\n'\
                           + _("It also contains your master public key that allows watching your addresses.") + '\n\n'\
                           + _("Note: If you enable this setting, you will need your hardware device to open your wallet.")
 WIF_HELP_TEXT = (_('WIF keys are typed in Electrum, based on script type.') + '\n\n' +
-                 _('A few examples') + ':\n' +
-                 'p2pkh:KxZcY47uGp9a...       \t-> 1DckmggQM...\n' +
-                 'p2wpkh-p2sh:KxZcY47uGp9a... \t-> 3NhNeZQXF...\n' +
-                 'p2wpkh:KxZcY47uGp9a...      \t-> bc1q3fjfk...')
+                 _('Neurai does not support SegWit yet, so only legacy (p2pkh) keys can be used:') + '\n' +
+                 'KxZcY47uGp9a...       \t-> NYXixSUfy...\n' +
+                 'p2pkh:KxZcY47uGp9a... \t-> NYXixSUfy...\n\n' +
+                 _("Keys with a SegWit prefix ('p2wpkh:', 'p2wpkh-p2sh:') are refused."))
 # note: full key is KxZcY47uGp9aVQAb6VVvuBs8SwHKgkSR2DbZUzjDzXf2N2GPhG9n
 MSG_PASSPHRASE_WARN_ISSUE4566 = _("Warning") + ": "\
                               + _("You have multiple consecutive whitespaces or leading/trailing "
@@ -651,6 +651,11 @@ class InstallWizard(QDialog, MessageBoxMixin, BaseWizard):
                 script_type = account["script_type"]
                 if script_type == "p2pkh":
                     script_type = "standard"
+                if script_type not in c_values:
+                    # e.g. a SegWit account found by an older scan; not usable on Neurai
+                    self.show_error(_("This account uses {} addresses, which cannot be used here: "
+                                      "Neurai does not support SegWit yet.").format(script_type))
+                    return
                 button_index = c_values.index(script_type)
                 button = clayout.group.buttons()[button_index]
                 button.setChecked(True)

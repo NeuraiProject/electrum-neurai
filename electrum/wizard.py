@@ -9,7 +9,9 @@ from electrum.wallet_db import WalletDB
 from electrum.bip32 import normalize_bip32_derivation, xpub_type
 from electrum import keystore
 from electrum import bitcoin
-from electrum.mnemonic import is_any_2fa_seed_type
+from electrum.mnemonic import seed_type, unsupported_seed_type_message
+from electrum.i18n import _
+from electrum.util import UserFacingException
 
 
 class WizardViewState(NamedTuple):
@@ -246,9 +248,9 @@ class NewWalletWizard(AbstractWizard):
 
     def on_wallet_type(self, wizard_data):
         t = wizard_data['wallet_type']
+        # no '2fa': the TrustedCoin plugin is not part of Electrum-Neurai
         return {
             'standard': 'keystore_type',
-            '2fa': 'trustedcoin_start',
             'multisig': 'multisig',
             'imported': 'imported'
         }.get(t)
@@ -339,22 +341,36 @@ class NewWalletWizard(AbstractWizard):
                 return True
         return False
 
+    @staticmethod
+    def check_electrum_seed_supported(seed: str) -> None:
+        if msg := unsupported_seed_type_message(seed_type(seed)):  # segwit / 2fa
+            raise UserFacingException(msg)
+
+    @staticmethod
+    def bip39_script_to_xtype(wallet_type: str, script_type: str) -> str:
+        # Neurai has no SegWit yet: p2pkh (single-sig) or p2sh (multisig) only
+        legacy = 'p2sh' if wallet_type == 'multisig' else 'p2pkh'
+        if script_type not in (legacy, 'standard'):
+            raise keystore.UnsupportedScriptType(keystore.unsupported_xtype_message(script_type))
+        return 'standard'
+
     def keystore_from_data(self, wallet_type, data):
         if 'seed' in data:
             if data['seed_variant'] == 'electrum':
+                self.check_electrum_seed_supported(data['seed'])
                 return keystore.from_seed(data['seed'], data['seed_extra_words'], True)
             elif data['seed_variant'] == 'bip39':
                 root_seed = keystore.bip39_to_seed(data['seed'], data['seed_extra_words'])
                 derivation = normalize_bip32_derivation(data['derivation_path'])
-                if wallet_type == 'multisig':
-                    script = data['script_type'] if data['script_type'] != 'p2sh' else 'standard'
-                else:
-                    script = data['script_type'] if data['script_type'] != 'p2pkh' else 'standard'
+                script = self.bip39_script_to_xtype(wallet_type, data['script_type'])
                 return keystore.from_bip43_rootseed(root_seed, derivation, xtype=script)
             else:
                 raise Exception('Unsupported seed variant %s' % data['seed_variant'])
         elif 'master_key' in data:
-            return keystore.from_master_key(data['master_key'])
+            k = keystore.from_master_key(data['master_key'])
+            if isinstance(k, keystore.Xpub):
+                keystore.check_xtype_supported(xpub_type(k.xpub))
+            return k
         else:
             raise Exception('no seed or master_key in data')
 
@@ -363,7 +379,10 @@ class NewWalletWizard(AbstractWizard):
         # override
 
     def create_storage(self, path, data):
-        assert data['wallet_type'] in ['standard', '2fa', 'imported', 'multisig']
+        if data['wallet_type'] == '2fa':
+            raise UserFacingException(
+                _("Two-factor authentication (2FA) wallets are not supported by Electrum-Neurai."))
+        assert data['wallet_type'] in ['standard', 'imported', 'multisig']
 
         if os.path.exists(path):
             raise Exception('file already exists at path')
@@ -378,7 +397,7 @@ class NewWalletWizard(AbstractWizard):
                 k = keystore.Imported_KeyStore({})
                 keys = keystore.get_private_keys(data['private_key_list'])
                 for pk in keys:
-                    assert bitcoin.is_private_key(pk)
+                    assert keystore.is_supported_private_key(pk)  # no SegWit keys
                     txin_type, pubkey = k.import_privkey(pk, None)
                     addr = bitcoin.pubkey_to_address(txin_type, pubkey)
                     addresses[addr] = {'type': txin_type, 'pubkey': pubkey}
@@ -386,33 +405,25 @@ class NewWalletWizard(AbstractWizard):
                 for addr in data['address_list'].split():
                     addresses[addr] = {}
         elif data['keystore_type'] in ['createseed', 'haveseed']:
-            if data['seed_type'] in ['old', 'standard', 'segwit']:
+            if data['seed_type'] in ['old', 'standard']:
                 self._logger.debug('creating keystore from electrum seed')
+                self.check_electrum_seed_supported(data['seed'])
                 k = keystore.from_seed(data['seed'], data['seed_extra_words'], data['wallet_type'] == 'multisig')
             elif data['seed_type'] == 'bip39':
                 self._logger.debug('creating keystore from bip39 seed')
                 root_seed = keystore.bip39_to_seed(data['seed'], data['seed_extra_words'])
                 derivation = normalize_bip32_derivation(data['derivation_path'])
-                if data['wallet_type'] == 'multisig':
-                    script = data['script_type'] if data['script_type'] != 'p2sh' else 'standard'
-                else:
-                    script = data['script_type'] if data['script_type'] != 'p2pkh' else 'standard'
+                script = self.bip39_script_to_xtype(data['wallet_type'], data['script_type'])
                 k = keystore.from_bip43_rootseed(root_seed, derivation, xtype=script)
-            elif is_any_2fa_seed_type(data['seed_type']):
-                self._logger.debug('creating keystore from 2fa seed')
-                k = keystore.from_xprv(data['x1/']['xprv'])
+            elif msg := unsupported_seed_type_message(data['seed_type']):  # segwit, 2fa
+                raise UserFacingException(msg)
             else:
                 raise Exception('unsupported/unknown seed_type %s' % data['seed_type'])
         elif data['keystore_type'] == 'masterkey':
             k = keystore.from_master_key(data['master_key'])
             if isinstance(k, keystore.Xpub):  # has xpub
-                t1 = xpub_type(k.xpub)
-                if data['wallet_type'] == 'multisig':
-                    if t1 not in ['standard', 'p2wsh', 'p2wsh-p2sh']:
-                        raise Exception('wrong key type %s' % t1)
-                else:
-                    if t1 not in ['standard', 'p2wpkh', 'p2wpkh-p2sh']:
-                        raise Exception('wrong key type %s' % t1)
+                # Neurai has no SegWit yet: no ypub/zpub/Ypub/Zpub
+                keystore.check_xtype_supported(xpub_type(k.xpub))
             elif isinstance(k, keystore.Old_KeyStore):
                 pass
             else:
@@ -434,17 +445,6 @@ class NewWalletWizard(AbstractWizard):
 
         if data['wallet_type'] == 'standard':
             db.put('keystore', k.dump())
-        elif data['wallet_type'] == '2fa':
-            db.put('x1/', k.dump())
-            if data['trustedcoin_keepordisable'] == 'disable':
-                k2 = keystore.from_xprv(data['x2/']['xprv'])
-                if data['encrypt'] and k2.may_have_password():
-                    k2.update_password(None, data['password'])
-                db.put('x2/', k2.dump())
-            else:
-                db.put('x2/', data['x2/'])
-            db.put('x3/', data['x3/'])
-            db.put('use_trustedcoin', True)
         elif data['wallet_type'] == 'multisig':
             if not isinstance(k, keystore.Xpub):
                 raise Exception(f"unexpected keystore(main) type={type(k)} in multisig. not bip32.")
@@ -465,8 +465,8 @@ class NewWalletWizard(AbstractWizard):
                 db.put('keystore', k.dump())
             db.put('addresses', addresses)
 
-        if k and k.can_have_deterministic_lightning_xprv():
-            db.put('lightning_xprv', k.get_lightning_xprv(data['password'] if data['encrypt'] else None))
+        # note: no Lightning keys ('lightning_xprv'): Lightning needs SegWit,
+        #       which Neurai does not have yet.
 
         db.load_plugins()
         db.write()

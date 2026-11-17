@@ -78,6 +78,7 @@ class AbstractNet:
     DGW_CHECKPOINTS_SPACING = 0
     DGW_CHECKPOINTS_START = 0
     MATURE = 0
+    COINBASE_MATURITY = 100  # blocks before a coinbase output can be spent
 
     NET_NAME: str
     TESTNET: bool
@@ -180,8 +181,9 @@ class NeuraiMainnet(AbstractNet):
 
 
 class NeuraiTestnet(AbstractNet):
+    """The DePIN-Test testnet (CTestNetParams of the Neurai node, DePIN-Test branch)."""
     NET_NAME = "testnet"
-    BIP44_COIN_TYPE = 0
+    BIP44_COIN_TYPE = 1  # nExtCoinType: the node's BIP44 wallets use m/44'/1'/...
     LN_REALM_BYTE = 0
     LN_DNS_SEEDS = [
     ]
@@ -190,23 +192,31 @@ class NeuraiTestnet(AbstractNet):
     ADDRTYPE_P2PKH = 127
     ADDRTYPE_P2SH = 196
     ADDRTYPE_P2SH_ALT = 196
-    MATURE = 60
+    MATURE = 5  # COINBASE_MATURITY_TESTNET
+    COINBASE_MATURITY = 5  # COINBASE_MATURITY_TESTNET
     SEGWIT_HRP = ""
     BOLT11_HRP = SEGWIT_HRP
-    GENESIS = "0000006af8b8297448605b0283473ec712f9768f81cc7eae6269b875dee3b0cf"
-    DEFAULT_PORTS = {'t': '19111', 's': '19112'}
+    # testnet reset of 2026-11-05: time 1793836800, nonce 2915850, bits 0x1e00ffff, version 2
+    GENESIS = "000000c710413a4265a996d30c86043aedef6a563900f1bc43fea61d5b2dc77d"
+    # electrs-neurai testnet defaults (tcp 60001; ssl 60002 in its Docker stack)
+    DEFAULT_PORTS = {'t': '60001', 's': '60002'}
     DEFAULT_SERVERS = read_json('servers_testnet.json', {})
     CHECKPOINTS = []
     DGW_CHECKPOINTS = read_json('checkpoints_dgw_testnet.json', [])
     DGW_CHECKPOINTS_SPACING = 2016
     DGW_CHECKPOINTS_START = 0
 
-    KawpowActivationTS = 1681720841
-    KawpowActivationHeight = 1
+    # KAWPOW never activates (nKAWPOWActivationTime = 0xFFFFFFFF): every header is
+    # the 80-byte legacy header and the block hash is its SHA256d (fSHA256Mining).
+    # Headers files store 80-byte records (see blockchain.header_size).
+    KawpowActivationTS = 0xFFFFFFFF
+    KawpowActivationHeight = 0xFFFFFFFF
+    SHA256D_HEADERS = True
     nDGWActivationBlock = 1
-    
+
     DEFAULT_MESSAGE_CHANNELS = []
-    ASSET_PREFIX = b'rvn'
+    # NIP-040: asset outputs carry the "xna" marker from height 10 (nAssetMarkerNip040Height)
+    ASSET_PREFIX = b'xna'
     SHORT_NAME = 'tXNA'
     LONG_NAME = 'Neurai'
     MULTISIG_ASSETS = False
@@ -242,14 +252,14 @@ class NeuraiTestnet(AbstractNet):
 
     BURN_ADDRESSES = BurnAddresses(
         IssueAssetBurnAddress='tBURNXXXXXXXXXXXXXXXXXXXXXXXVZLroy',
-        ReissueAssetBurnAddress='tXReissueAssetXXXXXXXXXXXXXXYmsjpM',
-        IssueSubAssetBurnAddress='tXissueSubAssetXXXXXXXXXXXXXW53F8Q',
-        IssueUniqueAssetBurnAddress='tXissueUniqueAssetXXXXXXXXXXSChvqQ',
-        IssueMsgChannelAssetBurnAddress='tXissueMsgChanneLAssetXXXXXXVFmW2d',
-        IssueQualifierAssetBurnAddress='tXissueQuaLifierXXXXXXXXXXXXTfjTyH',
-        IssueSubQualifierAssetBurnAddress='tXissueSubQuaLifierXXXXXXXXXYmbjCh',
-        IssueRestrictedAssetBurnAddress='tXissueRestrictedXXXXXXXXXXXbvd3Ug',
-        AddNullQualifierTagBurnAddress='tXaddTagBurnXXXXXXXXXXXXXXXXYXaTg1',
+        ReissueAssetBurnAddress='tAssetXXXXXXXXXXXXXXXXXXXXXXas6pz8',
+        IssueSubAssetBurnAddress='tSubAssetXXXXXXXXXXXXXXXXXXXXGTvF4',
+        IssueUniqueAssetBurnAddress='tUniqueAssetXXXXXXXXXXXXXXXXVCgpLs',
+        IssueMsgChannelAssetBurnAddress='tMsgChanneLAssetXXXXXXXXXXXXVsJoya',
+        IssueQualifierAssetBurnAddress='tQuaLifierXXXXXXXXXXXXXXXXXXT5czoV',
+        IssueSubQualifierAssetBurnAddress='tSubQuaLifierXXXXXXXXXXXXXXXW5MmGk',
+        IssueRestrictedAssetBurnAddress='tRestrictedXXXXXXXXXXXXXXXXXVyPBEK',
+        AddNullQualifierTagBurnAddress='tTagBurnXXXXXXXXXXXXXXXXXXXXYm6pxA',
         GlobalBurnAddress='tBURNXXXXXXXXXXXXXXXXXXXXXXXVZLroy'
     )
 

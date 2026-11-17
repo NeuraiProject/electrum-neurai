@@ -30,12 +30,18 @@ class Bip39RecoveryDialog(WindowModalDialog):
         self.setMinimumWidth(400)
         vbox = QVBoxLayout(self)
         self.content = QVBoxLayout()
+        network = Network.get_instance()
+        if network is None:  # offline mode: nothing to scan with
+            self.content.addWidget(QLabel(_('You are offline.') + ' ' + _('Existing accounts cannot be detected.')))
+            vbox.addLayout(self.content)
+            vbox.addLayout(Buttons(CancelButton(self)))
+            self.show()
+            return
         self.content.addWidget(QLabel(_('Scanning common paths for existing accounts...')))
         vbox.addLayout(self.content)
 
         self.thread = TaskThread(self)
         self.thread.finished.connect(self.deleteLater) # see #3956
-        network = Network.get_instance()
         coro = account_discovery(network, self.get_account_xpub)
         fut = asyncio.run_coroutine_threadsafe(coro, network.asyncio_loop)
         self.thread.add(

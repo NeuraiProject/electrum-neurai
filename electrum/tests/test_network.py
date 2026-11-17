@@ -1,4 +1,5 @@
 import asyncio
+import os
 import tempfile
 import unittest
 
@@ -10,7 +11,7 @@ from electrum.crypto import sha256
 from electrum import util
 
 from . import ElectrumTestCase
-from .test_blockchain import NeuraiUnitTestNet, make_header_tree
+from .test_blockchain import NeuraiUnitTestNet, NeuraiUnitTestNetSha256d, make_header_tree
 
 
 class MockTaskGroup:
@@ -148,6 +149,47 @@ class TestNetwork(ElectrumTestCase):
         self.assertEqual(5, ifa.blockchain.height())
         # a genesis padded to 120 bytes does not fit the expected chunk size
         served[0] = served[0].ljust(240, '0')
+        with self.assertRaises(RequestCorrupted):
+            await ifa.request_chunk(0, tip=5)
+
+
+class TestNetworkSha256d(ElectrumTestCase):
+    """Header chunks of a network with the headers of the testnet."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        constants.net = NeuraiUnitTestNetSha256d
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        constants.set_mainnet()
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.config = SimpleConfig({'electrum_path': self.electrum_path})
+        self.interface = MockInterface(self.config)
+
+    async def test_request_chunk_with_sha256d_headers(self):
+        # testnet servers send every header as 80 bytes; they are stored as 80-byte records
+        labels = 'ABCDEF'
+        raw_headers, headers = make_header_tree(tuple(zip(labels, (None,) + tuple(labels[:-1]))),
+                                                NeuraiUnitTestNetSha256d)
+        served = {height: raw_headers[label].hex() for height, label in enumerate(labels)}
+        blockchain.blockchains = {}
+        ifa = self.interface
+        ifa.blockchain = blockchain.Blockchain(config=self.config, forkpoint=0, parent=None,
+                                               forkpoint_hash=constants.net.GENESIS, prev_hash=None)
+        open(ifa.blockchain.path(), 'w+').close()
+        ifa.session = MockSession(served)
+        self.assertEqual((True, 6), await ifa.request_chunk(0, tip=5))
+        self.assertEqual(5, ifa.blockchain.height())
+        self.assertEqual(6 * 80, os.stat(ifa.blockchain.path()).st_size)
+        for height, label in enumerate(labels):
+            self.assertEqual(headers[label], ifa.blockchain.read_header(height))
+        # a header padded to 120 bytes (the size of KAWPOW headers) does not fit
+        served[3] = served[3].ljust(240, '0')
         with self.assertRaises(RequestCorrupted):
             await ifa.request_chunk(0, tip=5)
 

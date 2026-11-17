@@ -7,7 +7,7 @@ import attr
 from .json_db import StoredObject, stored_in
 from .i18n import _
 from .util import age, InvoiceError, format_satoshis
-from .bip21 import create_bip21_uri
+from .bip21 import create_bip21_uri, BITCOIN_BIP21_URI_SCHEME
 from .lnutil import hex_to_bytes
 from .lnaddr import lndecode, LnAddr
 from . import constants
@@ -213,25 +213,10 @@ class BaseInvoice(StoredObject):
         """Constructs Invoice object from BOLT-11 string.
         Might raise InvoiceError.
         """
-        raise NotImplementedError()
-        try:
-            lnaddr = lndecode(invoice)
-        except Exception as e:
-            raise InvoiceError(e) from e
-        amount_msat = lnaddr.get_amount_msat()
-        timestamp = lnaddr.date
-        exp_delay = lnaddr.get_expiry()
-        message = lnaddr.get_description()
-        return Invoice(
-            message=message,
-            amount_msat=amount_msat,
-            time=timestamp,
-            exp=exp_delay,
-            outputs=None,
-            bip70=None,
-            height=0,
-            lightning_invoice=invoice,
-        )
+        # Neurai has no Lightning (it needs SegWit, which Neurai does not have
+        # yet). Callers (e.g. payment_identifier, for text typed in 'Pay to')
+        # only handle InvoiceError, so never raise anything else here.
+        raise InvoiceError(_('Lightning invoices are not supported'))
 
     @classmethod
     def from_bip70_payreq(cls, pr: 'PaymentRequest', *, height: int = 0) -> 'Invoice':
@@ -359,7 +344,7 @@ class Request(BaseInvoice):
         if lightning_invoice:
             extra['lightning'] = lightning_invoice
         if not addr and lightning_invoice:
-            return "nuerai:?lightning="+lightning_invoice
+            return f"{BITCOIN_BIP21_URI_SCHEME}:?lightning={lightning_invoice}"
         if not addr and not lightning_invoice:
             return None
         uri = create_bip21_uri(addr, amount, message, extra_query_params=extra)

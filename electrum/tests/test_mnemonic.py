@@ -127,6 +127,32 @@ class Test_NewMnemonic(ElectrumTestCase):
             i = m.mnemonic_decode(seed)
             self.assertEqual(m.mnemonic_encode(i), seed)
 
+    def test_wordlist_language(self):
+        for lang, key in (
+                (None, 'en'), ('', 'en'), ('en', 'en'), ('en_UK', 'en'), ('es_ES', 'es'), ('ja', 'ja'),
+                ('ja_JP', 'ja'), ('ko_KR', 'ko'), ('fr_FR', 'fr'), ('it_IT', 'it'),
+                ('zh', 'zh_s'), ('zh_s', 'zh_s'), ('zh_t', 'zh_t'), ('zh_CN', 'zh_s'), ('zh-Hans', 'zh_s'),
+                ('zh_TW', 'zh_t'), ('zh_HK', 'zh_t'), ('zh-Hant', 'zh_t'),
+                ('pt_BR', None), ('xx', None)):
+            with self.subTest(lang=lang):
+                self.assertEqual(key, mnemonic.wordlist_language(lang))
+
+    def test_zh_does_not_fall_back_to_english(self):
+        # 'zh' (and locale names such as 'zh_CN', 'es_ES') used to silently give the English wordlist
+        english = mnemonic.Mnemonic('en').wordlist
+        m = mnemonic.Mnemonic('zh')
+        self.assertEqual('zh_s', m.lang)
+        self.assertEqual(mnemonic.Mnemonic('zh_s').wordlist, m.wordlist)
+        self.assertNotEqual(english, m.wordlist)
+        self.assertEqual(mnemonic.Mnemonic('es').wordlist, mnemonic.Mnemonic('es_ES').wordlist)
+        self.assertEqual(mnemonic.Mnemonic('zh_t').wordlist, mnemonic.Mnemonic('zh_TW').wordlist)
+        # BIP39 seeds in that language
+        seed = m.make_bip39_seed(num_bits=128)
+        self.assertEqual((True, True), keystore.bip39_is_checksum_valid(seed, wordlist=m.wordlist))
+        # unknown languages still fall back to English
+        self.assertEqual('en', mnemonic.Mnemonic('xx').lang)
+        self.assertEqual(english, mnemonic.Mnemonic('xx').wordlist)
+
 
 class Test_OldMnemonic(ElectrumTestCase):
 
@@ -192,6 +218,20 @@ class Test_seeds(ElectrumTestCase):
         for idx, (seed_words, _type) in enumerate(self.mnemonics):
             with self.subTest(msg=f"seed_type_subcase_{idx}", seed_words=seed_words):
                 self.assertEqual(_type, seed_type(seed_words), msg=seed_words)
+
+    def test_is_supported_seed(self):
+        # Neurai: no SegWit and no 2FA electrum seeds
+        for seed_words, _type in self.mnemonics:
+            with self.subTest(seed_words=seed_words):
+                self.assertEqual(_type in ('old', 'standard'), mnemonic.is_supported_seed(seed_words))
+                self.assertEqual(_type == 'standard', mnemonic.is_supported_seed(seed_words, allow_old=False))
+
+    def test_unsupported_seed_type_message(self):
+        self.assertIn('SegWit', mnemonic.unsupported_seed_type_message('segwit'))
+        self.assertIn('2FA', mnemonic.unsupported_seed_type_message('2fa'))
+        self.assertIn('2FA', mnemonic.unsupported_seed_type_message('2fa_segwit'))
+        for t in ('standard', 'old', 'bip39', ''):
+            self.assertIsNone(mnemonic.unsupported_seed_type_message(t))
 
     def test_is_matching_seed(self):
         self.assertTrue(is_matching_seed(seed="9dk", seed_again="9dk "))

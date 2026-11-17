@@ -37,7 +37,7 @@ from electrum.util import NotEnoughFunds, NoDynamicFeeEstimates
 from electrum.util import quantize_feerate
 from electrum.plugin import run_hook
 from electrum.transaction import Transaction, PartialTransaction
-from electrum.wallet import InternalAddressCorruption
+from electrum.wallet import InternalAddressCorruption, AmountBelowDustThreshold
 from electrum.simple_config import SimpleConfig
 
 from .util import (WindowModalDialog, ColorScheme, HelpLabel, Buttons, CancelButton,
@@ -75,6 +75,7 @@ class TxEditor(WindowModalDialog):
         self.wallet = window.wallet
         self.feerounding_sats = 0
         self.not_enough_funds = False
+        self._not_enough_funds_error = None  # type: Optional[NotEnoughFunds]
         self.no_dynfee_estimates = False
         self.needs_update = False
         # preview is disabled for lightning channel funding
@@ -537,7 +538,9 @@ class TxEditor(WindowModalDialog):
     def _update_widgets(self):
         # side effect: self.error
         self._update_amount_label()
-        if self.not_enough_funds:
+        if self.not_enough_funds and isinstance(self._not_enough_funds_error, AmountBelowDustThreshold):
+            self.error = str(self._not_enough_funds_error)
+        elif self.not_enough_funds:
             self.error = _('Not enough funds.')
             confirmed_only = self.config.WALLET_SPEND_CONFIRMED_ONLY
             if confirmed_only and self.can_pay_assuming_zero_fees(confirmed_only=False):
@@ -681,8 +684,9 @@ class ConfirmTxDialog(TxEditor):
             self.tx = self.make_tx(fee_estimator, confirmed_only=confirmed_only)
             self.not_enough_funds = False
             self.no_dynfee_estimates = False
-        except NotEnoughFunds:
+        except NotEnoughFunds as e:
             self.not_enough_funds = True
+            self._not_enough_funds_error = e
             self.tx = None
             if fallback_to_zero_fee:
                 try:
@@ -696,8 +700,9 @@ class ConfirmTxDialog(TxEditor):
             self.tx = None
             try:
                 self.tx = self.make_tx(0, confirmed_only=confirmed_only)
-            except NotEnoughFunds:
+            except NotEnoughFunds as e:
                 self.not_enough_funds = True
+                self._not_enough_funds_error = e
                 return
             except BaseException:
                 return

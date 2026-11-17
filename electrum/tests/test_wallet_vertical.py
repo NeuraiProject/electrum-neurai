@@ -2,17 +2,20 @@ import unittest
 from unittest import mock
 import shutil
 import tempfile
-from typing import Sequence
+from typing import Sequence, Tuple
 import asyncio
 import copy
 
-from electrum import storage, bitcoin, keystore, bip32, slip39, wallet
+from electrum import storage, bitcoin, keystore, bip32, slip39, wallet, constants, ecc
 from electrum import Transaction
 from electrum import SimpleConfig
 from electrum import util
 from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED, TX_HEIGHT_UNCONF_PARENT
 from electrum.wallet import (sweep, Multisig_Wallet, Standard_Wallet, Imported_Wallet,
-                             restore_wallet_from_text, Abstract_Wallet, CannotBumpFee)
+                             restore_wallet_from_text, Abstract_Wallet, CannotBumpFee,
+                             CannotDoubleSpendTx, CannotCPFP, AmountBelowDustThreshold, sweep_preparations)
+from electrum.asset import generate_transfer_script_from_base, generate_owner_script, generate_create_script
+from electrum.bitcoin import COIN
 from electrum.util import (
     bfh, NotEnoughFunds, UnrelatedTransactionException,
     UserFacingException)
@@ -2756,6 +2759,386 @@ class TestWalletSending(ElectrumTestCase):
                                          str(tx))
                         self.assertEqual('5aebd219bda308b9dcdde1af2d5b782b42e9df52877edfa5d2b2e985e4e4104c', tx.txid())
                         self.assertEqual('5aebd219bda308b9dcdde1af2d5b782b42e9df52877edfa5d2b2e985e4e4104c', tx.wtxid())
+
+
+def _neurai_funding_tx(outputs: Sequence[Tuple[bytes, int]], *, seed_byte: int = 0x11) -> Transaction:
+    """A transaction paying `outputs` (scriptpubkey, value) and spending a made-up coin."""
+    raw = '02000000' + '01' + (bytes([seed_byte]) * 32).hex() + '00000000' + '00' + 'fdffffff'
+    raw += bitcoin.var_int(len(outputs))
+    for scriptpubkey, value in outputs:
+        raw += TxOutput(scriptpubkey=scriptpubkey, value=value).serialize_to_network().hex()
+    raw += '00000000'
+    return Transaction(raw)
+
+
+def _p2pkh_script(address: str) -> bytes:  # any base58 address
+    return bfh(bitcoin.address_to_script(address))
+
+
+def _asset_script(asset: str, amount: int, address: str) -> bytes:
+    return bfh(generate_transfer_script_from_base(asset, amount, bitcoin.address_to_script(address)))
+
+
+class TestNeuraiFeeBumpCancelCpfpSweep(ElectrumTestCase):
+    """Fee bumps, cancels, CPFP and "spend max" (as used by Sweep) with Neurai's
+    fees, 1000x Bitcoin's (so the wallet's dust threshold is 546000 sat), and with assets.
+    """
+    TESTNET = True
+
+    def setUp(self):
+        super().setUp()
+        self.config = SimpleConfig({'electrum_path': self.electrum_path})
+        self.config.WALLET_COIN_CHOOSER_OUTPUT_ROUNDING = False
+        self.EXTERNAL_ADDRESS = bitcoin.hash160_to_p2pkh(bytes(19) + b'\x01')  # not in the wallet
+
+    def _create_wallet(self) -> Standard_Wallet:
+        ks = keystore.from_seed('fold object utility erase deputy output stadium feed stereo usage modify bean', '', False)
+        return WalletIntegrityHelper.create_standard_wallet(ks, gap_limit=2, config=self.config)
+
+    def _fund(self, wallet, outputs, *, seed_byte=0x11) -> Transaction:
+        funding_tx = _neurai_funding_tx(outputs, seed_byte=seed_byte)
+        wallet.adb.receive_tx_callback(funding_tx.txid(), funding_tx, TX_HEIGHT_UNCONFIRMED)
+        # unconfirmed coins of a tx from others are frozen if they carry less than
+        # WALLET_UNCONF_UTXO_FREEZE_THRESHOLD_SAT of the base coin, as all asset coins do
+        wallet.set_frozen_state_of_coins(
+            [f'{funding_tx.txid()}:{i}' for i in range(len(outputs))], False, write_to_disk=False)
+        return funding_tx
+
+    def _sign_and_receive(self, wallet, tx: PartialTransaction) -> Transaction:
+        tx.set_rbf(True)
+        wallet.sign_transaction(tx, password=None)
+        self.assertTrue(tx.is_complete())
+        wallet.adb.receive_tx_callback(tx.txid(), tx, TX_HEIGHT_UNCONFIRMED)
+        return tx_from_any(tx.serialize())
+
+    def _assert_signs_and_serializes(self, wallet, tx: PartialTransaction):
+        wallet.sign_transaction(tx, password=None)
+        self.assertTrue(tx.is_complete())
+        tx_copy = tx_from_any(tx.serialize())  # no outputs would raise SerializationError here
+        self.assertEqual(tx.txid(), tx_copy.txid())
+
+    def _assert_assets_balanced(self, tx: Transaction):
+        amounts_in = tx.input_value(asset_aware=True)
+        amounts_out = tx.output_value(asset_aware=True)
+        for asset in set(amounts_in) | set(amounts_out):
+            if asset is not None:
+                self.assertEqual(amounts_in[asset], amounts_out[asset], asset)
+
+    def _assert_base_outputs_above_dust(self, wallet, tx: Transaction):
+        self.assertTrue(tx.outputs())
+        for o in tx.outputs():
+            if o.asset is None:
+                self.assertGreaterEqual(o.value, wallet.dust_threshold(), o)
+            else:
+                self.assertEqual(0, o.value)
+
+    @staticmethod
+    def _asset_outputs(tx: Transaction):
+        return sorted((o.scriptpubkey, o.value) for o in tx.outputs() if o.asset)
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_wallet_dust_threshold(self, mock_save_db):
+        w = self._create_wallet()
+        # 182 bytes * 3 at the 0.01 XNA/kB minimum relay fee
+        self.assertEqual(546000, w.dust_threshold())
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_bump_fee_decreasing_change_never_leaves_tx_without_outputs(self, mock_save_db):
+        w = self._create_wallet()
+        recv = w.get_receiving_addresses()
+        self._fund(w, [(_p2pkh_script(recv[0]), 1_000_000)])
+        # pay ourselves, no change: only decreasing that single output can pay for a bump
+        outputs = [PartialTxOutput.from_address_and_value(recv[1], 900_000)]
+        tx = w.make_unsigned_transaction(coins=w.get_spendable_coins(None), outputs=outputs, fee=100_000)
+        self.assertEqual(1, len(tx.outputs()))
+        tx = self._sign_and_receive(w, tx)
+
+        # at 3000 sat/byte the output would drop below the dust threshold, and it is the only one
+        with self.assertRaises(CannotBumpFee) as ctx:
+            w.bump_fee(tx=tx, new_fee_rate=3000)
+        self.assertIn('dust threshold', str(ctx.exception))
+
+        new_tx = w.bump_fee(tx=tx, new_fee_rate=1500)
+        self.assertEqual(1, len(new_tx.outputs()))
+        self.assertEqual(recv[1], new_tx.outputs()[0].address)
+        self.assertLess(new_tx.outputs()[0].value, 900_000)
+        self._assert_base_outputs_above_dust(w, new_tx)
+        self.assertGreaterEqual(new_tx.get_fee() + 1, 1500 * new_tx.estimated_size())
+        self._assert_signs_and_serializes(w, new_tx)
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_bump_fee_decreasing_change_keeps_asset_outputs(self, mock_save_db):
+        w = self._create_wallet()
+        recv = w.get_receiving_addresses()
+        self._fund(w, [(_asset_script('CATS', 100 * COIN, recv[0]), 0),
+                       (_p2pkh_script(recv[0]), 10_000_000)])
+        coins = w.get_spendable_coins(None)
+        self.assertEqual({None, 'CATS'}, {c.asset for c in coins})
+        # move 30 CATS between our receiving addresses: every output is ours and none is
+        # change, so the bump decreases our own outputs, sorted by value (asset outputs have 0)
+        outputs = [PartialTxOutput.from_address_and_value(recv[1], 30 * COIN, asset='CATS'),
+                   PartialTxOutput.from_address_and_value(recv[0], 70 * COIN, asset='CATS'),
+                   PartialTxOutput.from_address_and_value(recv[0], 9_700_000)]
+        tx = self._sign_and_receive(w, PartialTransaction.from_io(coins, outputs))
+
+        new_tx = w.bump_fee(tx=tx, new_fee_rate=3000)
+        self.assertEqual(self._asset_outputs(tx), self._asset_outputs(new_tx))
+        self._assert_assets_balanced(new_tx)
+        self._assert_base_outputs_above_dust(w, new_tx)
+        base_outputs = [o for o in new_tx.outputs() if o.asset is None]
+        self.assertEqual(1, len(base_outputs))
+        self.assertLess(base_outputs[0].value, 9_700_000)
+        self.assertGreaterEqual(new_tx.get_fee() + 1, 3000 * new_tx.estimated_size())
+        self._assert_signs_and_serializes(w, new_tx)
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_bump_fee_asset_transfer_through_coin_chooser(self, mock_save_db):
+        w = self._create_wallet()
+        recv = w.get_receiving_addresses()
+        self._fund(w, [(_asset_script('CATS', 100 * COIN, recv[0]), 0),
+                       (_p2pkh_script(recv[0]), 1_000_000)])
+        self._fund(w, [(_p2pkh_script(recv[1]), 50_000_000)], seed_byte=0x33)
+        cats_and_small_coin = [c for c in w.get_spendable_coins(None) if c.address == recv[0]]
+        outputs = [PartialTxOutput.from_address_and_value(self.EXTERNAL_ADDRESS, 30 * COIN, asset='CATS')]
+        tx = w.make_unsigned_transaction(coins=cats_and_small_coin, outputs=outputs, fee=200_000)
+        self.assertEqual(3, len(tx.outputs()))  # CATS sent, CATS change, base coin change
+        tx = self._sign_and_receive(w, tx)
+
+        # the base coin change cannot pay 3000 sat/byte: the coin chooser adds our other coin
+        new_tx = w.bump_fee(tx=tx, new_fee_rate=3000)
+        self.assertEqual(self._asset_outputs(tx), self._asset_outputs(new_tx))
+        self._assert_assets_balanced(new_tx)
+        self._assert_base_outputs_above_dust(w, new_tx)
+        self.assertEqual(3, len(new_tx.inputs()))
+        self.assertTrue(all(w.is_change(o.address) for o in new_tx.outputs() if o.asset is None))
+        self.assertGreaterEqual(new_tx.get_fee() + 1, 3000 * new_tx.estimated_size())
+        self._assert_signs_and_serializes(w, new_tx)
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_issuance_outputs_at_change_addresses_survive_bump_and_batching(self, mock_save_db):
+        w = self._create_wallet()
+        recv = w.get_receiving_addresses()
+        change = w.get_change_addresses()
+        burn_address = constants.net.BURN_ADDRESSES.IssueAssetBurnAddress
+        burn_amount = int(constants.net.BURN_AMOUNTS.IssueAssetBurnAmount * COIN)
+        self._fund(w, [(_p2pkh_script(recv[0]), burn_amount + 10 * COIN),
+                       (_p2pkh_script(recv[1]), 5 * COIN)])
+        # as the Qt "Create asset" form does: the coin chooser pays the burn, and the new
+        # asset and its ownership token are then added for a (reserved) change address
+        issuance_coin = [c for c in w.get_spendable_coins(None) if c.address == recv[0]]
+        tx = w.make_unsigned_transaction(
+            coins=issuance_coin,
+            outputs=[PartialTxOutput.from_address_and_value(burn_address, burn_amount)],
+            fee=300_000)
+        asset_address = [a for a in change if a not in {o.address for o in tx.outputs()}][0]
+        tx.add_outputs([
+            PartialTxOutput(scriptpubkey=bfh(generate_owner_script(asset_address, 'CATS')), value=0),
+            PartialTxOutput(scriptpubkey=bfh(generate_create_script(asset_address, 'CATS', 1000 * COIN, 0, True, None)), value=0),
+        ], do_sort=False)
+        tx = self._sign_and_receive(w, tx)
+        self.assertTrue(w.is_change(asset_address))
+
+        def kept_outputs(t):
+            return sorted((o.scriptpubkey, o.value) for o in t.outputs() if o.asset or o.address == burn_address)
+        self.assertEqual(3, len(kept_outputs(tx)))
+
+        new_tx = w.bump_fee(tx=tx, new_fee_rate=3000, coins=[])
+        self.assertEqual(kept_outputs(tx), kept_outputs(new_tx))
+        self.assertGreaterEqual(new_tx.get_fee() + 1, 3000 * new_tx.estimated_size())
+        self._assert_signs_and_serializes(w, new_tx)
+
+        # "batch RBF" must not merge a new payment into the issuance either
+        self.config.WALLET_BATCH_RBF = True
+        payment = w.make_unsigned_transaction(
+            coins=w.get_spendable_coins(None),
+            outputs=[PartialTxOutput.from_address_and_value(self.EXTERNAL_ADDRESS, 1 * COIN)],
+            fee=1_000_000)
+        self.assertIsNone(payment.rbf_merge_txid)
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_spend_max_returns_unsent_assets_and_bump_decrease_payment_keeps_them(self, mock_save_db):
+        w = self._create_wallet()
+        recv = w.get_receiving_addresses()
+        self._fund(w, [(_asset_script('CATS', 100 * COIN, recv[0]), 0),
+                       (_p2pkh_script(recv[0]), 10_000_000)])
+        outputs = [PartialTxOutput.from_address_and_value(self.EXTERNAL_ADDRESS, 30 * COIN, asset='CATS'),
+                   PartialTxOutput.from_address_and_value(self.EXTERNAL_ADDRESS, '!')]
+        tx = w.make_unsigned_transaction(coins=w.get_spendable_coins(None), outputs=outputs, fee=300_000)
+        # all the base coin but the fee goes out; the 70 CATS not sent come back as change
+        self.assertEqual(2, len(tx.inputs()))
+        self.assertEqual(300_000, tx.get_fee())
+        self._assert_assets_balanced(tx)
+        cats_back = [o.asset_aware_value() for o in tx.outputs() if o.asset == 'CATS' and w.is_mine(o.address)]
+        self.assertEqual([70 * COIN], cats_back)
+        tx = self._sign_and_receive(w, tx)
+
+        new_tx = w.bump_fee(tx=tx, new_fee_rate=3000, decrease_payment=True)
+        self.assertEqual(self._asset_outputs(tx), self._asset_outputs(new_tx))
+        self._assert_assets_balanced(new_tx)
+        self._assert_base_outputs_above_dust(w, new_tx)
+        payment = [o for o in new_tx.outputs() if o.asset is None and o.address == self.EXTERNAL_ADDRESS]
+        self.assertEqual(1, len(payment))
+        self.assertLess(payment[0].value, 10_000_000 - 300_000)
+        self.assertGreaterEqual(new_tx.get_fee() + 1, 3000 * new_tx.estimated_size())
+        self._assert_signs_and_serializes(w, new_tx)
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_spend_max_below_dust_threshold(self, mock_save_db):
+        w = self._create_wallet()
+        recv = w.get_receiving_addresses()
+        self._fund(w, [(_p2pkh_script(recv[0]), 700_000)])
+        outputs = [PartialTxOutput.from_address_and_value(self.EXTERNAL_ADDRESS, '!')]
+        with self.assertRaises(AmountBelowDustThreshold) as ctx:
+            w.make_unsigned_transaction(coins=w.get_spendable_coins(None), outputs=outputs, fee=200_000)
+        self.assertIsInstance(ctx.exception, NotEnoughFunds)  # what the GUI handles
+        self.assertIn('dust threshold (546000 sat)', str(ctx.exception))
+        tx = w.make_unsigned_transaction(coins=w.get_spendable_coins(None), outputs=outputs, fee=100_000)
+        self.assertEqual([600_000], [o.value for o in tx.outputs()])
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_dscancel_returns_assets(self, mock_save_db):
+        w = self._create_wallet()
+        recv = w.get_receiving_addresses()
+        self._fund(w, [(_asset_script('CATS', 100 * COIN, recv[0]), 0),
+                       (_p2pkh_script(recv[0]), 10_000_000)])
+        outputs = [PartialTxOutput.from_address_and_value(self.EXTERNAL_ADDRESS, 30 * COIN, asset='CATS'),
+                   PartialTxOutput.from_address_and_value(self.EXTERNAL_ADDRESS, 2_000_000)]
+        tx = w.make_unsigned_transaction(coins=w.get_spendable_coins(None), outputs=outputs, fee=300_000)
+        tx = self._sign_and_receive(w, tx)
+        self.assertTrue(w.get_tx_info(tx).can_dscancel)
+
+        new_tx = w.dscancel(tx=tx, new_fee_rate=3000)
+        self.assertEqual({txin.prevout for txin in tx.inputs()}, {txin.prevout for txin in new_tx.inputs()})
+        self.assertTrue(all(w.is_mine(o.address) for o in new_tx.outputs()))
+        self._assert_assets_balanced(new_tx)
+        self.assertEqual(100 * COIN, new_tx.output_value(asset_aware=True)['CATS'])
+        self._assert_base_outputs_above_dust(w, new_tx)
+        self.assertGreaterEqual(new_tx.get_fee() + 1, 3000 * new_tx.estimated_size())
+        self._assert_signs_and_serializes(w, new_tx)
+
+        # not enough base coin left above the dust threshold
+        with self.assertRaises(CannotDoubleSpendTx) as ctx:
+            w.dscancel(tx=tx, new_fee_rate=40000)
+        self.assertIn('dust threshold', str(ctx.exception))
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_cpfp_skips_asset_outputs(self, mock_save_db):
+        w = self._create_wallet()
+        recv = w.get_receiving_addresses()
+        parent = self._fund(w, [(_asset_script('CATS', 100 * COIN, recv[0]), 0),
+                                (_p2pkh_script(recv[0]), 5_000_000)])
+        self.assertTrue(w.get_tx_info(parent).can_cpfp)
+        child = w.cpfp(parent, fee=500_000)
+        self.assertEqual([TxOutpoint(txid=bfh(parent.txid()), out_idx=1)], [txin.prevout for txin in child.inputs()])
+        self.assertEqual([None], [o.asset for o in child.outputs()])
+        self.assertEqual(4_500_000, child.output_value())
+        self._assert_signs_and_serializes(w, child)
+        with self.assertRaises(CannotCPFP):
+            w.cpfp(parent, fee=4_500_000)  # would leave less than the dust threshold
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_receive_tx_with_malformed_output_script(self, mock_save_db):
+        # any bytes are a consensus-valid output script; a tx paying us must still be added
+        w = self._create_wallet()
+        recv = w.get_receiving_addresses()
+        funding_tx = self._fund(w, [(bfh('4c'), 1000), (_p2pkh_script(recv[0]), 2_000_000)])
+        self.assertIsNotNone(w.db.get_transaction(funding_tx.txid()))
+        self.assertEqual((0, 2_000_000, 0), w.get_balance())
+        w.adb.remove_transaction(funding_tx.txid())
+        self.assertEqual((0, 0, 0), w.get_balance())
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_add_info_to_loaded_psbt_with_segwit_input(self, mock_save_db):
+        # Neurai has no SegWit, but a PSBT loaded in the GUI can still have a segwit input
+        w = self._create_wallet()
+        recv = w.get_receiving_addresses()
+        redeem_script = bfh(bitcoin.p2wpkh_nested_script('02' + '11' * 32))
+        p2sh_segwit_address = bitcoin.hash160_to_p2sh(bitcoin.hash_160(redeem_script))
+        funding_tx = self._fund(w, [(_p2pkh_script(recv[0]), 1_000_000),
+                                    (_p2pkh_script(p2sh_segwit_address), 2_000_000)])
+        txin = PartialTxInput(prevout=TxOutpoint(txid=bfh(funding_tx.txid()), out_idx=1))
+        txin.redeem_script = redeem_script
+        tx = PartialTransaction.from_io([txin], [PartialTxOutput.from_address_and_value(recv[1], 1_500_000)])
+        tx.add_info_from_wallet(w)
+        self.assertTrue(txin.is_segwit())
+        self.assertEqual(funding_tx.outputs()[1], txin.witness_utxo)
+
+    async def _sweep_preparations(self, funding_outputs, *,
+                                  privkey='p2pkh:cN3LiXmurmGRF5xngYd8XS2ZsP2KeXFUh4SH7wpC8uJJzw52JPq1'):
+        txin_type, secret, compressed = bitcoin.deserialize_privkey(privkey)
+        pubkey = ecc.ECPrivkey(secret).get_public_key_hex(compressed=compressed)
+        swept_address = bitcoin.pubkey_to_address('p2pkh', pubkey)
+        funding_tx = _neurai_funding_tx([(script(swept_address), value) for script, value in funding_outputs],
+                                        seed_byte=0x22)
+        utxos = [{'tx_hash': funding_tx.txid(), 'tx_pos': i, 'height': 1000, 'value': o.value}
+                 for i, o in enumerate(funding_tx.outputs())]
+        swept_scripthash = bitcoin.address_to_scripthash(swept_address)
+
+        class NetworkMock:
+            relay_fee = 1000
+            async def listunspent_for_scripthash(self, scripthash, *, asset=False):
+                return utxos if scripthash == swept_scripthash else []
+            async def get_transaction(self, txid):
+                assert txid == funding_tx.txid()
+                return funding_tx.serialize()
+        return await sweep_preparations([privkey], NetworkMock())
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_sweep_p2pkh_key_as_in_qt_gui(self, mock_save_db):
+        # main_window.sweep_key_dialog: the swept coins are fixed inputs of a "max" spend
+        w = self._create_wallet()
+        to_address = w.get_receiving_addresses()[0]
+        for privkey in ('p2pkh:cN3LiXmurmGRF5xngYd8XS2ZsP2KeXFUh4SH7wpC8uJJzw52JPq1',  # compressed
+                        '91gxDahzHiJ63HXmLP7pvZrkF8i5gKBXk4VqWfhbhJjtf6Ni5NU'):  # uncompressed, no prefix
+            with self.subTest(privkey=privkey):
+                coins, keypairs, locking_scripts = await self._sweep_preparations(
+                    [(_p2pkh_script, 10_000_000)], privkey=privkey)
+                self.assertEqual(1, len(coins))
+                tx = w.make_unsigned_transaction(
+                    coins=[], fixed_inputs=coins,
+                    outputs=[PartialTxOutput.from_address_and_value(to_address, '!')],
+                    fee=200_000, rbf=False)
+                self.assertEqual([c.prevout for c in coins], [txin.prevout for txin in tx.inputs()])
+                self.assertEqual([(to_address, 9_800_000)], [(o.address, o.value) for o in tx.outputs()])
+                tx.sign(keypairs, w, locking_script_overrides=locking_scripts)
+                self.assertTrue(tx.is_complete())
+                self.assertEqual(tx.txid(), tx_from_any(tx.serialize()).txid())
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_sweep_p2pkh_key_with_assets_as_in_qt_gui(self, mock_save_db):
+        w = self._create_wallet()
+        to_address = w.get_receiving_addresses()[0]
+        coins, keypairs, locking_scripts = await self._sweep_preparations([
+            (_p2pkh_script, 10_000_000),
+            (lambda addr: _asset_script('CATS', 5 * COIN, addr), 0)])
+        base_inputs = [c for c in coins if c.asset is None]
+        asset_inputs = [c for c in coins if c.asset]
+        self.assertEqual(['CATS'], [c.asset for c in asset_inputs])
+        asset_outputs = [PartialTxOutput.from_address_and_value(to_address, 5 * COIN, asset='CATS')]
+        tx = w.make_unsigned_transaction(
+            coins=[], fixed_inputs=base_inputs,
+            outputs=[PartialTxOutput.from_address_and_value(to_address, '!')],
+            fee=300_000, rbf=False)
+        tx.add_inputs(asset_inputs)
+        tx.add_outputs(asset_outputs)
+        self._assert_assets_balanced(tx)
+        self.assertEqual(300_000, tx.get_fee())
+        tx.sign(keypairs, w, locking_script_overrides=locking_scripts)
+        self.assertTrue(tx.is_complete())
+        self.assertEqual(tx.txid(), tx_from_any(tx.serialize()).txid())
+
+    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
+    async def test_sweep_p2pkh_key_below_dust_threshold(self, mock_save_db):
+        w = self._create_wallet()
+        to_address = w.get_receiving_addresses()[0]
+        coins, keypairs, locking_scripts = await self._sweep_preparations([(_p2pkh_script, 500_000)])
+        for fee in (200_000, 0):  # the GUI retries with a zero fee to word its error
+            with self.assertRaises(NotEnoughFunds) as ctx:
+                w.make_unsigned_transaction(
+                    coins=[], fixed_inputs=coins,
+                    outputs=[PartialTxOutput.from_address_and_value(to_address, '!')],
+                    fee=fee, rbf=False)
+            self.assertIn('dust threshold', str(ctx.exception))
 
 
 class TestWalletOfflineSigning(ElectrumTestCase):

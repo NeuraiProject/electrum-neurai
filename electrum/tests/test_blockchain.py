@@ -1,3 +1,4 @@
+import hashlib
 import json
 import shutil
 import tempfile
@@ -8,14 +9,15 @@ from electrum import constants, blockchain
 from electrum.crypto import sha256d
 from electrum.simple_config import SimpleConfig
 from electrum.blockchain import (Blockchain, deserialize_header, hash_header, InvalidHeader,
-                                 HEADER_SIZE, DGW_PASTBLOCKS)
+                                 HEADER_SIZE, LEGACY_HEADER_SIZE, DGW_PASTBLOCKS,
+                                 header_size, sha256d_headers)
 from electrum.util import bfh, make_dir
 
 from . import ElectrumTestCase
 
 
 class NeuraiUnitTestNet(constants.NeuraiTestnet):
-    """Regtest-like network for unit tests.
+    """Regtest-like network for unit tests, with the headers of mainnet.
 
     Its genesis is header 'A' of TestBlockchain.HEADERS and it has no
     checkpoints, so forks can start at any height. Like any TESTNET,
@@ -25,15 +27,28 @@ class NeuraiUnitTestNet(constants.NeuraiTestnet):
     GENESIS = "5d5c7ac641d18951ceae27616156b7acc4178d077c81c816ea2e784b47c99817"
     CHECKPOINTS = []
     DGW_CHECKPOINTS = []
+    # mainnet headers: legacy X16R genesis, then 120-byte KAWPOW headers
+    KawpowActivationTS = constants.NeuraiMainnet.KawpowActivationTS
+    KawpowActivationHeight = constants.NeuraiMainnet.KawpowActivationHeight
+    SHA256D_HEADERS = False
 
 
-def make_raw_header(label: str, height: int, prev_hash: str) -> bytes:
+class NeuraiUnitTestNetSha256d(NeuraiUnitTestNet):
+    """NeuraiUnitTestNet with the headers of the testnet: 80-byte legacy
+    headers only, hashed with SHA256d. GENESIS is set below."""
+    KawpowActivationTS = constants.NeuraiTestnet.KawpowActivationTS
+    KawpowActivationHeight = constants.NeuraiTestnet.KawpowActivationHeight
+    SHA256D_HEADERS = True
+
+
+def make_raw_header(label: str, height: int, prev_hash: str, net=NeuraiUnitTestNet) -> bytes:
     """Deterministic synthetic header for block `label` at `height`, child of `prev_hash`.
 
-    As on Neurai, the genesis (height 0) is a legacy 80-byte header hashed
-    with X16R (timestamp just before KawpowActivationTS), and every other
-    block is a 120-byte KAWPOW header with nheight, a 64-bit nonce and
-    mix_hash. The merkle root and mix_hash are derived from the label, so
+    With the headers of mainnet, the genesis (height 0) is a legacy 80-byte
+    header hashed with X16R (timestamp just before KawpowActivationTS), and
+    every other block is a 120-byte KAWPOW header with nheight, a 64-bit nonce
+    and mix_hash. With SHA256D_HEADERS (testnet), every block is a legacy
+    80-byte header. The merkle root and mix_hash are derived from the label, so
     blocks at the same height on different branches get different hashes.
     nonce/mix_hash are not real PoW solutions: kawpow.light_verify hashes
     any value, and PoW is not checked on test networks.
@@ -43,21 +58,37 @@ def make_raw_header(label: str, height: int, prev_hash: str) -> bytes:
     merkle_root = sha256d(b'merkle ' + label.encode())
     if height == 0:
         return struct.pack('<i32s32sIII', 4, bytes(32), merkle_root, genesis_time, bits, 0)
+    if net.SHA256D_HEADERS:
+        return struct.pack('<i32s32sIII', version, bfh(prev_hash)[::-1], merkle_root,
+                           genesis_time + 60 * height, bits, height)
     mix_hash = sha256d(b'mix ' + label.encode())
     return struct.pack('<i32s32sIIIQ32s', version, bfh(prev_hash)[::-1], merkle_root,
                        genesis_time + 60 * height, bits, height, height, mix_hash)
 
 
-def make_header_tree(tree):
+def make_header_tree(tree, net=NeuraiUnitTestNet):
     """tree: sequence of (label, parent label or None), parents first.
-    Returns (raw headers, deserialized headers), both keyed by label."""
+    Returns (raw headers, deserialized headers), both keyed by label,
+    in the header format of `net`."""
     raw_headers, headers = {}, {}
-    for label, parent in tree:
-        height = headers[parent]['block_height'] + 1 if parent else 0
-        prev_hash = hash_header(headers[parent]) if parent else '00' * 32
-        raw_headers[label] = make_raw_header(label, height, prev_hash)
-        headers[label] = deserialize_header(raw_headers[label], height)
+    old_net, constants.net = constants.net, net
+    try:
+        for label, parent in tree:
+            height = headers[parent]['block_height'] + 1 if parent else 0
+            prev_hash = hash_header(headers[parent]) if parent else '00' * 32
+            raw_headers[label] = make_raw_header(label, height, prev_hash, net)
+            headers[label] = deserialize_header(raw_headers[label], height)
+    finally:
+        constants.net = old_net
     return raw_headers, headers
+
+
+def sha256d_hash(raw_header: bytes) -> str:
+    """Block hash of an 80-byte header, computed without electrum."""
+    return hashlib.sha256(hashlib.sha256(raw_header).digest()).digest()[::-1].hex()
+
+
+NeuraiUnitTestNetSha256d.GENESIS = sha256d_hash(make_raw_header('A', 0, '00' * 32, NeuraiUnitTestNetSha256d))
 
 
 class TestBlockchain(ElectrumTestCase):
@@ -68,17 +99,27 @@ class TestBlockchain(ElectrumTestCase):
     #                             - G <- H <- I <- J <- K <- L
     #                           /
     # A <- B <- C <- D <- E <- F <- O <- P <- Q <- R <- S <- T <- U
-    RAW_HEADERS, HEADERS = make_header_tree((
+    TREE = (
         ('A', None), ('B', 'A'), ('C', 'B'), ('D', 'C'), ('E', 'D'), ('F', 'E'),
         ('O', 'F'), ('P', 'O'), ('Q', 'P'), ('R', 'Q'), ('S', 'R'), ('T', 'S'), ('U', 'T'),
         ('G', 'F'), ('H', 'G'), ('I', 'H'), ('J', 'I'), ('K', 'J'), ('L', 'K'),
         ('M', 'I'), ('N', 'M'), ('X', 'N'), ('Y', 'X'), ('Z', 'Y'),
-    ))
+    )
+    NET = NeuraiUnitTestNet
+    RAW_HEADERS, HEADERS = make_header_tree(TREE, NET)
+    # block hashes that name fork files (X16R genesis, KAWPOW after it)
+    EXPECTED_HASHES = {
+        'F': '26565462a36030638b8b81173b51641677983ceac4eba169933c0c73b64e3f8c',
+        'G': 'b4b26dcd7e8cc4e40621e78d06f5602ed17c785d87a87fd16e836d45fef988d0',
+        'O': 'e1efb7906e3753febe47b1854c0bf762ae3e4c49f0e936f58e0da46a821c4941',
+        'I': '5fd0f0e466d5c91235d99b86299e55342c05f894aa9e55e9566f358097f40207',
+        'J': 'cb89ad503493e36a9b7b860cddc988335b1e4120f7e1a19078e36a4fc28c1f11',
+    }
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        constants.net = NeuraiUnitTestNet
+        constants.net = cls.NET
 
     @classmethod
     def tearDownClass(cls):
@@ -95,6 +136,23 @@ class TestBlockchain(ElectrumTestCase):
     def _append_header(self, chain: Blockchain, header: dict):
         self.assertTrue(chain.can_connect(header))
         chain.save_header(header)
+
+    def fork_path(self, forkpoint: int, prev_label: str, first_label: str) -> str:
+        prev_hash = hash_header(self.HEADERS[prev_label]).lstrip('0')
+        first_hash = hash_header(self.HEADERS[first_label]).lstrip('0')
+        return os.path.join(self.data_dir, "forks", f"fork2_{forkpoint}_{prev_hash}_{first_hash}")
+
+    def test_header_hashes(self):
+        self.assertEqual(constants.net.GENESIS, hash_header(self.HEADERS['A']))
+        for label, expected_hash in self.EXPECTED_HASHES.items():
+            self.assertEqual(expected_hash, hash_header(self.HEADERS[label]))
+        for label, raw in self.RAW_HEADERS.items():
+            height = self.HEADERS[label]['block_height']
+            # headers of the network's format only: 80 bytes below KawpowActivationHeight
+            size = LEGACY_HEADER_SIZE if height < constants.net.KawpowActivationHeight else HEADER_SIZE
+            self.assertEqual(size, len(raw))
+            # header records: legacy headers zero-padded to header_size()
+            self.assertEqual(raw.ljust(header_size(), b'\x00').hex(), blockchain.serialize_header(self.HEADERS[label]))
 
     def test_get_height_of_last_common_block_with_chain(self):
         blockchain.blockchains[constants.net.GENESIS] = chain_u = Blockchain(
@@ -228,13 +286,13 @@ class TestBlockchain(ElectrumTestCase):
         self.assertEqual(constants.net.GENESIS, chain_u._forkpoint_hash)
         self.assertEqual(None, chain_u._prev_hash)
         self.assertEqual(os.path.join(self.data_dir, "blockchain_headers"), chain_u.path())
-        self.assertEqual(10 * HEADER_SIZE, os.stat(chain_u.path()).st_size)
+        self.assertEqual(10 * header_size(), os.stat(chain_u.path()).st_size)
         self.assertEqual(6, chain_l.forkpoint)
         self.assertEqual(chain_u, chain_l.parent)
         self.assertEqual(hash_header(self.HEADERS['G']), chain_l._forkpoint_hash)
         self.assertEqual(hash_header(self.HEADERS['F']), chain_l._prev_hash)
-        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_6_26565462a36030638b8b81173b51641677983ceac4eba169933c0c73b64e3f8c_b4b26dcd7e8cc4e40621e78d06f5602ed17c785d87a87fd16e836d45fef988d0"), chain_l.path())
-        self.assertEqual(4 * HEADER_SIZE, os.stat(chain_l.path()).st_size)
+        self.assertEqual(self.fork_path(6, 'F', 'G'), chain_l.path())
+        self.assertEqual(4 * header_size(), os.stat(chain_l.path()).st_size)
 
         self._append_header(chain_l, self.HEADERS['K'])
 
@@ -245,14 +303,14 @@ class TestBlockchain(ElectrumTestCase):
         self.assertEqual(chain_l, chain_u.parent)
         self.assertEqual(hash_header(self.HEADERS['O']), chain_u._forkpoint_hash)
         self.assertEqual(hash_header(self.HEADERS['F']), chain_u._prev_hash)
-        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_6_26565462a36030638b8b81173b51641677983ceac4eba169933c0c73b64e3f8c_e1efb7906e3753febe47b1854c0bf762ae3e4c49f0e936f58e0da46a821c4941"), chain_u.path())
-        self.assertEqual(4 * HEADER_SIZE, os.stat(chain_u.path()).st_size)
+        self.assertEqual(self.fork_path(6, 'F', 'O'), chain_u.path())
+        self.assertEqual(4 * header_size(), os.stat(chain_u.path()).st_size)
         self.assertEqual(0, chain_l.forkpoint)
         self.assertEqual(None, chain_l.parent)
         self.assertEqual(constants.net.GENESIS, chain_l._forkpoint_hash)
         self.assertEqual(None, chain_l._prev_hash)
         self.assertEqual(os.path.join(self.data_dir, "blockchain_headers"), chain_l.path())
-        self.assertEqual(11 * HEADER_SIZE, os.stat(chain_l.path()).st_size)
+        self.assertEqual(11 * header_size(), os.stat(chain_l.path()).st_size)
         for b in (chain_u, chain_l):
             self.assertTrue(all([b.can_connect(b.read_header(i), False) for i in range(b.height())]))
 
@@ -275,19 +333,19 @@ class TestBlockchain(ElectrumTestCase):
         self.assertEqual(constants.net.GENESIS, chain_z._forkpoint_hash)
         self.assertEqual(None, chain_z._prev_hash)
         self.assertEqual(os.path.join(self.data_dir, "blockchain_headers"), chain_z.path())
-        self.assertEqual(14 * HEADER_SIZE, os.stat(chain_z.path()).st_size)
+        self.assertEqual(14 * header_size(), os.stat(chain_z.path()).st_size)
         self.assertEqual(9, chain_l.forkpoint)
         self.assertEqual(chain_z, chain_l.parent)
         self.assertEqual(hash_header(self.HEADERS['J']), chain_l._forkpoint_hash)
         self.assertEqual(hash_header(self.HEADERS['I']), chain_l._prev_hash)
-        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_9_5fd0f0e466d5c91235d99b86299e55342c05f894aa9e55e9566f358097f40207_cb89ad503493e36a9b7b860cddc988335b1e4120f7e1a19078e36a4fc28c1f11"), chain_l.path())
-        self.assertEqual(3 * HEADER_SIZE, os.stat(chain_l.path()).st_size)
+        self.assertEqual(self.fork_path(9, 'I', 'J'), chain_l.path())
+        self.assertEqual(3 * header_size(), os.stat(chain_l.path()).st_size)
         self.assertEqual(6, chain_u.forkpoint)
         self.assertEqual(chain_z, chain_u.parent)
         self.assertEqual(hash_header(self.HEADERS['O']), chain_u._forkpoint_hash)
         self.assertEqual(hash_header(self.HEADERS['F']), chain_u._prev_hash)
-        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_6_26565462a36030638b8b81173b51641677983ceac4eba169933c0c73b64e3f8c_e1efb7906e3753febe47b1854c0bf762ae3e4c49f0e936f58e0da46a821c4941"), chain_u.path())
-        self.assertEqual(7 * HEADER_SIZE, os.stat(chain_u.path()).st_size)
+        self.assertEqual(self.fork_path(6, 'F', 'O'), chain_u.path())
+        self.assertEqual(7 * header_size(), os.stat(chain_u.path()).st_size)
         for b in (chain_u, chain_l, chain_z):
             self.assertTrue(all([b.can_connect(b.read_header(i), False) for i in range(b.height())]))
 
@@ -342,19 +400,19 @@ class TestBlockchain(ElectrumTestCase):
         self.assertEqual(constants.net.GENESIS, chain_z._forkpoint_hash)
         self.assertEqual(None, chain_z._prev_hash)
         self.assertEqual(os.path.join(self.data_dir, "blockchain_headers"), chain_z.path())
-        self.assertEqual(12 * HEADER_SIZE, os.stat(chain_z.path()).st_size)
+        self.assertEqual(12 * header_size(), os.stat(chain_z.path()).st_size)
         self.assertEqual(9, chain_l.forkpoint)
         self.assertEqual(chain_z, chain_l.parent)
         self.assertEqual(hash_header(self.HEADERS['J']), chain_l._forkpoint_hash)
         self.assertEqual(hash_header(self.HEADERS['I']), chain_l._prev_hash)
-        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_9_5fd0f0e466d5c91235d99b86299e55342c05f894aa9e55e9566f358097f40207_cb89ad503493e36a9b7b860cddc988335b1e4120f7e1a19078e36a4fc28c1f11"), chain_l.path())
-        self.assertEqual(2 * HEADER_SIZE, os.stat(chain_l.path()).st_size)
+        self.assertEqual(self.fork_path(9, 'I', 'J'), chain_l.path())
+        self.assertEqual(2 * header_size(), os.stat(chain_l.path()).st_size)
         self.assertEqual(6, chain_u.forkpoint)
         self.assertEqual(chain_z, chain_u.parent)
         self.assertEqual(hash_header(self.HEADERS['O']), chain_u._forkpoint_hash)
         self.assertEqual(hash_header(self.HEADERS['F']), chain_u._prev_hash)
-        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_6_26565462a36030638b8b81173b51641677983ceac4eba169933c0c73b64e3f8c_e1efb7906e3753febe47b1854c0bf762ae3e4c49f0e936f58e0da46a821c4941"), chain_u.path())
-        self.assertEqual(5 * HEADER_SIZE, os.stat(chain_u.path()).st_size)
+        self.assertEqual(self.fork_path(6, 'F', 'O'), chain_u.path())
+        self.assertEqual(5 * header_size(), os.stat(chain_u.path()).st_size)
 
         self.assertEqual(constants.net.GENESIS, chain_z.get_hash(0))
         self.assertEqual(hash_header(self.HEADERS['F']), chain_z.get_hash(5))
@@ -415,9 +473,9 @@ class TestBlockchain(ElectrumTestCase):
         self.assertEqual([chain_z, chain_l], self.get_chains_that_contain_header_helper(self.HEADERS['I']))
 
     async def test_connect_chunk_with_legacy_genesis(self):
-        # Servers send headers below KawpowActivationHeight (only the genesis)
-        # as 80 bytes and the rest as 120-byte KAWPOW headers; on disk every
-        # header takes HEADER_SIZE bytes.
+        # Servers send headers below KawpowActivationHeight (on mainnet only the
+        # genesis, on testnet all of them) as 80 bytes and the rest as 120-byte
+        # KAWPOW headers; on disk every header takes header_size() bytes.
         blockchain.blockchains[constants.net.GENESIS] = chain_u = Blockchain(
             config=self.config, forkpoint=0, parent=None,
             forkpoint_hash=constants.net.GENESIS, prev_hash=None)
@@ -430,10 +488,16 @@ class TestBlockchain(ElectrumTestCase):
 
         labels = 'ABCDEFOPQ'
         chunk = b''.join(self.RAW_HEADERS[x] for x in labels)
-        self.assertEqual(80 + 8 * 120, len(chunk))
+        if sha256d_headers():
+            self.assertEqual(9 * 80, len(chunk))
+        else:
+            self.assertEqual(80 + 8 * 120, len(chunk))
+        # a header of the wrong size does not fit
+        self.assertFalse(await chain_u.connect_chunk(0, (chunk + bytes(40)).hex()))
+        self.assertEqual(-1, chain_u.height())
         self.assertTrue(await chain_u.connect_chunk(0, chunk.hex()))
         self.assertEqual(8, chain_u.height())
-        self.assertEqual(9 * HEADER_SIZE, os.stat(chain_u.path()).st_size)
+        self.assertEqual(9 * header_size(), os.stat(chain_u.path()).st_size)
         for height, label in enumerate(labels):
             self.assertEqual(self.HEADERS[label], chain_u.read_header(height))
             self.assertEqual(hash_header(self.HEADERS[label]), chain_u.get_hash(height))
@@ -443,6 +507,31 @@ class TestBlockchain(ElectrumTestCase):
         self._append_header(chain_u, self.HEADERS['R'])
         chain_l = chain_u.fork(self.HEADERS['G'])
         self.assertEqual(hash_header(self.HEADERS['F']), chain_l._prev_hash)
+
+    async def test_connect_chunk_across_forkpoint(self):
+        # Interface.sync_until requests chunks from a multiple of 2016, which
+        # can be below the forkpoint of the chain it follows: that chain keeps
+        # the headers from its forkpoint on.
+        blockchain.blockchains[constants.net.GENESIS] = chain_u = Blockchain(
+            config=self.config, forkpoint=0, parent=None,
+            forkpoint_hash=constants.net.GENESIS, prev_hash=None)
+        open(chain_u.path(), 'w+').close()
+        for label in 'ABCDEFOPQ':
+            self._append_header(chain_u, self.HEADERS[label])
+        chain_l = chain_u.fork(self.HEADERS['G'])
+
+        labels = 'DEFGHIJK'  # heights 3 to 10
+        chunk = b''.join(self.RAW_HEADERS[x] for x in labels)
+        self.assertTrue(await chain_l.connect_chunk(3, chunk.hex()))
+        # chain_l (11 headers) became the best chain
+        self.assertIs(chain_l, blockchain.get_best_chain())
+        self.assertEqual(0, chain_l.forkpoint)
+        self.assertEqual(11 * header_size(), os.stat(chain_l.path()).st_size)
+        for height, label in enumerate('ABCDEFGHIJK'):
+            self.assertEqual(self.HEADERS[label], chain_l.read_header(height))
+        self.assertEqual(6, chain_u.forkpoint)
+        self.assertEqual(3 * header_size(), os.stat(chain_u.path()).st_size)
+        self.assertEqual(self.HEADERS['Q'], chain_u.read_header(8))
 
     def test_target_to_bits(self):
         # https://github.com/bitcoin/bitcoin/blob/7fcf53f7b4524572d1d0c9a5fdc388e87eb02416/src/arith_uint256.h#L269
@@ -486,6 +575,20 @@ class TestBlockchain(ElectrumTestCase):
             Blockchain.bits_to_target(0xff123456)
 
 
+class TestBlockchainSha256d(TestBlockchain):
+    """The tests of TestBlockchain with the headers of the testnet:
+    80-byte SHA256d headers, stored as 80-byte records."""
+    NET = NeuraiUnitTestNetSha256d
+    RAW_HEADERS, HEADERS = make_header_tree(TestBlockchain.TREE, NET)
+    EXPECTED_HASHES = {label: sha256d_hash(raw) for label, raw in RAW_HEADERS.items()}
+
+    def test_header_size(self):
+        self.assertTrue(sha256d_headers())
+        self.assertEqual(80, header_size())
+        with self.assertRaises(InvalidHeader):
+            deserialize_header(self.RAW_HEADERS['B'] + bytes(40), 1)
+
+
 class TestVerifyHeader(ElectrumTestCase):
 
     # Data for Neurai mainnet block header #1000000 (KAWPOW),
@@ -506,9 +609,23 @@ class TestVerifyHeader(ElectrumTestCase):
 
     def test_valid_genesis_header(self):
         # the genesis predates KAWPOW: legacy 80-byte header hashed with X16R
-        genesis = deserialize_header(bfh("04000000000000000000000000000000000000000000000000000000000000000000000051595fe1fb519173c0bd75904e460872585a1d38579788d183cd60d993bf284b08063d64ffff001e92cf6c00"), 0)
+        raw_genesis = "04000000000000000000000000000000000000000000000000000000000000000000000051595fe1fb519173c0bd75904e460872585a1d38579788d183cd60d993bf284b08063d64ffff001e92cf6c00"
+        genesis = deserialize_header(bfh(raw_genesis), 0)
         self.assertEqual(constants.net.GENESIS, hash_header(genesis))
         Blockchain.verify_header(genesis, '00' * 32, Blockchain.bits_to_target(0x1e00ffff))
+        # mainnet headers files store it zero-padded to a 120-byte record
+        self.assertEqual(raw_genesis + '00' * 40, blockchain.serialize_header(genesis))
+        self.assertEqual(genesis, deserialize_header(bfh(raw_genesis + '00' * 40), 0))
+
+    def test_mainnet_header_records(self):
+        self.assertFalse(sha256d_headers())
+        self.assertEqual(HEADER_SIZE, header_size())
+        self.assertEqual(self.valid_header, blockchain.serialize_header(self.header))
+        # legacy headers below KawpowActivationHeight (the genesis), KAWPOW from it
+        chunk = bfh(self.valid_header)
+        self.assertEqual(chunk, Blockchain.chunk_to_records(1000000, chunk))
+        legacy = bytes(range(80))
+        self.assertEqual(legacy + bytes(40) + chunk, Blockchain.chunk_to_records(0, legacy + chunk))
 
     def test_expected_hash_mismatch(self):
         with self.assertRaises(InvalidHeader):

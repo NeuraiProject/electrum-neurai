@@ -96,6 +96,7 @@ class UTXOList(MyTreeView):
         utxos.sort(key=lambda x: x.block_height, reverse=True)
         self._maybe_reset_coincontrol(utxos)
         self._utxo_dict = {}
+        self._show_parents = len(self.wallet.db.list_transactions()) <= self.MAX_TXS_FOR_PARENTS_COLUMN
         self.model().clear()
         self.update_headers(self.__class__.headers)
         for idx, utxo in enumerate(utxos):
@@ -137,12 +138,21 @@ class UTXOList(MyTreeView):
         else:
             self.main_window.set_coincontrol_msg(None)
 
+    # Wallet.get_num_parents() first walks the whole history (and again after
+    # every new transaction). With thousands of transactions on reused
+    # addresses that takes minutes (~3 min seen for 3.3k txs), on the GUI
+    # thread, and this list is refreshed even while the Coins tab is hidden.
+    # So the "Parents" column is left empty ('-') for such wallets.
+    MAX_TXS_FOR_PARENTS_COLUMN = 1000
+
+    _show_parents = False  # set by update()
+
     def refresh_row(self, key, row):
         assert row is not None
         utxo = self._utxo_dict[key]
         utxo_item = [self.std_model.item(row, col) for col in self.Columns]
         txid = utxo.prevout.txid.hex()
-        num_parents = self.wallet.get_num_parents(txid)
+        num_parents = self.wallet.get_num_parents(txid) if self._show_parents else None
         utxo_item[self.Columns.PARENTS].setText('%6s'%num_parents if num_parents else '-')
         label = self.wallet.get_label_for_txid(txid) or ''
         utxo_item[self.Columns.LABEL].setText(label)

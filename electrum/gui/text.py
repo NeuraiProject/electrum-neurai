@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Optional
 import electrum
 from electrum.gui import BaseElectrumGui
 from electrum.bip21 import parse_bip21_URI
-from electrum.util import format_satoshis, format_time
+from electrum.util import format_satoshis, format_time, InvoiceError
 from electrum.util import EventListener, event_listener
 from electrum.bitcoin import is_address, address_to_script, COIN
 from electrum.transaction import PartialTxOutput
@@ -560,10 +560,9 @@ class ElectrumGui(BaseElectrumGui, EventListener):
                 return
         message = self.str_recv_description
         expiry = self.config.WALLET_PAYREQ_EXPIRY_SECONDS
-        raise NotImplementedError()
-
-        # Need to add asset
-        key = self.wallet.create_request(amount_sat, message, expiry, address)
+        # this GUI only requests the base coin (XNA), not assets: asset=None
+        key = self.wallet.create_request(
+            amount_sat=amount_sat, asset=None, message=message, exp_delay=expiry, address=address)
         self.do_clear_request()
         self.pos = self.max_pos
         self.show_request(key)
@@ -605,13 +604,17 @@ class ElectrumGui(BaseElectrumGui, EventListener):
 
     def read_invoice(self):
         if self.lightning_invoice:
-            invoice = Invoice.from_bech32(self.lightning_invoice)
+            try:
+                invoice = Invoice.from_bech32(self.lightning_invoice)
+            except InvoiceError as e:  # no Lightning on Neurai
+                self.show_message(str(e))
+                return
             if invoice.amount_msat is None:
                 amount_sat = self.parse_amount(self.str_amount)
                 if amount_sat:
                     invoice.set_amount_msat(int(amount_sat * 1000))
                 else:
-                    self.show_error(_('No amount'))
+                    self.show_message(_('No amount'))
                     return
         elif is_address(self.str_recipient):
             amount_sat = self.parse_amount(self.str_amount)
@@ -859,7 +862,7 @@ class ElectrumGui(BaseElectrumGui, EventListener):
         req = self.wallet.get_request(key)
         addr = req.get_address() or ''
         URI = self.wallet.get_request_URI(req) or ''
-        lnaddr = req.lightning_invoice or ''
+        lnaddr = self.wallet.get_bolt11_invoice(req) or ''  # Request has no lightning_invoice
         w = curses.newwin(self.maxy - 2, self.maxx - 2, 1, 1)
         pos = 4
         while True:

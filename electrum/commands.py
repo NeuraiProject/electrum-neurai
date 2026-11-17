@@ -395,10 +395,11 @@ class Commands:
                 raise Exception("missing prevout for txin")
             txin = PartialTxInput(prevout=prevout)
             try:
-                raise NotImplementedError()
+                # for an asset coin: its asset amount, with "asset" set to the asset name
                 txin._trusted_value_sats = int(txin_dict.get('value') or txin_dict['value_sats'])
             except KeyError:
                 raise Exception("missing 'value_sats' field for txin")
+            txin._trusted_asset = txin_dict.get('asset') or None
             nsequence = txin_dict.get('nsequence', None)
             if nsequence is not None:
                 txin.nsequence = nsequence
@@ -421,12 +422,13 @@ class Commands:
                 txout_val = int(txout_dict.get('value') or txout_dict['value_sats'])
             except KeyError:
                 raise Exception("missing 'value_sats' field for txout")
-            txout = PartialTxOutput.from_address_and_value(txout_addr, txout_val)
+            txout = PartialTxOutput.from_address_and_value(
+                txout_addr, txout_val, asset=txout_dict.get('asset') or None)
             outputs.append(txout)
 
         tx = PartialTransaction.from_io(inputs, outputs, locktime=locktime)
-        raise NotImplementedError('wallet insert')
-        tx.sign(keypairs)
+        # no wallet: the scripts being signed are derived from the keys (and the input assets)
+        tx.sign(keypairs, None)
         return tx.serialize()
 
     @command('')
@@ -449,8 +451,8 @@ class Commands:
             if address in txins_dict.keys():
                 for txin in txins_dict[address]:
                     txin.script_descriptor = desc
-                raise NotImplementedError('wallet insert')
-                tx.sign({pubkey.hex(): (priv2, compressed)})
+                # no wallet: asset inputs are signed using the asset of their utxo, if included
+                tx.sign({pubkey.hex(): (priv2, compressed)}, None)
 
         return tx.serialize()
 

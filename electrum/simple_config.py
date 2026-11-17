@@ -828,12 +828,11 @@ class SimpleConfig(Logger):
         return CVLookupHelper()
 
     def get_swapserver_url(self):
-        if constants.net == constants.BitcoinMainnet:
-            default = 'https://swaps.electrum.org/api'
-        elif constants.net == constants.BitcoinTestnet:
-            default = 'https://swaps.electrum.org/testnet'
-        else:
-            default = 'http://localhost:5455'
+        # There is no public submarine-swap server for Neurai (swaps need
+        # Lightning, hence SegWit). The upstream Bitcoin defaults
+        # (swaps.electrum.org) must never be used, so only an explicitly
+        # configured server, or a local one, is ever contacted.
+        default = 'http://localhost:5455'
         return self.SWAPSERVER_URL or default
 
     # config variables ----->

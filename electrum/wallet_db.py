@@ -55,6 +55,10 @@ from .atomic_swap import AtomicSwap
 # seed_version is now used for the version of the wallet file
 
 FINAL_SEED_VERSION = 1
+# Electrum-Neurai restarted its storage versions at 1 in 0.2.0. Files from 0.1.x
+# (version 49) or from other Electrum clients (4 and up) have no upgrade path.
+OTHER_CLIENT_SEED_VERSION_MIN = 4
+assert FINAL_SEED_VERSION < OTHER_CLIENT_SEED_VERSION_MIN
 
 @stored_in('tx_fees', tuple)
 class TxFeesValue(NamedTuple):
@@ -229,6 +233,10 @@ class WalletDB(JsonDB):
         if not isinstance(seed_version, int):
             raise WalletFileException('Cannot open this wallet: it has no valid seed_version '
                                       '(not an Electrum-Neurai wallet file?)')
+        if seed_version >= OTHER_CLIENT_SEED_VERSION_MIN:
+            raise WalletFileException(f'This wallet file comes from Electrum-Neurai 0.1.x or another Electrum '
+                                      f'client (storage version {seed_version}) and cannot be opened by this version.\n'
+                                      'Restore the wallet from its seed or private keys instead.')
         if seed_version > FINAL_SEED_VERSION:
             raise WalletFileException('This version of Electrum is too old to open this wallet.\n'
                                       '(highest supported storage version: {}, version of this file: {})'
@@ -387,6 +395,10 @@ class WalletDB(JsonDB):
         assert isinstance(scripthash, str)
         prevouts_and_values = self._prevouts_by_scripthash.get(scripthash, set())
         return {(TxOutpoint.from_str(prevout), value, asset) for prevout, value, asset in prevouts_and_values}
+
+    @locked
+    def count_prevouts_by_scripthash(self, scripthash: str) -> int:
+        return len(self._prevouts_by_scripthash.get(scripthash, ()))
 
     @modifier
     def add_transaction(self, tx_hash: str, tx: Transaction) -> None:

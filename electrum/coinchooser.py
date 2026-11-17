@@ -158,13 +158,13 @@ class CoinChooserBase(Logger):
             # the fee estimator is typically either a constant or a linear function,
             # so the "function:" effective_value(bucket) will be homomorphic for addition
             # i.e. effective_value(b1) + effective_value(b2) = effective_value(b1 + b2)
-            if constant_fee:
-                effective_value = value
-            else:
+            # (a copy: the bucket value must stay the coins' value, the fee of the
+            #  inputs is accounted for separately by sufficient_funds)
+            effective_value = defaultdict(int, value)
+            if not constant_fee:
                 # when converting from weight to vBytes, instead of rounding up,
                 # keep fractional part, to avoid overestimating fee
                 fee = fee_estimator_vb(Decimal(weight) / 4)
-                effective_value = value
                 effective_value[None] -= fee
             return Bucket(desc=desc,
                           weight=weight,
@@ -406,7 +406,13 @@ class CoinChooserBase(Logger):
         # Note that this filtering is intentionally done on the bucket level
         # instead of per-coin, as each bucket should be either fully spent or not at all.
         # (e.g. CoinChooserPrivacy ensures that same-address coins go into one bucket)
-        all_buckets = list(filter(lambda b: len(b.effective_value) > 1 or b.effective_value[None] > 0, all_buckets))
+        # Buckets of asset coins are kept whatever their base coin value (usually 0): they
+        # are the only way to pay asset outputs. (With a constant fee, e.g. an absolute fee
+        # typed in by the user, their effective value has no base coin entry at all.)
+        all_buckets = list(filter(
+            lambda b: any(asset is not None and amount > 0 for asset, amount in b.value_.items())
+                      or b.effective_value[None] > 0,
+            all_buckets))
         # Choose a subset of the buckets
         scored_candidate = self.choose_buckets(all_buckets, sufficient_funds,
                                                self.penalty_func(base_tx, tx_from_buckets=tx_from_buckets))
@@ -420,7 +426,7 @@ class CoinChooserBase(Logger):
     def choose_buckets(self, buckets: List[Bucket],
                        sufficient_funds: Callable,
                        penalty_func: Callable[[List[Bucket]], ScoredCandidate]) -> ScoredCandidate:
-        raise NotImplemented('To be subclassed')
+        raise NotImplementedError('To be subclassed')
 
 
 class CoinChooserRandom(CoinChooserBase):

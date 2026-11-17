@@ -219,25 +219,16 @@ class PaymentIdentifier(Logger):
             else:
                 self.set_state(PaymentIdentifierState.AVAILABLE)
         elif invoice_or_lnurl := maybe_extract_lightning_payment_identifier(text):
+            # Neurai has no Lightning (no SegWit yet): BOLT11 invoices and LNURLs
+            # are refused right away. In particular an LNURL must not be resolved,
+            # as that would make an HTTP request to whatever URL it encodes.
             if invoice_or_lnurl.startswith('lnurl'):
                 self._type = PaymentIdentifierType.LNURLP
-                try:
-                    self.lnurl = decode_lnurl(invoice_or_lnurl)
-                    self.set_state(PaymentIdentifierState.NEED_RESOLVE)
-                except Exception as e:
-                    self.error = _("Error parsing LNURL") + f":\n{e}"
-                    self.set_state(PaymentIdentifierState.INVALID)
-                    return
             else:
                 self._type = PaymentIdentifierType.BOLT11
-                try:
-                    self.bolt11 = Invoice.from_bech32(invoice_or_lnurl)
-                except InvoiceError as e:
-                    self.error = self._get_error_from_invoiceerror(e)
-                    self.set_state(PaymentIdentifierState.INVALID)
-                    self.logger.debug(f'Exception cause {e.args!r}')
-                    return
-                self.set_state(PaymentIdentifierState.AVAILABLE)
+            self.error = _('Lightning payments are not supported on Neurai.')
+            self.set_state(PaymentIdentifierState.INVALID)
+            return
         elif text.lower().startswith(BITCOIN_BIP21_URI_SCHEME + ':'):
             try:
                 out = parse_bip21_URI(text)
@@ -320,21 +311,9 @@ class PaymentIdentifier(Logger):
                     except Exception as e:
                         self.error = str(e)
                         self.set_state(PaymentIdentifierState.NOT_FOUND)
-                elif self.emaillike:
-                    lnurl = lightning_address_to_url(self.emaillike)
-                    try:
-                        data = await request_lnurl(lnurl)
-                        self._type = PaymentIdentifierType.LNADDR
-                        self.lnurl = lnurl
-                        self.lnurl_data = data
-                        self.set_state(PaymentIdentifierState.LNURLP_FINALIZE)
-                    except LNURLError as e:
-                        self.set_state(PaymentIdentifierState.NOT_FOUND)
-                    except Exception as e:
-                        # NOTE: any other exception is swallowed here (e.g. DNS error)
-                        # as the user may be typing and we have an incomplete emaillike
-                        self.set_state(PaymentIdentifierState.NOT_FOUND)
                 else:
+                    # upstream then tries the email-like text as a Lightning
+                    # address (an HTTP request to that domain); no Lightning on Neurai
                     self.set_state(PaymentIdentifierState.NOT_FOUND)
             elif self.bip70:
                 pr = await paymentrequest.get_payment_request(self.bip70)

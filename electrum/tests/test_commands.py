@@ -9,13 +9,11 @@ from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED
 from electrum.simple_config import SimpleConfig
 from electrum.transaction import Transaction, TxOutput, tx_from_any
 from electrum.util import UserFacingException
+from electrum.bitcoin import COIN
 
 from . import ElectrumTestCase
 from .test_wallet_vertical import WalletIntegrityHelper
 
-# serialize and signtransaction_with_privkey are stubbed out in this fork
-# (commands.py raises NotImplementedError: signing needs a wallet here)
-WALLETLESS_SIGNING_DISABLED = 'wallet-less signing commands are disabled in Electrum-Neurai'
 
 
 class TestCommands(ElectrumTestCase):
@@ -157,7 +155,6 @@ class TestCommandsTestnet(ElectrumTestCase):
             for xkey2, xtype2 in xprvs:
                 self.assertEqual(xkey2, await cmds.convert_xkey(xkey1, xtype2))
 
-    @unittest.skip(WALLETLESS_SIGNING_DISABLED)
     async def test_serialize(self):
         cmds = Commands(config=self.config)
         jsontx = {
@@ -179,7 +176,6 @@ class TestCommandsTestnet(ElectrumTestCase):
         self.assertEqual("020000000139c5375fe9da7bd377c1783002b129f8c57d3e724d62f5eacb9739ca691a229d010000006a47304402205afaa91a9590d6ba8e8cb1733ba520c6ae28821988677ebdadbf2858696c773502205d1cef8a2d25f1de5a9722f1af9e14f5c7760b6ba774e1fbe3d410d5416c60d70121021f110909ded653828a254515b58498a6bafc96799fb0851554463ed44ca7d9dafeffffff01301b0f00000000001976a914ac0e2d229200bffb2167ed6fd196aef9d687d8bb88ac00000000",
                          await cmds.serialize(jsontx))
 
-    @unittest.skip(WALLETLESS_SIGNING_DISABLED)
     async def test_serialize_custom_nsequence(self):
         cmds = Commands(config=self.config)
         jsontx = {
@@ -201,6 +197,28 @@ class TestCommandsTestnet(ElectrumTestCase):
         }
         self.assertEqual("020000000139c5375fe9da7bd377c1783002b129f8c57d3e724d62f5eacb9739ca691a229d010000006a473044022039625082992c146c1c5bd4d649f619c4a5d38962f8ae26c37ec651261d81c59d02200e213ac3c912df6a0dde5fb694a1f9616a76ffc0be8da97ce80878158ee82dcf0121021f110909ded653828a254515b58498a6bafc96799fb0851554463ed44ca7d9dafdffffff01301b0f00000000001976a914ac0e2d229200bffb2167ed6fd196aef9d687d8bb88ac00000000",
                          await cmds.serialize(jsontx))
+
+    async def test_serialize_asset_transfer(self):
+        cmds = Commands(config=self.config)
+        privkey = "p2pkh:cVDXzzQg6RoCTfiKpe8MBvmm5d5cJc6JLuFApsFDKwWa6F5TVHpD"
+        jsontx = {
+            "inputs": [
+                # an asset coin: "value_sats" is its asset amount
+                {"prevout_hash": "9d221a69ca3997cbeaf5624d723e7dc5f829b1023078c177d37bdae95f37c539",
+                 "prevout_n": 0, "value_sats": 5 * COIN, "asset": "CATS", "privkey": privkey},
+                {"prevout_hash": "9d221a69ca3997cbeaf5624d723e7dc5f829b1023078c177d37bdae95f37c539",
+                 "prevout_n": 1, "value_sats": 1000000, "privkey": privkey},
+            ],
+            "outputs": [
+                {"address": "tNcMFmp9SPyApNcUvYXY7Vwt2HxtaZXTfZ", "value_sats": 5 * COIN, "asset": "CATS"},
+                {"address": "tNcMFmp9SPyApNcUvYXY7Vwt2HxtaZXTfZ", "value_sats": 800000},
+            ]
+        }
+        tx = tx_from_any(await cmds.serialize(jsontx))
+        self.assertTrue(tx.is_complete())
+        self.assertEqual(2, len(tx.inputs()))
+        self.assertTrue(all(txin.script_sig for txin in tx.inputs()))
+        self.assertEqual({None: 800000, 'CATS': 5 * COIN}, dict(tx.output_value(asset_aware=True)))
 
     @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
@@ -273,7 +291,6 @@ class TestCommandsTestnet(ElectrumTestCase):
         self.assertEqual("0200000000010115de15adc19661582a948876fbff49fa5deee24a158f1bec847d859cbd77e9e80100000000fdffffff04400d030000000000160014b450f5942ea3b0bb085e45f568fe49e72d3f28b0e09304000000000016001484770005f3783adcaafdece4e536dded3fbf798e12190f00000000001600141fb2ce607fffe4b193bbd11568cd7bf856053ce19ca5160000000000160014e8ea4cd62b6a65a2527124da12f5b7829dc1298f02473044022079570c62352d7c462ee50851d27f829f7ea5757d258b6b38a6b377a4910ba597022056653f1b15a9693ba790e89ebac60e33b7a1d8357e05cd3d7ecc1ae00e9ab4a8012102eed460ead0cbaa71ad52b70899acf4ea12682ab237207b045c5cf9c6d11c2bcfe6f31f00",
                          tx_str)
 
-    @unittest.skip(WALLETLESS_SIGNING_DISABLED)
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_signtransaction_without_wallet(self, mock_save_db):
         cmds = Commands(config=self.config)

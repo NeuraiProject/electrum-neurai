@@ -48,10 +48,23 @@ _logger = get_logger(__name__)
 MAX_TARGET = 0x00000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 KAWPOW_LIMIT = 0x0000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffff
 
-HEADER_SIZE = 120  # bytes
+HEADER_SIZE = 120  # bytes; KAWPOW header, and header record of mainnet headers files
 LEGACY_HEADER_SIZE = 80
 
 DGW_PASTBLOCKS = 180
+
+
+def sha256d_headers() -> bool:
+    """Whether the block hash is the SHA256d of the 80-byte legacy header, as on the
+    DePIN testnet (fSHA256Mining in the node), where KAWPOW never activates."""
+    return getattr(constants.net, 'SHA256D_HEADERS', False)
+
+
+def header_size() -> int:
+    """Size of a header record in the headers files: HEADER_SIZE, with legacy headers
+    zero-padded to it, or LEGACY_HEADER_SIZE on networks with SHA256d headers only."""
+    return LEGACY_HEADER_SIZE if sha256d_headers() else HEADER_SIZE
+
 
 class MissingHeader(Exception):
     pass
@@ -80,13 +93,13 @@ def serialize_header(header_dict: dict) -> str:
             + int_to_hex(int(header_dict['timestamp']), 4) \
             + int_to_hex(int(header_dict['bits']), 4) \
             + int_to_hex(int(header_dict['nonce']), 4)
-        s = s.ljust(HEADER_SIZE * 2, '0')  # pad with zeros to post kawpow header size
+        s = s.ljust(header_size() * 2, '0')  # pad with zeros to the header record size
     return s
 
 def deserialize_header(s: bytes, height: int) -> dict:
     if not s:
         raise InvalidHeader('Invalid header: {}'.format(s))
-    if len(s) not in (LEGACY_HEADER_SIZE, HEADER_SIZE):
+    if len(s) not in (LEGACY_HEADER_SIZE, header_size()):
         raise InvalidHeader('Invalid header length: {}'.format(len(s)))
 
     def hex_to_int(hex):
@@ -111,6 +124,8 @@ def hash_header(header: dict) -> str:
         return '0' * 64
     if header.get('prev_block_hash') is None:
         header['prev_block_hash'] = '00' * 32
+    if sha256d_headers():
+        return hash_raw_header_sha256d(serialize_header(header))
     if header['timestamp'] >= constants.net.KawpowActivationTS:
         return hash_raw_header_kawpow(serialize_header(header))
     else:
@@ -123,6 +138,10 @@ def hash_raw_header_v1(header: str) -> str:
     raw_hash = x16r_hash.getPoWHash(bfh(header)[:80])
     hash_result = hash_encode(raw_hash)
     return hash_result
+
+
+def hash_raw_header_sha256d(header: str) -> str:
+    return hash_encode(sha256d(bfh(header)[:LEGACY_HEADER_SIZE]))
 
 
 def revb(data):
@@ -227,7 +246,7 @@ if len(constants.net.DGW_CHECKPOINTS) > 0:
 def init_headers_file_for_best_chain():
     b = get_best_chain()
     filename = b.path()
-    length = HEADER_SIZE * (constants.net.max_checkpoint() + 1)
+    length = header_size() * (constants.net.max_checkpoint() + 1)
     if not os.path.exists(filename) or os.path.getsize(filename) < length:
         with open(filename, 'wb') as f:
             if length > 0:
@@ -356,7 +375,7 @@ class Blockchain(Logger):
     @with_lock
     def update_size(self) -> None:
         p = self.path()
-        self._size = os.path.getsize(p)//HEADER_SIZE if os.path.exists(p) else 0
+        self._size = os.path.getsize(p)//header_size() if os.path.exists(p) else 0
 
     @classmethod
     def verify_header(cls, header: dict, prev_hash: str, target: int, expected_header_hash: str=None) -> None:
@@ -440,8 +459,11 @@ class Blockchain(Logger):
             main_chain.save_chunk(start_height, chunk)
             return
 
+        # one record per header (legacy headers zero-padded to header_size()),
+        # before cutting at the forkpoint: a chunk can mix header sizes
+        chunk = self.chunk_to_records(start_height, chunk)
         delta_height = (start_height - self.forkpoint)
-        delta_bytes = delta_height * HEADER_SIZE
+        delta_bytes = delta_height * header_size()
         # if this chunk contains our forkpoint, only save the part after forkpoint
         # (the part before is the responsibility of the parent)
         if delta_bytes < 0:
@@ -449,26 +471,28 @@ class Blockchain(Logger):
             delta_bytes = 0
         truncate = not chunk_within_checkpoint_region
 
-        def convert_to_kawpow_len():
-            r = b''
-            p = 0
-            s = start_height
-            while p < len(chunk):
-                if s < constants.net.KawpowActivationHeight:
-                    r += chunk[p:p + LEGACY_HEADER_SIZE] + bytes(40)
-                    p += LEGACY_HEADER_SIZE
-                else:
-                    r += chunk[p:p + HEADER_SIZE]
-                    p += HEADER_SIZE
-                s += 1
-            if len(r) % HEADER_SIZE != 0:
-                raise Exception('Header extension error')
-            return r
-
-        chunk = convert_to_kawpow_len()
         self.write(chunk, delta_bytes, truncate)
-        assert self.read_header(start_height) == deserialize_header(chunk[:120], start_height)
+        first_height = max(start_height, self.forkpoint)
+        assert self.read_header(first_height) == deserialize_header(chunk[:header_size()], first_height)
         self.swap_with_parent()
+
+    @staticmethod
+    def chunk_to_records(start_height: int, chunk: bytes) -> bytes:
+        """Converts headers as servers send them (LEGACY_HEADER_SIZE bytes below
+        KawpowActivationHeight, HEADER_SIZE from it) to header records."""
+        record_size = header_size()
+        records = []
+        p = 0
+        s = start_height
+        while p < len(chunk):
+            size = LEGACY_HEADER_SIZE if s < constants.net.KawpowActivationHeight else HEADER_SIZE
+            records.append(chunk[p:p + size] + bytes(max(0, record_size - size)))
+            p += size
+            s += 1
+        r = b''.join(records)
+        if len(r) % record_size != 0:
+            raise Exception('Header extension error')
+        return r
 
     def swap_with_parent(self) -> None:
         with self.lock, blockchains_lock:
@@ -513,14 +537,14 @@ class Blockchain(Logger):
         assert forkpoint > parent.forkpoint, (f"forkpoint of parent chain ({parent.forkpoint}) "
                                               f"should be at lower height than children's ({forkpoint})")
         with open(parent.path(), 'rb') as f:
-            f.seek((forkpoint - parent.forkpoint)*HEADER_SIZE)
-            parent_data = f.read(parent_branch_size*HEADER_SIZE)
+            f.seek((forkpoint - parent.forkpoint)*header_size())
+            parent_data = f.read(parent_branch_size*header_size())
         self.write(parent_data, 0)
-        parent.write(my_data, (forkpoint - parent.forkpoint)*HEADER_SIZE)
+        parent.write(my_data, (forkpoint - parent.forkpoint)*header_size())
         # swap parameters
         self.parent, parent.parent = parent.parent, self  # type: Optional[Blockchain], Optional[Blockchain]
         self.forkpoint, parent.forkpoint = parent.forkpoint, self.forkpoint
-        self._forkpoint_hash, parent._forkpoint_hash = parent._forkpoint_hash, hash_header(deserialize_header(parent_data[:HEADER_SIZE], forkpoint))
+        self._forkpoint_hash, parent._forkpoint_hash = parent._forkpoint_hash, hash_header(deserialize_header(parent_data[:header_size()], forkpoint))
         self._prev_hash, parent._prev_hash = parent._prev_hash, self._prev_hash
         # parent's new name
         os.replace(child_old_name, parent.path())
@@ -549,7 +573,7 @@ class Blockchain(Logger):
         filename = self.path()
         self.assert_headers_file_available(filename)
         with open(filename, 'rb+') as f:
-            if truncate and offset != self._size * HEADER_SIZE:
+            if truncate and offset != self._size * header_size():
                 f.seek(offset)
                 f.truncate()
             f.seek(offset)
@@ -564,8 +588,8 @@ class Blockchain(Logger):
         data = bfh(serialize_header(header))
         # headers are only _appended_ to the end:
         assert delta == self.size(), (delta, self.size())
-        assert len(data) == HEADER_SIZE
-        self.write(data, delta*HEADER_SIZE)
+        assert len(data) == header_size()
+        self.write(data, delta*header_size())
         self.swap_with_parent()
 
     @with_lock
@@ -580,11 +604,11 @@ class Blockchain(Logger):
         name = self.path()
         self.assert_headers_file_available(name)
         with open(name, 'rb') as f:
-            f.seek(delta * HEADER_SIZE)
-            h = f.read(HEADER_SIZE)
-            if len(h) < HEADER_SIZE:
+            f.seek(delta * header_size())
+            h = f.read(header_size())
+            if len(h) < header_size():
                 raise Exception('Expected to read a full header. This was only {} bytes'.format(len(h)))
-        if h == bytes([0])*HEADER_SIZE:
+        if h == bytes(header_size()):
             return None
         return deserialize_header(h, height)
 

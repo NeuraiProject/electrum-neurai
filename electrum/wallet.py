@@ -64,7 +64,7 @@ from .simple_config import SimpleConfig, FEE_RATIO_HIGH_WARNING, FEERATE_WARNING
 from .bitcoin import COIN, TYPE_ADDRESS, opcodes
 from .bitcoin import (is_address, address_to_script, is_minikey, relayfee, dust_threshold, b58_address_to_hash160, is_b58_address)
 from .asset import (get_asset_info_from_script, parse_verifier_string, generate_transfer_script_from_base, MAX_ASSET_DIVISIONS, 
-                    TransferAssetVoutInformation, AssetMemo)
+                    TransferAssetVoutInformation, AssetMemo, AssetVoutType, script_has_asset_data)
 from .crypto import sha256d
 from . import keystore
 from .keystore import (load_keystore, Hardware_KeyStore, KeyStore, KeyStoreWithMPK,
@@ -73,7 +73,7 @@ from .util import multisig_type, parse_max_spend
 from .storage import StorageEncryptionVersion, WalletStorage
 from .wallet_db import WalletDB
 from .ipfs_db import IPFSDB
-from . import transaction, bitcoin, coinchooser, paymentrequest, ecc, bip32
+from . import transaction, bitcoin, coinchooser, paymentrequest, ecc, bip32, constants
 from .transaction import (Transaction, TxInput, UnknownTxinType, TxOutput,
                           PartialTransaction, PartialTxInput, PartialTxOutput, TxOutpoint, script_GetOp)
 from .plugin import run_hook
@@ -266,6 +266,35 @@ class CannotCPFP(Exception):
     def __str__(self):
         return _('Cannot create child transaction') + ':\n\n' + Exception.__str__(self)
 
+
+class AmountBelowDustThreshold(NotEnoughFunds):
+    """Spending everything would leave an output below the dust threshold,
+    which the network does not relay."""
+    def __init__(self, amount: int, dust: int):
+        super().__init__(amount, dust)
+        self.amount = amount
+        self.dust = dust
+
+    def __str__(self):
+        return _('Not enough funds: the amount left after fees ({} sat) is below the dust threshold ({} sat).').format(
+            self.amount, self.dust)
+
+
+def is_protected_txout(txout: TxOutput) -> bool:
+    """Whether an output must be kept exactly as it is when the fee of its
+    transaction is bumped or its change recomputed:
+    - asset outputs (transfers, issuances, ownership tokens, tags) carry no base
+      coin value and are what balances the assets of the inputs; dropping one
+      makes the network reject the transaction, or loses an issuance,
+    - burn outputs must pay the exact burn amount of an issuance,
+    - outputs without an address (null data) are not ours to change.
+    """
+    if txout.address is None:
+        return True
+    if script_has_asset_data(txout.scriptpubkey):
+        return True
+    return txout.address in constants.net.BURN_ADDRESSES
+
 class InternalAddressCorruption(Exception):
     def __str__(self):
         return _("Wallet file corruption detected. "
@@ -355,6 +384,9 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         self.transaction_lock = self.adb.transaction_lock
         self._last_full_history = None
         self._tx_parents_cache = {}
+        self._tx_parents_addr_sent = {}  # address -> spends of it, for get_tx_parents
+        self._invoice_paid_cache = {}  # invoice id -> (state, _is_onchain_invoice_paid result)
+        self._invoice_paid_epoch = 0  # bumped when the wallet's txs or their verification change
 
         self.taskgroup = OldTaskGroup()
 
@@ -444,8 +476,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         return bool(self.lnworker)
 
     def can_have_lightning(self) -> bool:
-        # we want static_remotekey to be a wallet address
-        return self.txin_type == 'p2wpkh'
+        # Lightning needs p2wpkh wallet addresses, and Neurai has no SegWit yet
+        return bool(constants.net.SEGWIT_HRP) and self.txin_type == 'p2wpkh'
 
     def can_have_deterministic_lightning(self) -> bool:
         if not self.can_have_lightning():
@@ -501,6 +533,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def clear_tx_parents_cache(self):
         with self.lock, self.transaction_lock:
             self._tx_parents_cache.clear()
+            self._tx_parents_addr_sent.clear()
             self._num_parents.clear()
             self._last_full_history = None
 
@@ -557,6 +590,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def on_event_adb_added_tx(self, adb, tx_hash: str, tx: Transaction):
         if self.adb != adb:
             return
+        self._invalidate_invoice_paid_cache()
         if not self.tx_is_related(tx):
             return
         self.clear_tx_parents_cache()
@@ -569,6 +603,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def on_event_adb_removed_tx(self, adb, txid: str, tx: Transaction):
         if self.adb != adb:
             return
+        self._invalidate_invoice_paid_cache()
         if not self.tx_is_related(tx):
             return
         self.clear_tx_parents_cache()
@@ -578,6 +613,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def on_event_adb_added_verified_tx(self, adb, tx_hash):
         if adb != self.adb:
             return
+        self._invalidate_invoice_paid_cache()
         self._update_invoices_and_reqs_touched_by_tx(tx_hash)
         tx_mined_status = self.adb.get_tx_height(tx_hash)
         util.trigger_callback('verified', self, tx_hash, tx_mined_status)
@@ -586,6 +622,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
     def on_event_adb_removed_verified_tx(self, adb, tx_hash):
         if adb != self.adb:
             return
+        self._invalidate_invoice_paid_cache()
         self._update_invoices_and_reqs_touched_by_tx(tx_hash)
 
     def clear_history(self):
@@ -1006,7 +1043,11 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 addr = self.adb.get_txin_address(txin)
                 if addr is None:
                     continue
-                received, sent = self.adb.get_addr_io(addr)
+                sent = self._tx_parents_addr_sent.get(addr)
+                if sent is None:
+                    # once per address, not per input: on a reused address with n
+                    # spends, get_addr_io per input made this O(n^2) history walks
+                    sent = self._tx_parents_addr_sent[addr] = self.adb.get_addr_io(addr)[1]
                 if len(sent) > 1:
                     my_txid, my_height, my_pos = sent[txin.prevout.to_str()]
                     assert my_txid == txid
@@ -1300,10 +1341,33 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             status = self.get_invoice_status(invoice)
             util.trigger_callback('invoice_status', self, invoice_key, status)
 
+    def _invalidate_invoice_paid_cache(self):
+        with self.lock:
+            self._invoice_paid_epoch += 1
+            self._invoice_paid_cache.clear()
+
     def _is_onchain_invoice_paid(self, invoice: BaseInvoice) -> Tuple[bool, Optional[int], Sequence[str]]:
         """Returns whether on-chain invoice/request is satisfied, num confs required txs have,
         and list of relevant TXIDs.
+
+        Labels ask this once per history item and each answer walks every payment
+        to the invoice's scripts, so on a reused address the history took O(n^2):
+        the answer is kept until the tip, the wallet's txs or their verification change.
         """
+        with self.lock, self.transaction_lock:
+            payments = tuple(
+                self.db.count_prevouts_by_scripthash(bitcoin.script_to_scripthash(txo.scriptpubkey.hex()))
+                for txo in invoice.get_outputs())
+            state = (self._invoice_paid_epoch, self.adb.get_local_height(), payments)
+            key = invoice.get_id()
+            cached = self._invoice_paid_cache.get(key)
+            if cached is None or cached[0] != state:
+                cached = state, self._compute_onchain_invoice_paid(invoice)
+                self._invoice_paid_cache[key] = cached
+            is_paid, conf_needed, relevant_txs = cached[1]
+            return is_paid, conf_needed, list(relevant_txs)
+
+    def _compute_onchain_invoice_paid(self, invoice: BaseInvoice) -> Tuple[bool, Optional[int], Sequence[str]]:
         outputs = invoice.get_outputs()
         if not outputs:  # e.g. lightning-only
             return False, None, []
@@ -1737,6 +1801,10 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             # do not mutate LN funding txs, as that would change their txid
             if self.is_lightning_funding_tx(txid):
                 continue
+            # do not merge into asset transfers, issuances or tag txs: their asset, burn and
+            # data outputs (some of them at change addresses) would not survive the merge
+            if any(is_protected_txout(o) for o in tx.outputs()):
+                continue
             # tx must have opted-in for RBF (even if local, for consistency)
             if tx.is_final():
                 continue
@@ -2029,20 +2097,24 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     if new_output_value[asset] > old_output_value[asset]:
                         raise NoQualifiedAddress()
         else:
-            # Only for base coin
-            base_coins = [coin for coin in itertools.chain(coins, fixed_inputs) if coin.asset is None]
-
-            # "spend max" branch
+            # "spend max" branch (of the base coin)
             # note: This *will* spend inputs with negative effective value (if there are any).
             #       Given as the user is spending "max", and so might be abandoning the wallet,
             #       try to include all UTXOs, otherwise leftover might remain in the UTXO set
             #       forever. see #5433
             # note: Actually, it might be the case that not all UTXOs from the wallet are
             #       being spent if the user manually selected UTXOs.
-            sendable = sum(map(lambda c: c.value_sats(), base_coins))
+            # The fixed inputs are always spent (e.g. the coins of swept private keys). Of the
+            # other coins, all base coins are spent, and the coins of the assets being sent
+            # (the "max" asset amounts above were computed from all of them); the assets
+            # that are spent but not sent go back to us as change.
+            inputs = self._get_inputs_for_spend_max(coins=coins, fixed_inputs=fixed_inputs, outputs=outputs)
+            outputs = outputs + self._get_asset_change_for_spend_max(
+                inputs=inputs, outputs=outputs, change_addr=change_addr)
+            sendable = sum(txin.value_sats() for txin in inputs)
             for (_,i) in i_max[None]:
                 outputs[i].value = 0
-            tx = PartialTransaction.from_io(list(coins), list(outputs))
+            tx = PartialTransaction.from_io(inputs, list(outputs))
             fee = fee_estimator(tx.estimated_size())
             amount = sendable - tx.output_value() - fee
             if amount < 0:
@@ -2055,7 +2127,13 @@ class Abstract_Wallet(ABC, Logger, EventListener):
 
             (x,i) = i_max[None][-1]
             outputs[i].value += (amount - distr_amount)
-            tx = PartialTransaction.from_io(list(coins), list(outputs))
+            # with Neurai's minimum relay fee the dust threshold is 1000x Bitcoin's, so
+            # spending a small balance can easily leave an output the network rejects
+            dust = self.dust_threshold()
+            for (weight, i) in i_max[None]:
+                if outputs[i].value < dust:
+                    raise AmountBelowDustThreshold(outputs[i].value, dust)
+            tx = PartialTransaction.from_io(inputs, list(outputs))
 
         # Timelock tx to current height.
         tx.locktime = get_locktime_for_new_transaction(self.network)
@@ -2064,6 +2142,65 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         tx.add_info_from_wallet(self)
         run_hook('make_unsigned_transaction', self, tx)
         return tx
+
+    def _get_inputs_for_spend_max(
+            self, *,
+            coins: Sequence[PartialTxInput],
+            fixed_inputs: Sequence[PartialTxInput],
+            outputs: Sequence[PartialTxOutput],
+    ) -> List[PartialTxInput]:
+        sent_assets = {o.asset for o in outputs if o.asset}
+        inputs = []
+        seen = set()
+        for is_fixed, txin in itertools.chain(((True, c) for c in fixed_inputs), ((False, c) for c in coins)):
+            if txin.prevout in seen:
+                continue
+            if not is_fixed and txin.asset is not None and txin.asset not in sent_assets:
+                continue
+            seen.add(txin.prevout)
+            inputs.append(txin)
+        return inputs
+
+    def _get_asset_change_for_spend_max(
+            self, *,
+            inputs: Sequence[PartialTxInput],
+            outputs: Sequence[PartialTxOutput],
+            change_addr: Optional[str],
+    ) -> List[PartialTxOutput]:
+        """Asset change outputs for a "spend max" of the base coin: every asset of the
+        inputs must be balanced by the outputs, or the network rejects the transaction.
+        Can raise NotEnoughFunds or NoQualifiedAddress."""
+        amount_in = defaultdict(int)
+        address_in = {}
+        for txin in inputs:
+            if txin.asset:
+                amount_in[txin.asset] += txin.value_sats(asset_aware=True)
+                address_in.setdefault(txin.asset, txin.address)
+        amount_out = defaultdict(int)
+        for o in outputs:
+            # issuance, reissuance and ownership outputs create assets; only transfers spend them
+            if o.asset and get_asset_info_from_script(o.scriptpubkey).get_type() == AssetVoutType.TRANSFER:
+                amount_out[o.asset] += o.asset_aware_value()
+        for asset, amount in amount_out.items():
+            if amount > amount_in[asset]:
+                raise NotEnoughFunds()
+        change_outputs = []
+        base_change_addr = None
+        for asset, amount in amount_in.items():
+            change = amount - amount_out[asset]
+            if change <= 0:
+                continue
+            if asset[0] == '$':
+                # restricted assets can only go to addresses qualified for them
+                addr = self.get_address_qualified_for_restricted_asset(asset, address_in[asset])
+            else:
+                if base_change_addr is None:
+                    base_change_addr = (self.get_single_change_address_for_new_transaction(change_addr)
+                                        or (address_in[asset] if self.is_mine(address_in[asset]) else None)
+                                        or self.get_receiving_address())
+                addr = base_change_addr
+            change_outputs.append(PartialTxOutput.from_address_and_value(addr, change, asset=asset))
+        return change_outputs
 
     def mktx(self, *,
              outputs: List[PartialTxOutput],
@@ -2237,6 +2374,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             tx_new = self._bump_fee_through_decreasing_payment(
                 tx=tx, new_fee_rate=new_fee_rate)
 
+        self._check_fee_bump_tx(old_tx=tx, new_tx=tx_new)
         target_min_fee = new_fee_rate * tx_new.estimated_size()
         actual_fee = tx_new.get_fee()
         if actual_fee + 1 < target_min_fee:
@@ -2248,6 +2386,30 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         tx_new.set_rbf(True)
         tx_new.add_info_from_wallet(self)
         return tx_new
+
+    def _check_fee_bump_tx(self, *, old_tx: PartialTransaction, new_tx: PartialTransaction) -> None:
+        """Last line of defence for bump_fee: the replacement must be a valid
+        transaction (with Neurai's dust threshold, 1000x Bitcoin's, outputs are
+        easily dropped), spend all the inputs of the original, and keep its asset,
+        burn and data outputs unchanged so that no asset or issuance is lost."""
+        if not new_tx.outputs():
+            raise CannotBumpFee(_('The transaction would be left without outputs.'))
+        new_prevouts = {txin.prevout for txin in new_tx.inputs()}
+        if any(txin.prevout not in new_prevouts for txin in old_tx.inputs()):
+            raise CannotBumpFee(_('The replacement does not spend all the inputs of the original transaction.'))
+        def protected_outputs(tx):
+            return sorted((o.scriptpubkey, o.value) for o in tx.outputs() if is_protected_txout(o))
+        if protected_outputs(old_tx) != protected_outputs(new_tx):
+            raise CannotBumpFee(_('Asset, burn and data outputs must be kept unchanged.'))
+        dust = self.dust_threshold()
+        old_outputs = [(o.scriptpubkey, o.value) for o in old_tx.outputs()]
+        for o in new_tx.outputs():
+            if (o.scriptpubkey, o.value) in old_outputs:
+                old_outputs.remove((o.scriptpubkey, o.value))
+                continue
+            if o.value < dust:
+                raise CannotBumpFee(
+                    _('An output would be below the dust threshold ({} sat).').format(dust))
 
     def _bump_fee_through_coinchooser(
             self,
@@ -2261,7 +2423,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
 
         - keeps all inputs
         - keeps all not is_mine outputs,
-        - allows adding new inputs
+        - keeps all asset, burn and data outputs (see is_protected_txout),
+        - allows adding new (base coin) inputs
         """
         assert txid
         tx = copy.deepcopy(tx)
@@ -2269,46 +2432,38 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         assert tx.get_fee() is not None
         old_inputs = list(tx.inputs())
         old_outputs = list(tx.outputs())
+        # Asset, burn and data outputs are always kept as they are. Issuances send their
+        # new assets to change addresses, so they must never be taken for change. As only
+        # base coin inputs are added below, the assets of the inputs stay balanced by them.
+        is_protected = [is_protected_txout(o) for o in old_outputs]
+        candidates = [o for o, protected in zip(old_outputs, is_protected) if not protected]
         # change address
-        old_change_addrs = [o.address for o in old_outputs if self.is_change(o.address)]
+        old_change_addrs = [o.address for o in candidates if self.is_change(o.address)]
         change_addrs = self.get_change_addresses_for_new_transaction(old_change_addrs)
         # which outputs to keep?
         if old_change_addrs:
-            fixed_outputs = list(filter(lambda o: not self.is_change(o.address), old_outputs))
+            keep = [o for o in candidates if not self.is_change(o.address)]
         else:
             if all(self.is_mine(o.address) for o in old_outputs):
                 # all outputs are is_mine and none of them are change.
                 # we bail out as it's unclear what the user would want!
                 # the coinchooser bump fee method is probably not a good idea in this case
                 raise CannotBumpFee(_('All outputs are non-change is_mine'))
-            old_not_is_mine = list(filter(lambda o: not self.is_mine(o.address), old_outputs))
-            if old_not_is_mine:
-                fixed_outputs = old_not_is_mine
-            else:
-                fixed_outputs = old_outputs
+            keep = [o for o in candidates if not self.is_mine(o.address)]
+        keep_ids = {id(o) for o in keep}
+        fixed_outputs = [o for o, protected in zip(old_outputs, is_protected) if protected or id(o) in keep_ids]
         if not fixed_outputs:
             raise CannotBumpFee(_('Could not figure out which outputs to keep'))
 
         if coins is None:
             coins = self.get_spendable_coins(None)
-        # make sure we don't try to spend output from the tx-to-be-replaced:
-        coins = [c for c in coins if c.prevout.txid.hex() != txid]
+        # make sure we don't try to spend output from the tx-to-be-replaced,
+        # and only add base coins: new asset inputs would need new asset outputs
+        coins = [c for c in coins if c.prevout.txid.hex() != txid and c.asset is None]
         for item in coins:
             self.add_input_info(item)
         def fee_estimator(size):
             return self.config.estimate_fee_for_feerate(fee_per_kb=new_fee_rate*1000, size=size)
-        # change of a restricted asset must go to a qualified address, as in make_unsigned_transaction
-        restricted_change_address = dict()
-        for txins, required in ((old_inputs, True), (coins, False)):
-            for txin in txins:
-                asset = txin.asset
-                if not asset or asset[0] != '$' or asset in restricted_change_address:
-                    continue
-                try:
-                    restricted_change_address[asset] = self.get_address_qualified_for_restricted_asset(asset, txin.address)
-                except NoQualifiedAddress:
-                    if required:  # the replaced tx spends it, so its change has nowhere to go
-                        raise CannotBumpFee(_('No qualified change address for {}').format(asset))
         coin_chooser = coinchooser.get_coin_chooser(self.config)
         try:
             return coin_chooser.make_tx(
@@ -2316,7 +2471,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 inputs=old_inputs,
                 outputs=fixed_outputs,
                 change_addrs=change_addrs,
-                restricted_change_address=restricted_change_address,
+                # the asset outputs are kept, so there is no asset change to make
+                restricted_change_address={},
                 fee_estimator_vb=fee_estimator,
                 dust_threshold=self.dust_threshold())
         except NotEnoughFunds as e:
@@ -2340,8 +2496,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         inputs = tx.inputs()
         outputs = tx._outputs  # note: we will mutate this directly
 
-        # use own outputs
-        s = list(filter(lambda o: self.is_mine(o.address), outputs))
+        # use own outputs (but never asset, burn or data outputs)
+        s = [o for o in outputs if self.is_mine(o.address) and self._is_rbf_allowed_to_touch_tx_output(o)]
         if not s:
             raise CannotBumpFee('No suitable output')
 
@@ -2352,7 +2508,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             delta = target_fee - tx.get_fee()
             if delta <= 0:
                 break
-            i = outputs.index(o)
+            i = next(idx for idx, out in enumerate(outputs) if out is o)
             if o.value - delta >= self.dust_threshold():
                 new_output_value = o.value - delta
                 assert isinstance(new_output_value, int)
@@ -2360,6 +2516,11 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 delta = 0
                 break
             else:
+                if len(outputs) == 1:
+                    # a transaction needs at least one output
+                    raise CannotBumpFee(
+                        _('The output value remaining after fee is too low.') + ' ' +
+                        _('It would be below the dust threshold ({} sat).').format(self.dust_threshold()))
                 del outputs[i]
                 # note: we mutated the outputs of tx, which will affect
                 #       tx.estimated_size() in the next iteration
@@ -2416,6 +2577,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             if out_size_total == 0:  # no outputs left to decrease
                 raise CannotBumpFee(_('Could not find suitable outputs'))
             for idx, out in s:
+                if idx in del_out_idxs:  # already removed in a previous iteration
+                    continue
                 out_size = Transaction.estimated_output_size_for_script(out.scriptpubkey.hex())
                 delta = int(math.ceil(delta_total * out_size / out_size_total))
                 if out.value - delta >= self.dust_threshold():
@@ -2431,9 +2594,16 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             raise CannotBumpFee(_('Could not find suitable outputs'))
 
         outputs = [out for (idx, out) in enumerate(outputs) if idx not in del_out_idxs]
+        if not outputs:
+            raise CannotBumpFee(
+                _('The output value remaining after fee is too low.') + ' ' +
+                _('It would be below the dust threshold ({} sat).').format(self.dust_threshold()))
         return PartialTransaction.from_io(inputs, outputs)
 
     def _is_rbf_allowed_to_touch_tx_output(self, txout: TxOutput) -> bool:
+        # asset, burn and data outputs must be kept as they are
+        if is_protected_txout(txout):
+            return False
         # 2fa fee outputs if present, should not be removed or have their value decreased
         if self.is_billing_address(txout.address):
             return False
@@ -2446,7 +2616,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         txid = tx.txid()
         for i, o in enumerate(tx.outputs()):
             address, value = o.address, o.value
-            if self.is_mine(address):
+            # asset outputs carry no base coin value to pay the fee with
+            if self.is_mine(address) and not is_protected_txout(o):
                 break
         else:
             raise CannotCPFP(_("Could not find suitable output"))
@@ -2503,8 +2674,26 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         old_change_addrs = [o.address for o in tx.outputs() if self.is_mine(o.address)]
         out_address = (self.get_single_change_address_for_new_transaction(old_change_addrs)
                        or self.get_receiving_address())
+        # the assets spent by our inputs come back to us too: without outputs for
+        # them the network would reject the transaction
+        asset_amounts = defaultdict(int)
+        asset_addresses = {}
+        for txin in inputs:
+            if txin.asset:
+                asset_amounts[txin.asset] += txin.value_sats(asset_aware=True)
+                asset_addresses.setdefault(txin.asset, self.adb.get_txin_address(txin))
+        asset_outputs = []
+        for asset, amount in asset_amounts.items():
+            asset_address = out_address
+            if asset[0] == '$':
+                # restricted assets can only go to addresses qualified for them
+                try:
+                    asset_address = self.get_address_qualified_for_restricted_asset(asset, asset_addresses[asset])
+                except NoQualifiedAddress:
+                    raise CannotDoubleSpendTx(_('No qualified address to receive {}').format(asset))
+            asset_outputs.append(PartialTxOutput.from_address_and_value(asset_address, amount, asset=asset))
         locktime = get_locktime_for_new_transaction(self.network)
-        outputs = [PartialTxOutput.from_address_and_value(out_address, value)]
+        outputs = [PartialTxOutput.from_address_and_value(out_address, value)] + asset_outputs
         tx_new = PartialTransaction.from_io(inputs, outputs, locktime=locktime)
         new_tx_size = tx_new.estimated_size()
         new_fee = max(
@@ -2514,8 +2703,10 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         new_fee = int(math.ceil(new_fee))
         output_value = value - new_fee
         if output_value < self.dust_threshold():
-            raise CannotDoubleSpendTx(_("The output value remaining after fee is too low."))
-        outputs = [PartialTxOutput.from_address_and_value(out_address, value - new_fee)]
+            raise CannotDoubleSpendTx(
+                _("The output value remaining after fee is too low.") + ' ' +
+                _('It would be below the dust threshold ({} sat).').format(self.dust_threshold()))
+        outputs = [PartialTxOutput.from_address_and_value(out_address, value - new_fee)] + asset_outputs
         tx_new = PartialTransaction.from_io(inputs, outputs, locktime=locktime)
         tx_new.set_rbf(True)
         tx_new.add_info_from_wallet(self)
@@ -2539,13 +2730,13 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         # - We cannot include UTXO if the prev tx is not signed yet (chain of unsigned txs).
         address = address or txin.address
         # add witness_utxo
+        # (Neurai has no SegWit, but a loaded PSBT can still have a segwit input; the
+        #  address history entries carry the asset too, so take the output of the prev tx)
         if txin.witness_utxo is None and txin.is_segwit() and address:
-            raise NotImplementedError()
-            received, spent = self.adb.get_addr_io(address)
-            item = received.get(txin.prevout.to_str())
-            if item:
-                txin_value = item[2]
-                txin.witness_utxo = TxOutput.from_address_and_value(address, txin_value)
+            prev_tx = self.db.get_transaction(txin.prevout.txid.hex())
+            if prev_tx and txin.prevout.out_idx < len(prev_tx.outputs()):
+                prev_txout = prev_tx.outputs()[txin.prevout.out_idx]
+                txin.witness_utxo = TxOutput(scriptpubkey=prev_txout.scriptpubkey, value=prev_txout.value)
         # add utxo
         if txin.utxo is None:
             txin.utxo = self.db.get_transaction(txin.prevout.txid.hex())
@@ -3574,7 +3765,8 @@ class Deterministic_Wallet(Abstract_Wallet):
         ln_xprv = self.db.get('lightning_xprv') or self.db.get('lightning_privkey2')
         # lnworker can only be initialized once receiving addresses are available
         # therefore we instantiate lnworker in DeterministicWallet
-        self.lnworker = LNWallet(self, ln_xprv) if ln_xprv else None
+        # (wallet files with Lightning keys from upstream Electrum stay without it)
+        self.lnworker = LNWallet(self, ln_xprv) if ln_xprv and self.can_have_lightning() else None
 
     def has_seed(self):
         return self.keystore.has_seed()

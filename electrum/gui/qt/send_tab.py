@@ -25,7 +25,7 @@ from electrum.transaction import Transaction, PartialTxInput, PartialTxOutput
 from electrum.network import TxBroadcastError, BestEffortRequestFailed
 from electrum.payment_identifier import PaymentIdentifierState, PaymentIdentifierType, PaymentIdentifier, \
     invoice_from_payment_identifier, payment_identifier_from_invoice
-from electrum.wallet import Multisig_Wallet
+from electrum.wallet import Multisig_Wallet, AmountBelowDustThreshold
 
 from .asset_management_panel import AssetAmountEdit
 from .amountedit import AmountEdit, BTCAmountEdit, SizedFreezableLineEdit
@@ -311,7 +311,10 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
                 tx = make_tx(0)
         except NotEnoughFunds as e:
             self.max_button.setChecked(False)
-            text = self.window.get_text_not_enough_funds_mentioning_frozen()
+            if isinstance(e, AmountBelowDustThreshold):
+                text = str(e)
+            else:
+                text = self.window.get_text_not_enough_funds_mentioning_frozen()
             self.show_error(text)
             return
 
@@ -375,7 +378,7 @@ class SendTab(QWidget, MessageBoxMixin, Logger):
             # note: use confirmed_only=False here, regardless of config setting,
             #       as the user needs to get to ConfirmTxDialog to change the config setting
             if not conf_dlg.can_pay_assuming_zero_fees(confirmed_only=False):
-                text = self.window.get_text_not_enough_funds_mentioning_frozen()
+                text = self.window.get_text_not_enough_funds_for(make_tx)  # e.g. below dust threshold
                 self.show_message(text)
                 return
         tx = conf_dlg.run()

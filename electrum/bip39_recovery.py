@@ -2,7 +2,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file LICENCE or http://www.opensource.org/licenses/mit-license.php
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List
 import itertools
 
 from . import bitcoin
@@ -16,10 +16,20 @@ if TYPE_CHECKING:
     from .network import Network
 
 
+# Neurai has no SegWit yet: SegWit formats have no address to look up (their
+# pubkey_to_address is None and used to make the whole scan fail), so only
+# scan the legacy ones.
+SUPPORTED_SCRIPT_TYPES = ('p2pkh',)
+
+
+def get_wallet_formats() -> List[dict]:
+    return [f for f in BIP39_WALLET_FORMATS if f["script_type"] in SUPPORTED_SCRIPT_TYPES]
+
+
 async def account_discovery(network: 'Network', get_account_xpub):
     async with OldTaskGroup() as group:
         account_scan_tasks = []
-        for wallet_format in BIP39_WALLET_FORMATS:
+        for wallet_format in get_wallet_formats():
             account_scan = scan_for_active_accounts(network, get_account_xpub, wallet_format)
             account_scan_tasks.append(await group.spawn(account_scan))
     active_accounts = []

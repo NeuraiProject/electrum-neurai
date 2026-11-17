@@ -455,17 +455,9 @@ class LNWorker(Logger, EventListener, NetworkRetryManager[LNPeerAddr]):
                 #self.logger.info('taking random ln peer from our channel db')
                 return [peer]
 
-        # getting desperate... let's try hardcoded fallback list of peers
-        if constants.net in (constants.BitcoinTestnet,):
-            fallback_list = FALLBACK_NODE_LIST_TESTNET
-        elif constants.net in (constants.BitcoinMainnet,):
-            fallback_list = FALLBACK_NODE_LIST_MAINNET
-        else:
-            return []  # regtest??
-
-        fallback_list = [peer for peer in fallback_list if self._can_retry_addr(peer, now=now)]
-        if fallback_list:
-            return [random.choice(fallback_list)]
+        # Upstream falls back here to a hardcoded list of Bitcoin Lightning
+        # peers (FALLBACK_NODE_LIST_*). Neurai has no Lightning network (no
+        # SegWit yet), so never connect to those.
 
         # last resort: try dns seeds (BOLT-10)
         return await run_in_thread(self._get_peers_from_dns_seeds)
@@ -473,7 +465,8 @@ class LNWorker(Logger, EventListener, NetworkRetryManager[LNPeerAddr]):
     def _get_peers_from_dns_seeds(self) -> Sequence[LNPeerAddr]:
         # NOTE: potentially long blocking call, do not run directly on asyncio event loop.
         # Return several peers to reduce the number of dns queries.
-        if not constants.net.LN_DNS_SEEDS:
+        # (NeuraiMainnet defines no LN_DNS_SEEDS at all)
+        if not getattr(constants.net, 'LN_DNS_SEEDS', None):
             return []
         dns_seed = random.choice(constants.net.LN_DNS_SEEDS)
         self.logger.info('asking dns seed "{}" for ln peers'.format(dns_seed))
@@ -2683,7 +2676,7 @@ class LNWallet(LNWorker):
     def current_feerate_per_kw(self):
         from .simple_config import FEE_LN_ETA_TARGET, FEERATE_FALLBACK_STATIC_FEE, FEERATE_REGTEST_HARDCODED
         from .simple_config import FEERATE_PER_KW_MIN_RELAY_LIGHTNING
-        if constants.net is constants.BitcoinRegtest:
+        if constants.net.NET_NAME == 'regtest':
             return FEERATE_REGTEST_HARDCODED // 4
         feerate_per_kvbyte = self.network.config.eta_target_to_fee(FEE_LN_ETA_TARGET)
         if feerate_per_kvbyte is None:

@@ -82,20 +82,10 @@ def parse_bip21_URI(uri: str) -> dict:
         except Exception as e:
             raise InvalidBitcoinURI(f"failed to parse 'sig' field: {repr(e)}") from e
     if 'lightning' in out:
-        try:
-            lnaddr = lndecode(out['lightning'])
-        except LnDecodeException as e:
-            raise InvalidBitcoinURI(f"Failed to decode 'lightning' field: {e!r}") from e
-        amount_sat = out.get('amount')
-        if amount_sat:
-            # allow small leeway due to msat precision
-            if abs(amount_sat - int(lnaddr.get_amount_sat())) > 1:
-                raise InvalidBitcoinURI("Inconsistent lightning field in bip21: amount")
-        address = out.get('address')
-        ln_fallback_addr = lnaddr.get_fallback_address()
-        if address and ln_fallback_addr:
-            if ln_fallback_addr != address:
-                raise InvalidBitcoinURI("Inconsistent lightning field in bip21: address")
+        # Neurai has no Lightning (no SegWit yet): ignore a BOLT11 invoice given
+        # next to the on-chain address instead of decoding it (lndecode could
+        # raise anything but LnDecodeException and break parsing the whole URI).
+        del out['lightning']
 
     return out
 

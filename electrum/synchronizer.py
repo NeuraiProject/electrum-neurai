@@ -33,7 +33,7 @@ from aiorpcx import run_in_thread, RPCError
 from . import util, constants, utxo_sync
 from .transaction import Transaction, PartialTransaction
 from .util import make_aiohttp_session, NetworkJobOnDefaultServer, random_shuffled_copy, OldTaskGroup, is_hash256_str
-from .bitcoin import address_to_scripthash, is_address, is_b58_address, b58_address_to_hash160, COINBASE_MATURITY
+from .bitcoin import address_to_scripthash, is_address, is_b58_address, b58_address_to_hash160
 from .asset import AssetMetadata, get_error_for_asset_name, get_error_for_asset_typed, AssetType
 from .logging import Logger
 from .interface import GracefulDisconnect, NetworkTimeout
@@ -787,10 +787,10 @@ class Synchronizer(SynchronizerBase):
         self.requested_utxo_sets.discard((addr, status))
 
     async def _mark_coinbase_outputs(self, utxo_set: dict) -> None:
-        """Coinbase outputs are spendable after COINBASE_MATURITY blocks: among
+        """Coinbase outputs are spendable after the network's coinbase maturity: among
         the UTXOs recent enough for it to matter, tell them apart by the first
         transaction of their block."""
-        lowest = utxo_set['height'] - COINBASE_MATURITY + 1
+        lowest = utxo_set['height'] - constants.net.COINBASE_MATURITY + 1
         recent = [utxo for utxo in utxo_set['utxos'].values() if utxo[3] is None and utxo[0] >= lowest]
         coinbase_txids = {}
 

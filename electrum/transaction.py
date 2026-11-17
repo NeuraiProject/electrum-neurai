@@ -49,7 +49,7 @@ from .bitcoin import (TYPE_ADDRESS, TYPE_SCRIPT, hash_160,
                       int_to_hex, push_script, b58_address_to_hash160,
                       opcodes, add_number_to_script, base_decode,
                       base_encode, construct_witness, construct_script)
-from .crypto import sha256d
+from .crypto import sha256d, sha256
 from .logging import get_logger
 from .util import ShortID, OldTaskGroup, convert_bytes_to_utf8_safe
 from .descriptor import Descriptor, MissingSolutionPiece, create_dummy_descriptor_from_address
@@ -1582,7 +1582,10 @@ class PartialTxInput(TxInput, PSBTSection):
                     raise PSBTInputConsistencyFailure(f"PSBT input validation: "
                                                       f"If a witnessScript is provided, the redeemScript must be for that witnessScript")
             elif self.address:
-                if self.address != bitcoin.script_to_p2wsh(self.witness_script.hex()):
+                # compare scripts, not addresses: without a bech32 hrp (Neurai) a p2wsh
+                # output has no address, and building one would raise
+                p2wsh_script = bfh(construct_script([0, sha256(self.witness_script)]))
+                if bfh(bitcoin.address_to_script(self.address)) != p2wsh_script:
                     raise PSBTInputConsistencyFailure(f"PSBT input validation: "
                                                       f"If a witnessScript is provided, the scriptPubKey must be for that witnessScript")
 

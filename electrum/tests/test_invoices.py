@@ -6,7 +6,8 @@ from . import ElectrumTestCase
 
 from electrum.simple_config import SimpleConfig
 from electrum.wallet import restore_wallet_from_text, Standard_Wallet, Abstract_Wallet
-from electrum.invoices import PR_UNPAID, PR_PAID, PR_UNCONFIRMED, BaseInvoice, Invoice, LN_EXPIRY_NEVER
+from electrum.invoices import PR_UNPAID, PR_PAID, PR_UNCONFIRMED, BaseInvoice, Invoice, Request, LN_EXPIRY_NEVER
+from electrum.bip21 import BITCOIN_BIP21_URI_SCHEME, parse_bip21_URI
 from electrum.address_synchronizer import TX_HEIGHT_UNCONFIRMED
 from electrum.transaction import Transaction, PartialTxOutput
 from electrum.util import TxMinedInfo, InvoiceError
@@ -317,3 +318,33 @@ class TestBaseInvoice(ElectrumTestCase):
         with self.assertRaises(TypeError):
             invoice.exp = "asd"
 
+
+
+class TestRequestBip21URI(ElectrumTestCase):
+
+    def _request(self, outputs, *, asset=None, amount_msat=0):
+        return Request(
+            asset=asset,
+            amount_msat=amount_msat,
+            message="",
+            time=1692716965,
+            exp=0,
+            outputs=outputs,
+            bip70=None,
+            height=0,
+            payment_hash=None,
+        )
+
+    def test_lightning_only_uri_uses_neurai_scheme(self):
+        # used to be "nuerai:?lightning=..."
+        req = self._request([])
+        self.assertEqual(f"{BITCOIN_BIP21_URI_SCHEME}:?lightning=lnfake", req.get_bip21_URI(lightning_invoice='lnfake'))
+        self.assertTrue(req.get_bip21_URI(lightning_invoice='lnfake').startswith('neurai:'))
+        self.assertIsNone(req.get_bip21_URI())
+
+    def test_onchain_uri(self):
+        addr = 'NTiZdUy7x61yrovNK6aFx8SvPV1R4D7ReW'
+        req = self._request([PartialTxOutput.from_address_and_value(addr, 12345)], amount_msat=12345 * 1000)
+        uri = req.get_bip21_URI()
+        self.assertTrue(uri.startswith(f'neurai:{addr}?'), uri)
+        self.assertEqual(addr, parse_bip21_URI(uri)['address'])

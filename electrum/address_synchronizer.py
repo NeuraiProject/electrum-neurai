@@ -28,10 +28,9 @@ from collections import defaultdict
 from typing import TYPE_CHECKING, Dict, Optional, Set, Tuple, NamedTuple, Sequence, List, Mapping, Union
 
 from .crypto import sha256
-from . import bitcoin, util
-from .bitcoin import COINBASE_MATURITY
+from . import bitcoin, constants, util
 from .util import profiler, bfh, TxMinedInfo, UnrelatedTransactionException, with_lock, OldTaskGroup
-from .transaction import Transaction, TxOutput, TxInput, PartialTxInput, TxOutpoint
+from .transaction import Transaction, TxOutput, TxInput, PartialTxInput, TxOutpoint, MalformedBitcoinScript
 from .synchronizer import Synchronizer
 from .verifier import SPV
 from .asset import get_asset_info_from_script, AssetMetadata, get_error_for_asset_typed, AssetType
@@ -69,6 +68,15 @@ class HistoryItem(NamedTuple):
     delta: int
     fee: Optional[int]
     balance: int
+
+
+def _txo_scripthash(scriptpubkey: bytes) -> str:
+    """bitcoin.script_to_scripthash for any output script: consensus allows any
+    bytes there, and one that does not parse is hashed whole."""
+    try:
+        return bitcoin.script_to_scripthash(scriptpubkey.hex())
+    except MalformedBitcoinScript:
+        return sha256(scriptpubkey)[::-1].hex()
 
 
 class AddressSynchronizer(Logger, EventListener):
@@ -417,7 +425,7 @@ class AddressSynchronizer(Logger, EventListener):
                 v = txo.value
                 ser = tx_hash + ':%d'%n
                 asset_data = get_asset_info_from_script(txo.scriptpubkey)
-                scripthash = bitcoin.script_to_scripthash(txo.scriptpubkey.hex())
+                scripthash = _txo_scripthash(txo.scriptpubkey)
                 self.db.add_prevout_by_scripthash(scripthash, prevout=TxOutpoint.from_str(ser), value=asset_data.amount or v, asset=asset_data.asset)
                 addr = txo.address
                 if addr and self.is_mine(addr):
@@ -452,15 +460,19 @@ class AddressSynchronizer(Logger, EventListener):
 
     def watch_asset(self, asset: str, restricted_check=False):
         if not self.db.is_watching_asset(asset):
-            self.synchronizer.add_asset(asset)
+            # Without a synchronizer (offline wallet, or network not started yet) the db
+            # entry is enough: Synchronizer.main subscribes to the db's assets when it starts.
+            synchronizer = self.synchronizer
+            if synchronizer:
+                synchronizer.add_asset(asset)
             if not restricted_check:
                 self.db.add_asset_to_watch(asset)
-                if asset[0] == '$':
-                    self.synchronizer.add_qualifier_for_tag(asset)
-                    self.synchronizer.add_restricted_for_verifier(asset)
-                    self.synchronizer.add_restricted_for_freeze(asset)
-                elif asset[0] == '#':
-                    self.synchronizer.add_qualifier_for_tag(asset)
+                if synchronizer and asset[0] == '$':
+                    synchronizer.add_qualifier_for_tag(asset)
+                    synchronizer.add_restricted_for_verifier(asset)
+                    synchronizer.add_restricted_for_freeze(asset)
+                elif synchronizer and asset[0] == '#':
+                    synchronizer.add_qualifier_for_tag(asset)
             if asset[-1] == '!' and get_error_for_asset_typed(asset[:-1], AssetType.ROOT) is None:
                 # Check for any restricted assets
                 r_asset = f'${asset[:-1]}'
@@ -528,7 +540,7 @@ class AddressSynchronizer(Logger, EventListener):
             self.unconfirmed_tx.pop(tx_hash, None)
             if tx:
                 for idx, txo in enumerate(tx.outputs()):
-                    scripthash = bitcoin.script_to_scripthash(txo.scriptpubkey.hex())
+                    scripthash = _txo_scripthash(txo.scriptpubkey)
                     prevout = TxOutpoint(bfh(tx_hash), idx)
                     self.db.remove_prevout_by_scripthash(scripthash, prevout=prevout, value=txo.value)
         util.trigger_callback('adb_removed_tx', self, tx_hash, tx)
@@ -1612,7 +1624,7 @@ class AddressSynchronizer(Logger, EventListener):
             v = utxo.value_sats(asset_aware=asset_aware)
             tx_height = utxo.block_height
             is_cb = utxo.is_coinbase_output()
-            if is_cb and tx_height + COINBASE_MATURITY > mempool_height:
+            if is_cb and tx_height + constants.net.COINBASE_MATURITY > mempool_height:
                 if asset_aware:
                     x[utxo.asset] += v
                 else:
@@ -1719,7 +1731,7 @@ class AddressSynchronizer(Logger, EventListener):
                 if nonlocal_only and txo.block_height in (TX_HEIGHT_LOCAL, TX_HEIGHT_FUTURE):
                     continue
                 if (mature_only and txo.is_coinbase_output()
-                        and txo.block_height + COINBASE_MATURITY > mempool_height):
+                        and txo.block_height + constants.net.COINBASE_MATURITY > mempool_height):
                     continue
                 coins.append(txo)
                 continue

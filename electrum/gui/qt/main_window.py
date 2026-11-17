@@ -67,7 +67,8 @@ from electrum.transaction import (Transaction, PartialTxInput,
                                   PartialTransaction, PartialTxOutput)
 from electrum.wallet import (Multisig_Wallet, Abstract_Wallet,
                              sweep_preparations, InternalAddressCorruption,
-                             CannotCPFP, get_locktime_for_new_transaction)
+                             CannotCPFP, get_locktime_for_new_transaction,
+                             AmountBelowDustThreshold)
 from electrum.version import ELECTRUM_VERSION
 from electrum.network import Network, UntrustedServerReturnedError, NetworkException
 from electrum.exchange_rate import FxThread
@@ -793,7 +794,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         d = self.network.get_donation_address()
         if d:
             host = self.network.get_parameters().server.host
-            self.handle_payment_identifier('nuerai:%s?message=donation for %s' % (d, host))
+            self.handle_payment_identifier('%s:%s?message=donation for %s' % (BITCOIN_BIP21_URI_SCHEME, d, host))
         else:
             self.show_error(_('No donation address for this server'))
 
@@ -1286,6 +1287,18 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
               while an empty sequence means the user specifically selected that.
         """
         return self.utxo_list.get_spend_list()
+
+    def get_text_not_enough_funds_for(self, make_tx) -> str:
+        """Message for when make_tx cannot fund a transaction even with zero fees.
+        Says so when the reason is that the amount left is below the dust threshold
+        (Neurai's is 1000x Bitcoin's, so small balances hit it easily)."""
+        try:
+            make_tx(0)
+        except AmountBelowDustThreshold as e:
+            return str(e)
+        except Exception:
+            pass
+        return self.get_text_not_enough_funds_mentioning_frozen()
 
     def get_text_not_enough_funds_mentioning_frozen(self) -> str:
         text = _("Not enough funds")
@@ -1851,25 +1864,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             self.set_contact(line2.text(), line1.text())
 
     def init_lightning_dialog(self, dialog):
-        assert not self.wallet.has_lightning()
-        if self.wallet.can_have_deterministic_lightning():
-            msg = _(
-                "Lightning is not enabled because this wallet was created with an old version of Electrum. "
-                "Create lightning keys?")
-        else:
-            msg = _(
-                "Warning: this wallet type does not support channel recovery from seed. "
-                "You will need to backup your wallet everytime you create a new channel. "
-                "Create lightning keys?")
-        if self.question(msg):
-            self._init_lightning_dialog(dialog=dialog)
-
-    @protected
-    def _init_lightning_dialog(self, *, dialog, password):
-        dialog.close()
-        self.wallet.init_lightning(password=password)
-        self.update_lightning_icon()
-        self.show_message(_('Lightning keys have been initialized.'))
+        # Lightning needs SegWit, which Neurai does not have yet: never create
+        # Lightning keys (wallet.init_lightning), not even for a p2wpkh wallet file.
+        self.show_error(_("Lightning is not available on Neurai yet."))
 
     def show_wallet_info(self):
         dialog = WindowModalDialog(self, _("Wallet Information"))
@@ -1936,14 +1933,9 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             grid.addWidget(nodeid_e, cur_row, 0, 1, 4)
             cur_row += 1
         else:
-            if self.wallet.can_have_lightning():
-                grid.addWidget(WWLabel('Not enabled'), cur_row, 1)
-                button = QPushButton(_("Enable"))
-                button.pressed.connect(lambda: self.init_lightning_dialog(dialog))
-                grid.addWidget(button, cur_row, 3)
-            else:
-                grid.addWidget(WWLabel(_("Not available for this wallet.")), cur_row, 1)
-                grid.addWidget(HelpButton(_("Lightning is currently restricted to HD wallets with p2wpkh addresses.")), cur_row, 2)
+            # no "Enable" button: Lightning needs SegWit, which Neurai does not have yet
+            grid.addWidget(WWLabel(_("Not available")), cur_row, 1)
+            grid.addWidget(HelpButton(_("Lightning is not available on Neurai yet.")), cur_row, 2)
             cur_row += 1
         vbox.addLayout(grid)
 
@@ -2614,6 +2606,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         keys_e = ScanQRTextEdit(allow_multi=True, config=self.config)
         keys_e.setTabChangesFocus(True)
         vbox.addWidget(keys_e)
+        keys_error_label = WWLabel('')
+        keys_error_label.setStyleSheet(ColorScheme.RED.as_stylesheet())
+        keys_error_label.setVisible(False)
+        vbox.addWidget(keys_error_label)
 
         addresses = self.wallet.get_unused_addresses()
         if not addresses:
@@ -2640,12 +2636,17 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
         def on_edit():
             valid_privkeys = False
+            error_text = ''
             try:
                 valid_privkeys = get_pk(raise_on_error=True) is not None
             except Exception as e:
                 button.setToolTip(f'{_("Error")}: {repr(e)}')
+                if isinstance(e, UserFacingException):  # e.g. SegWit keys
+                    error_text = str(e)
             else:
                 button.setToolTip('')
+            keys_error_label.setText(error_text)
+            keys_error_label.setVisible(bool(error_text))
             button.setEnabled(get_address() is not None and valid_privkeys)
         on_address = lambda text: address_e.setStyleSheet((ColorScheme.DEFAULT if get_address() else ColorScheme.RED).as_stylesheet())
         keys_e.textChanged.connect(on_edit)
@@ -2739,7 +2740,7 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
                 # note: use confirmed_only=False here, regardless of config setting,
                 #       as the user needs to get to ConfirmTxDialog to change the config setting
                 if not conf_dlg.can_pay_assuming_zero_fees(confirmed_only=False):
-                    text = self.get_text_not_enough_funds_mentioning_frozen()
+                    text = self.get_text_not_enough_funds_for(make_tx)  # e.g. below dust threshold
                     self.show_message(text)
                     return
             tx = conf_dlg.run()

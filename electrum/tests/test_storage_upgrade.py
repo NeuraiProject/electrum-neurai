@@ -52,6 +52,16 @@ class TestStorageUpgrade(WalletTestCase):
         self.assertEqual('NhHj5eaHBV3hyoa6Md4zha2jvghGiwPqhb', wallet.derive_address(0, 0))
         await wallet.stop()
 
+    def test_other_client_storage_versions_explained(self):
+        # Electrum-Neurai 0.1.x wrote storage version 49, before the reset to 1;
+        # a version just above ours would come from a newer Electrum-Neurai
+        for seed_version, hint in ((49, 'Electrum-Neurai 0.1.x'), (FINAL_SEED_VERSION + 1, 'too old')):
+            wallet_json = json.dumps({'seed_version': seed_version, 'wallet_type': 'standard'})
+            with self.subTest(seed_version=seed_version):
+                with self.assertRaises(WalletFileException) as ctx:
+                    self._load_db_from_json_string(wallet_json=wallet_json, manual_upgrades=False)
+                self.assertIn(hint, str(ctx.exception))
+
     async def test_upgrade_from_client_1_9_8_seeded(self):
         """note: this wallet file is not valid json: it tests the ast.literal_eval()
         fallback in wallet_db.load_data()

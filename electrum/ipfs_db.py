@@ -64,11 +64,17 @@ class IPFSMetadata(StoredObject):
 class IPFSDBReadWriteError(Exception): pass
 
 class IPFSDB(JsonDB, EventListener):
-    def __new__(cls, *args, **kwargs):
-        if not hasattr(cls, 'instance'):
-            cls._instance = super().__new__(cls)
-            cls._instance.__init__(*args, **kwargs)
-        return cls._instance
+    # process-wide singleton, see initialize() / get_instance()
+    _instance = None  # type: Optional[IPFSDB]
+
+    def __new__(cls, path: str, raw_path: str):
+        # Constructing it again for the same files hands back the live instance
+        # (and __init__ then does nothing), rather than a second copy that would
+        # re-read the file and register its event callbacks once more.
+        inst = cls._instance
+        if inst is not None and inst._is_for_paths(path, raw_path):
+            return inst
+        return super().__new__(cls)
 
     @classmethod
     def initialize(cls, path: str, raw_path: str):
@@ -76,10 +82,16 @@ class IPFSDB(JsonDB, EventListener):
 
     @classmethod
     def get_instance(cls) -> 'IPFSDB':
-        assert cls._instance
+        assert cls._instance, 'IPFSDB not initialized'
         return cls._instance
 
+    def _is_for_paths(self, path: str, raw_path: str) -> bool:
+        return (self.path == standardize_path(path)
+                and self.raw_ipfs_path == standardize_path(raw_path))
+
     def __init__(self, path: str, raw_path: str):
+        if self is type(self)._instance:
+            return  # the singleton, already set up (see __new__)
         JsonDB.__init__(self, {})
         self.path = standardize_path(path)
         self._file_exists = bool(self.path and os.path.exists(self.path))
@@ -100,8 +112,13 @@ class IPFSDB(JsonDB, EventListener):
         self._ipfs_lookup_current = set()
         self._ipfs_download_current = set()
 
+        # replace a previous instance for other files (e.g. another data dir)
+        prev = type(self)._instance
+        if prev is not None:
+            prev.unregister_callbacks()
         self.register_callbacks()
-    
+        type(self)._instance = self
+
     def _should_convert_to_stored_dict(self, key) -> bool:
         return False
 

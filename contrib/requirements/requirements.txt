@@ -5,7 +5,8 @@ aiorpcx>=0.22.0,<0.23
 aiohttp>=3.3.0,<4.0.0
 aiohttp_socks>=0.3
 certifi
-bitstring
+# lnaddr needs the bitstring 3 API (ConstBitStream, .len); the binaries pin 3.1.9
+bitstring>=3.1.9,<4
 attrs>=20.1.0
 
 # Note that we also need the dnspython[DNSSEC] extra which pulls in cryptography,

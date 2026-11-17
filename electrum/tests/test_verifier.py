@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import logging
+import time
 
 from electrum.bitcoin import hash_encode
 from electrum.transaction import Transaction
@@ -49,3 +51,31 @@ class VerifierTestCase(ElectrumTestCase):
         f_tx_hash = hash_encode(bfh(VALID_64_BYTE_TX[:64]))
         with self.assertRaises(InnerNodeOfSpvProofIsValidTx):
             SPV.hash_merkle_root(fake_mbranch, f_tx_hash, 6)
+
+
+class TestCheckpointChunkBackoff(ElectrumTestCase):
+
+    async def test_chunk_that_does_not_connect_is_retried_later(self):
+        results = [(False, 0), (False, 0), None, (True, 2016)]
+
+        class FakeInterface:
+            async def request_chunk(self, height, tip, *, can_return_early=False):
+                return results.pop(0)
+
+        spv = SPV.__new__(SPV)  # no network: only the chunk bookkeeping is exercised
+        spv.logger = logging.getLogger('test_verifier')
+        spv.interface = FakeInterface()
+        spv._chunk_failures = {}
+
+        await spv._request_checkpoint_chunk(4032)
+        failures, next_try = spv._chunk_failures[4032]
+        self.assertEqual(1, failures)
+        self.assertAlmostEqual(2, next_try - time.monotonic(), delta=0.5)
+        await spv._request_checkpoint_chunk(4032)
+        failures, next_try = spv._chunk_failures[4032]
+        self.assertEqual(2, failures)
+        self.assertAlmostEqual(4, next_try - time.monotonic(), delta=0.5)
+        await spv._request_checkpoint_chunk(4032)  # already in flight: nothing changes
+        self.assertEqual(2, spv._chunk_failures[4032][0])
+        await spv._request_checkpoint_chunk(4032)
+        self.assertNotIn(4032, spv._chunk_failures)

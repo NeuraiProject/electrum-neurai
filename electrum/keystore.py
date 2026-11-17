@@ -44,10 +44,11 @@ from .crypto import (pw_decode, pw_encode, sha256, sha256d, PW_HASH_VERSION_LATE
                      SUPPORTED_PW_HASH_VERSIONS, UnsupportedPasswordHashVersion, hash_160,
                      CiphertextFormatError)
 from .util import (InvalidPassword, WalletFileException,
-                   BitcoinException, bfh, inv_dict, is_hex_str)
+                   BitcoinException, bfh, inv_dict, is_hex_str, UserFacingException)
 from .mnemonic import Mnemonic, Wordlist, seed_type, is_seed
 from .plugin import run_hook
 from .logging import Logger
+from .i18n import _
 
 if TYPE_CHECKING:
     from .gui.qt.util import TaskThread
@@ -58,6 +59,47 @@ if TYPE_CHECKING:
 
 
 class CannotDerivePubkey(Exception): pass
+
+
+# Neurai has no SegWit yet (bech32 addresses arrive with a future hard fork),
+# so a wallet can only be backed by legacy keys: p2pkh for single-sig and p2sh
+# for multisig. That is, 'standard' extended keys (xpub/xprv) and plain p2pkh
+# WIF private keys.
+SUPPORTED_XPUB_TYPES = ('standard',)
+SUPPORTED_WIF_SCRIPT_TYPES = ('p2pkh',)
+
+
+class UnsupportedScriptType(BitcoinException, UserFacingException):
+    """A key whose script type this client cannot use on Neurai."""
+
+
+def unsupported_xtype_message(xtype: str) -> str:
+    if bitcoin.is_segwit_script_type(xtype):
+        return ' '.join([
+            _("This is a SegWit master key ({}), e.g. a ypub, zpub, Ypub or Zpub.").format(xtype),
+            _("Neurai does not support SegWit yet."),
+            _("Please use a standard (legacy) xpub or xprv."),
+        ])
+    return _("Unsupported key type: {}").format(xtype)
+
+
+def unsupported_wif_message(txin_type: str) -> str:
+    if bitcoin.is_segwit_script_type(txin_type):
+        return ' '.join([
+            _("'{}' private keys cannot be used: Neurai does not support SegWit yet.").format(txin_type),
+            _("Enter the key without a prefix (or with 'p2pkh:') to use its legacy address."),
+        ])
+    return _("Unsupported private key type: {}").format(txin_type)
+
+
+def check_xtype_supported(xtype: str) -> None:
+    if xtype not in SUPPORTED_XPUB_TYPES:
+        raise UnsupportedScriptType(unsupported_xtype_message(xtype))
+
+
+def check_wif_script_type_supported(txin_type: str) -> None:
+    if txin_type not in SUPPORTED_WIF_SCRIPT_TYPES:
+        raise UnsupportedScriptType(unsupported_wif_message(txin_type))
 
 
 def also_test_none_password(check_password_fn):
@@ -280,6 +322,8 @@ class Imported_KeyStore(Software_KeyStore):
 
     def import_privkey(self, sec, password):
         txin_type, privkey, compressed = deserialize_privkey(sec)
+        # refuse SegWit keys before storing anything (Neurai has no SegWit yet)
+        check_wif_script_type_supported(txin_type)
         pubkey = ecc.ECPrivkey(privkey).get_public_key_hex(compressed=compressed)
         # re-serialize the key so the internal storage format is consistent
         serialized_privkey = serialize_privkey(
@@ -692,14 +736,13 @@ class BIP32_KeyStore(Xpub, Deterministic_KeyStore):
         return pk, True
 
     def get_keypair(self, sequence, password):
-        k, _ = self.get_private_key(sequence, password)
+        k, _compressed = self.get_private_key(sequence, password)
         cK = ecc.ECPrivkey(k).get_public_key_bytes()
         return cK, k
 
     def can_have_deterministic_lightning_xprv(self):
-        if (self.get_seed_type() == 'segwit'
-                and self.get_bip32_node_for_xpub().xtype == 'p2wpkh'):
-            return True
+        # Upstream: segwit seed + p2wpkh. Lightning needs SegWit, which Neurai
+        # does not have yet, so never derive Lightning keys from a keystore.
         return False
 
     def get_lightning_xprv(self, password) -> str:
@@ -1113,8 +1156,22 @@ def get_private_keys(text, *, allow_spaces_inside_key=True, raise_on_error=False
         parts = list(filter(bool, parts))
     else:
         parts = text.split()
-    if bool(parts) and all(bitcoin.is_private_key(x, raise_on_error=raise_on_error) for x in parts):
+    if bool(parts) and all(is_supported_private_key(x, raise_on_error=raise_on_error) for x in parts):
         return parts
+
+
+def is_supported_private_key(key: str, *, raise_on_error=False) -> bool:
+    """Like bitcoin.is_private_key, but also rejects keys for script types
+    Neurai cannot use yet (e.g. 'p2wpkh:...' or 'p2wpkh-p2sh:...').
+    """
+    try:
+        txin_type, _secret, _compressed = deserialize_privkey(key)
+        check_wif_script_type_supported(txin_type)
+    except BaseException:
+        if raise_on_error:
+            raise
+        return False
+    return True
 
 
 def is_private_key_list(text, *, allow_spaces_inside_key=True, raise_on_error=False):
@@ -1129,6 +1186,14 @@ def is_master_key(x):
 
 def is_bip32_key(x):
     return is_xprv(x) or is_xpub(x)
+
+
+def is_supported_master_key(x) -> bool:
+    """A master key this client can build a Neurai wallet from: an old-style
+    mpk, or an xpub/xprv of a supported (non-SegWit) type."""
+    if is_old_mpk(x):
+        return True
+    return is_bip32_key(x) and bip32.xpub_type(x) in SUPPORTED_XPUB_TYPES
 
 
 def bip44_derivation(account_id, bip43_purpose=44):

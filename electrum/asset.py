@@ -382,8 +382,8 @@ class BaseAssetVoutInformation():
         return False
 
 class NoAssetVoutInformation(BaseAssetVoutInformation):
-    def __init__(self):
-        BaseAssetVoutInformation.__init__(self, AssetVoutType.NONE, True)
+    def __init__(self, well_formed=True):
+        BaseAssetVoutInformation.__init__(self, AssetVoutType.NONE, well_formed)
 
 class MetadataAssetVoutInformation(BaseAssetVoutInformation):
     def __init__(self, type_: AssetVoutType, well_formed, asset: str, amount: int, divisions: int, reissuable: bool, associated_data: Optional[bytes]):
@@ -436,11 +436,21 @@ class FreezeTagAssetVoutInformation(TagAssetVoutInformation):
         self.asset = asset
         self.flag = flag
 
+def script_has_asset_data(script: bytes) -> bool:
+    """Whether an output script carries Neurai asset data (a transfer, issuance,
+    reissuance or ownership script, or a tag). Malformed scripts count as having it,
+    so callers that must not touch asset outputs also leave those alone."""
+    try:
+        return any(op == opcodes.OP_ASSET for op, _, _ in script_GetOp(script))
+    except MalformedBitcoinScript:
+        return True
+
 def get_asset_info_from_script(script: bytes) -> BaseAssetVoutInformation:
     try:
         decoded = [x for x in script_GetOp(script)]
     except MalformedBitcoinScript:
-        return None
+        # an output script can be any bytes; callers expect an object
+        return NoAssetVoutInformation(well_formed=False)
 
     try:
         for i, (op, _, index) in enumerate(decoded):
@@ -530,7 +540,9 @@ def get_asset_info_from_script(script: bytes) -> BaseAssetVoutInformation:
                         else:
                             return MetadataAssetVoutInformation(asset_vout_type, well_formed, asset, asset_amount, divisions, reissuable, None)
                     break
-    except IndexError:
+    except (IndexError, TypeError, UnicodeDecodeError, StopIteration, MalformedBitcoinScript):
+        # not a parseable asset script (e.g. OP_ASSET with junk after it); any bytes are
+        # consensus-valid in an output script, so this must not raise
         pass
     return NoAssetVoutInformation()
 

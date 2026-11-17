@@ -11,6 +11,8 @@ from electrum.bitcoin import (deserialize_privkey, opcodes,
                               construct_script, construct_witness)
 from electrum.ecc import ECPrivkey
 from electrum import descriptor
+from electrum.asset import (AssetVoutType, get_asset_info_from_script, script_has_asset_data,
+                            generate_transfer_script_from_base)
 
 from .test_bitcoin import disable_ecdsa_r_value_grinding
 from . import ElectrumTestCase
@@ -869,6 +871,47 @@ class TestTransaction(ElectrumTestCase):
         self._run_naive_tests_on_tx(raw_tx, txid)
 
 # txns from Bitcoin Core ends <---
+
+
+class TestNeuraiOutputScripts(ElectrumTestCase):
+    """Any bytes are a consensus-valid output script; parsing them for assets must not raise."""
+
+    def setUp(self):
+        super().setUp()
+        self.p2pkh = bitcoin.address_to_script(bitcoin.hash160_to_p2pkh(bytes(20)))
+
+    def _assert_plain_output(self, script: bytes, value: int):
+        txout = transaction.TxOutput(scriptpubkey=script, value=value)
+        self.assertIsNone(txout.asset)
+        self.assertEqual(value, txout.asset_aware_value())
+        self.assertEqual(AssetVoutType.NONE, get_asset_info_from_script(script).get_type())
+
+    def test_malformed_script(self):
+        script = bfh('4c')  # OP_PUSHDATA1 without its length
+        self._assert_plain_output(script, 1000)
+        self.assertFalse(get_asset_info_from_script(script).well_formed_script)
+        self.assertIsNone(transaction.TxOutput(scriptpubkey=script, value=1000).address)
+        self.assertTrue(script_has_asset_data(script))  # so bump fee leaves it alone
+
+    def test_asset_script_with_undecodable_name(self):
+        from electrum import constants
+        payload = constants.net.ASSET_PREFIX + b't' + bytes([2]) + b'\xff\xfe' + (1000).to_bytes(8, 'little')
+        script = bfh(self.p2pkh + construct_script([opcodes.OP_ASSET, payload, opcodes.OP_DROP]))
+        self._assert_plain_output(script, 0)
+        self.assertTrue(script_has_asset_data(script))
+
+    def test_script_has_asset_data(self):
+        self.assertFalse(script_has_asset_data(bfh(self.p2pkh)))
+        self.assertTrue(script_has_asset_data(bfh(generate_transfer_script_from_base('CATS', 1, self.p2pkh))))
+
+    def test_witness_script_consistency_without_bech32(self):
+        # Neurai has no bech32 addresses: a witnessScript that does not match the input's
+        # (base58) address is a PSBT consistency failure, not a NotImplementedError
+        txin = PartialTxInput(prevout=TxOutpoint(txid=bytes(32), out_idx=0))
+        txin._trusted_address = bitcoin.hash160_to_p2pkh(bytes(20))
+        txin.witness_script = bfh('51')
+        with self.assertRaises(transaction.PSBTInputConsistencyFailure):
+            txin.validate_data()
 
 
 class TestTransactionTestnet(ElectrumTestCase):

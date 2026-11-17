@@ -53,6 +53,8 @@ if TYPE_CHECKING:
 # hardware device setup purpose
 HWD_SETUP_NEW_WALLET, HWD_SETUP_DECRYPT_WALLET = range(0, 2)
 
+MSG_2FA_UNSUPPORTED = _("Two-factor authentication (2FA) wallets are not supported by Electrum-Neurai.")
+
 
 class ScriptTypeNotSupported(Exception): pass
 
@@ -174,23 +176,20 @@ class BaseWizard(Logger):
         """
         raise NotImplementedError()
 
-    def load_2fa(self):
-        self.data['wallet_type'] = '2fa'
-        self.data['use_trustedcoin'] = True
-        self.plugin = self.plugins.load_plugin('trustedcoin')
-
     def on_wallet_type(self, choice):
+        # Note: 2FA wallets need the TrustedCoin plugin, which this fork does
+        # not ship, so '2fa' is neither offered nor accepted.
+        actions = {
+            'standard': 'choose_keystore',
+            'multisig': 'choose_multisig',
+            'imported': 'import_addresses_or_keys',
+        }
+        if choice not in actions:
+            self.show_error(MSG_2FA_UNSUPPORTED if choice == '2fa'
+                            else _('Unsupported wallet type') + f': {choice}')
+            raise GoBack()
         self.data['wallet_type'] = self.wallet_type = choice
-        if choice == 'standard':
-            action = 'choose_keystore'
-        elif choice == 'multisig':
-            action = 'choose_multisig'
-        elif choice == '2fa':
-            self.load_2fa()
-            action = self.plugin.get_action(self.data)
-        elif choice == 'imported':
-            action = 'import_addresses_or_keys'
-        self.run(action)
+        self.run(actions[choice])
 
     def choose_multisig(self):
         def on_multisig(m, n):
@@ -225,6 +224,8 @@ class BaseWizard(Logger):
         self.choice_dialog(title=title, message=message, choices=choices, run_next=self.run)
 
     def import_addresses_or_keys(self):
+        # note: keystore.is_private_key_list rejects SegWit WIF keys, raising
+        # UnsupportedScriptType whose message the GUI shows under the text box
         v = lambda x: keystore.is_address_list(x) or keystore.is_private_key_list(x, raise_on_error=True)
         title = _("Import Bitcoin Addresses")
         message = _("Enter a list of Bitcoin addresses (this will create a watching-only wallet), or a list of private keys.")
@@ -243,7 +244,7 @@ class BaseWizard(Logger):
             k = keystore.Imported_KeyStore({})
             keys = keystore.get_private_keys(text)
             for pk in keys:
-                assert bitcoin.is_private_key(pk)
+                assert keystore.is_supported_private_key(pk)
                 txin_type, pubkey = k.import_privkey(pk, None)
                 addr = bitcoin.pubkey_to_address(txin_type, pubkey)
                 self.data['addresses'][addr] = {'type':txin_type, 'pubkey':pubkey}
@@ -252,18 +253,29 @@ class BaseWizard(Logger):
             return self.terminate(aborted=True)
         return self.run('create_wallet')
 
+    @staticmethod
+    def is_usable_master_key(text: str, *, bip32_only: bool = False) -> bool:
+        """Validator for the master key dialogs. SegWit keys (ypub/zpub/Ypub/Zpub)
+        raise UnsupportedScriptType, whose message the GUI shows to the user.
+        """
+        is_valid = keystore.is_bip32_key(text) if bip32_only else keystore.is_master_key(text)
+        if is_valid and keystore.is_bip32_key(text):
+            keystore.check_xtype_supported(xpub_type(text))
+        return is_valid
+
     def restore_from_key(self):
         if self.wallet_type == 'standard':
-            v = keystore.is_master_key
+            v = self.is_usable_master_key
             title = _("Create keystore from a master key")
             message = ' '.join([
-                _("To create a watching-only wallet, please enter your master public key (xpub/ypub/zpub)."),
-                _("To create a spending wallet, please enter a master private key (xprv/yprv/zprv).")
+                _("To create a watching-only wallet, please enter your master public key (xpub)."),
+                _("To create a spending wallet, please enter a master private key (xprv).")
             ])
             self.add_xpub_dialog(title=title, message=message, run_next=self.on_restore_from_key, is_valid=v)
         else:
             i = len(self.keystores) + 1
-            self.add_cosigner_dialog(index=i, run_next=self.on_restore_from_key, is_valid=keystore.is_bip32_key)
+            v = partial(self.is_usable_master_key, bip32_only=True)
+            self.add_cosigner_dialog(index=i, run_next=self.on_restore_from_key, is_valid=v)
 
     def on_restore_from_key(self, text):
         k = keystore.from_master_key(text)
@@ -510,8 +522,10 @@ class BaseWizard(Logger):
         self.opt_bip39 = True
         self.opt_slip39 = True
         self.opt_ext = True
-        is_cosigning_seed = lambda x: mnemonic.seed_type(x) in ['standard', 'segwit']
-        test = mnemonic.is_seed if self.wallet_type == 'standard' else is_cosigning_seed
+        # Only Electrum seed types usable on Neurai: no SegWit, no 2FA; and an
+        # 'old' seed has no xpub, so it cannot be a multisig cosigner.
+        is_cosigning_seed = partial(mnemonic.is_supported_seed, allow_old=False)
+        test = mnemonic.is_supported_seed if self.wallet_type == 'standard' else is_cosigning_seed
         f = lambda *args: self.run('on_restore_seed', *args)
         self.restore_seed_dialog(run_next=f, test=test)
 
@@ -527,14 +541,15 @@ class BaseWizard(Logger):
                 root_seed = seed.decrypt(passphrase)
                 self.on_restore_bip43(root_seed)
             self.passphrase_dialog(run_next=f, is_restoring=True) if is_ext else f('')
-        elif self.seed_type in ['standard', 'segwit']:
+        elif self.seed_type == 'standard':
             f = lambda passphrase: self.run('create_keystore', seed, passphrase, False)
             self.passphrase_dialog(run_next=f, is_restoring=True) if is_ext else f('')
         elif self.seed_type == 'old':
             self.run('create_keystore', seed, '', False)
-        elif mnemonic.is_any_2fa_seed_type(self.seed_type):
-            self.load_2fa()
-            self.run('on_restore_seed', seed, is_ext)
+        elif msg := mnemonic.unsupported_seed_type_message(self.seed_type):
+            # Electrum segwit/2fa seeds (normally already refused by the seed dialog)
+            self.show_error(msg)
+            raise GoBack()
         else:
             raise Exception('Unknown seed type', self.seed_type)
 
@@ -553,6 +568,9 @@ class BaseWizard(Logger):
         self.derivation_and_script_type_dialog(f, get_account_xpub=get_account_xpub)
 
     def create_keystore(self, seed, passphrase, is_bip39):
+        # the seed dialog lets the user switch between BIP39 and Electrum seeds;
+        # keep the wallet's 'seed_type' in line with what was actually chosen
+        self.seed_type = 'bip39' if is_bip39 else mnemonic.seed_type(seed)
         if is_bip39:
             root_seed = bip39_to_seed(seed, passphrase if passphrase else '')
             if self.wallet_type == 'multisig':
@@ -562,11 +580,14 @@ class BaseWizard(Logger):
             k = keystore.from_bip43_rootseed(root_seed, derivation, xtype='standard', seed=seed, passphrase=passphrase)
         else:
             k = keystore.from_seed(seed, passphrase, self.wallet_type == 'multisig')
-        if k.can_have_deterministic_lightning_xprv():
-            self.data['lightning_xprv'] = k.get_lightning_xprv(None)
+        # note: no Lightning keys are created ('lightning_xprv'): Lightning needs
+        #       SegWit, which Neurai does not have yet.
         self.on_keystore(k)
 
     def on_bip43(self, root_seed, derivation, script_type, *, seed=None, passphrase=None):
+        if script_type not in keystore.SUPPORTED_XPUB_TYPES:
+            # handled by derivation_and_script_type_dialog (shows the error, asks again)
+            raise ScriptTypeNotSupported(keystore.unsupported_xtype_message(script_type))
         k = keystore.from_bip43_rootseed(root_seed, derivation, xtype=script_type, seed=seed, passphrase=passphrase)
         self.on_keystore(k)
 
@@ -581,19 +602,16 @@ class BaseWizard(Logger):
         has_xpub = isinstance(k, keystore.Xpub)
         if has_xpub:
             t1 = xpub_type(k.xpub)
+        # Neurai has no SegWit yet: only 'standard' keys (p2pkh / p2sh multisig)
+        if has_xpub and t1 not in keystore.SUPPORTED_XPUB_TYPES:
+            self.show_error(keystore.unsupported_xtype_message(t1))
+            self.run('choose_keystore')
+            return
         if self.wallet_type == 'standard':
-            if has_xpub and t1 not in ['standard', 'p2wpkh', 'p2wpkh-p2sh']:
-                self.show_error(_('Wrong key type') + ' %s'%t1)
-                self.run('choose_keystore')
-                return
             self.keystores.append(k)
             self.run('create_wallet')
         elif self.wallet_type == 'multisig':
             assert has_xpub
-            if t1 not in ['standard', 'p2wsh', 'p2wsh-p2sh']:
-                self.show_error(_('Wrong key type') + ' %s'%t1)
-                self.run('choose_keystore')
-                return
             if k.xpub in map(lambda x: x.xpub, self.keystores):
                 self.show_error(_('Error: duplicate master public key'))
                 self.run('choose_keystore')
@@ -705,8 +723,9 @@ class BaseWizard(Logger):
         self.show_xpub_dialog(xpub=xpub, run_next=lambda x: self.run('choose_keystore'))
 
     def choose_seed_type(self):
-        seed_type = 'standard' if self.config.WIZARD_DONT_CREATE_SEGWIT else 'segwit'
-        self.create_seed(seed_type)
+        # Always 'standard': Neurai has no SegWit yet, so the 'nosegwit' config
+        # option (WIZARD_DONT_CREATE_SEGWIT) must not be able to switch this.
+        self.create_seed('standard')
 
     def create_seed(self, seed_type):
         from . import mnemonic

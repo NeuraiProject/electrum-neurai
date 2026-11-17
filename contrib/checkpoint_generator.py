@@ -1,11 +1,19 @@
 #!/usr/bin/env python
+# Writes the DGW checkpoints of electrum (checkpoints_dgw.json, or
+# checkpoints_dgw_testnet.json with --testnet) from a Neurai node's JSON-RPC.
+# Every checkpoint covers a chunk of 2016 headers: the hash and target of its
+# first and its last header, up to the last full chunk below the node's tip.
+# Check that it ends well below the tip (more than a reorg can undo).
 from json import loads, dumps
 from sys import exit, argv
 import base64
 import urllib.request, urllib.error, urllib.parse
 
-if len(argv) < 3:
-    print('Arguments: <rpc_username> <rpc_password> [<rpc_port>]')
+args = [a for a in argv[1:] if a != '--testnet']
+testnet = len(args) != len(argv) - 1
+
+if len(args) < 2:
+    print('Arguments: <rpc_username> <rpc_password> [<rpc_port>] [--testnet]')
     exit(1)
 
 def bits_to_target(bits: int) -> int:
@@ -37,11 +45,11 @@ def rpc(method, params):
     }
 
     data_json = dumps(data)
-    username = argv[1]
-    password = argv[2]
-    port = 8766
-    if len(argv) > 3:
-        port = argv[3]
+    username = args[0]
+    password = args[1]
+    port = 19101 if testnet else 8766
+    if len(args) > 2:
+        port = args[2]
     url = "http://127.0.0.1:{}/".format(port)
     req = urllib.request.Request(url, data_json.encode("utf-8"), {'content-type': 'application/json'})
 
@@ -55,6 +63,12 @@ def rpc(method, params):
 
 INTERVAL = 2016
 START = 0
+OUTPUT = 'checkpoints_dgw_testnet.json' if testnet else 'checkpoints_dgw.json'
+
+chain = rpc('getblockchaininfo', [])['result']['chain']
+if (chain == 'test') != testnet:
+    print(f'The node runs chain {chain!r}: use --testnet for "test" only.')
+    exit(1)
 
 curr_height = START
 
@@ -81,6 +95,6 @@ while True:
         print('Done.')
         break
 
-with open('checkpoints_dgw.json', 'w+') as f:
+with open(OUTPUT, 'w+') as f:
     f.write(dumps(checkpoints, indent=4, separators=(',', ':')))
-
+print(f'{len(checkpoints)} checkpoints (up to height {len(checkpoints) * INTERVAL - 1}) written to {OUTPUT}')

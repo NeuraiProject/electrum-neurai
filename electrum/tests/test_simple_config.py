@@ -6,6 +6,7 @@ import shutil
 
 from io import StringIO
 from electrum.simple_config import (SimpleConfig, read_user_config)
+from electrum import constants
 
 from . import ElectrumTestCase
 
@@ -224,6 +225,26 @@ class Test_SimpleConfig(ElectrumTestCase):
         self.assertEqual(370000, config.fee_to_depth(6))
         self.assertEqual(495000, config.fee_to_depth(5.5))
         self.assertEqual(36495000, config.fee_to_depth(0.5))
+
+    def test_swapserver_url(self):
+        # used to compare constants.net with constants.BitcoinMainnet/BitcoinTestnet,
+        # which no longer exist (AttributeError), and defaulted to swaps.electrum.org
+        for net in (constants.NeuraiMainnet, constants.NeuraiTestnet):
+            with self.subTest(net=net.NET_NAME):
+                old_net = constants.net
+                constants.net = net
+                try:
+                    config = SimpleConfig({"electrum_path": tempfile.mkdtemp(dir=self.electrum_dir)})
+                    url = config.get_swapserver_url()
+                    self.assertNotIn('electrum.org', url)
+                    self.assertEqual('http://localhost:5455', url)
+                    config.SWAPSERVER_URL = 'https://swaps.example/api'
+                    self.assertEqual('https://swaps.example/api', config.get_swapserver_url())
+                finally:
+                    constants.net = old_net
+
+    def test_wizard_nosegwit_default(self):
+        self.assertTrue(SimpleConfig(self.options).WIZARD_DONT_CREATE_SEGWIT)
 
 
 class TestUserConfig(ElectrumTestCase):

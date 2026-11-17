@@ -22,6 +22,7 @@
 # SOFTWARE.
 
 import asyncio
+import time
 from typing import Sequence, Optional, TYPE_CHECKING, Tuple
 
 import aiorpcx
@@ -47,6 +48,11 @@ class MerkleRootMismatch(MerkleVerificationFailure): pass
 class InnerNodeOfSpvProofIsValidTx(MerkleVerificationFailure): pass
 
 
+# a checkpoint-region chunk that doesn't connect is asked for again after
+# 2, 4, 8... seconds, up to this, instead of on every loop (every 0.1 s)
+CHUNK_RETRY_MAX_DELAY = 300
+
+
 class SPV(NetworkJobOnDefaultServer):
     """ Simple Payment Verification """
 
@@ -59,6 +65,7 @@ class SPV(NetworkJobOnDefaultServer):
         self.merkle_roots = {}  # txid -> merkle root (once it has been verified)
         self.requested_merkle = set()  # txid set of pending requests
         self.verifying = set()
+        self._chunk_failures = {}  # chunk start height -> (failures, monotonic time of next try)
 
     async def _run_tasks(self, *, taskgroup):
         await super()._run_tasks(taskgroup=taskgroup)
@@ -74,6 +81,26 @@ class SPV(NetworkJobOnDefaultServer):
             await self._maybe_undo_verifications()
             await self._request_proofs()
             await asyncio.sleep(0.1)
+
+    async def _request_checkpoint_chunk(self, chunk_start: int) -> None:
+        """Fetch a chunk of the checkpoint region; back off while it fails."""
+        try:
+            res = await self.interface.request_chunk(chunk_start, None, can_return_early=True)
+        except Exception:
+            self._chunk_failed(chunk_start)
+            raise
+        if res is None:  # already being requested
+            return
+        if res[0]:
+            self._chunk_failures.pop(chunk_start, None)
+        else:
+            self._chunk_failed(chunk_start)
+
+    def _chunk_failed(self, chunk_start: int) -> None:
+        failures = self._chunk_failures.get(chunk_start, (0, 0))[0] + 1
+        delay = min(2 ** failures, CHUNK_RETRY_MAX_DELAY)
+        self._chunk_failures[chunk_start] = (failures, time.monotonic() + delay)
+        self.logger.info(f"chunk at {chunk_start} did not connect ({failures} times), next try in {delay} s")
 
     async def _maybe_defer(self, tx_hash: str, tx_height: int, *, for_tx=False, add_to_requested_set=True, alt_id=None) -> bool:
         local_height = self.blockchain.height()
@@ -91,9 +118,12 @@ class SPV(NetworkJobOnDefaultServer):
         # if it's in the checkpoint region, we still might not have the header
         header = self.blockchain.read_header(tx_height)
         if header is None:
-            if tx_height < constants.net.max_checkpoint():
-                # FIXME these requests are not counted (self._requests_sent += 1)
-                await self.taskgroup.spawn(self.interface.request_chunk(tx_height, None, can_return_early=True))
+            if tx_height <= constants.net.max_checkpoint():
+                chunk_start = tx_height - tx_height % constants.net.DGW_CHECKPOINTS_SPACING
+                _failures, next_try = self._chunk_failures.get(chunk_start, (0, 0))
+                if time.monotonic() >= next_try:
+                    # FIXME these requests are not counted (self._requests_sent += 1)
+                    await self.taskgroup.spawn(self._request_checkpoint_chunk(chunk_start))
             return True
         # request now
         if add_to_requested_set:

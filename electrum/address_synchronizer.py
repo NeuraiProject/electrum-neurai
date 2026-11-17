@@ -39,6 +39,7 @@ from .blockchain import hash_header, Blockchain
 from .i18n import _
 from .logging import Logger
 from .util import EventListener, event_listener
+from . import utxo_sync
 from .ipfs_db import IPFSDB
 from .atomic_swap import AtomicSwap
 
@@ -119,6 +120,8 @@ class AddressSynchronizer(Logger, EventListener):
         self._get_balance_cache = {}
         self._get_asset_balance_cache = {}
         self._get_assets_in_mempool_cache = {}
+        # txid -> height of the UTXOs of the addresses followed by their UTXOs
+        self._utxo_txid_heights = {}  # type: Dict[str, int]
 
         self.load_and_cleanup()
 
@@ -132,6 +135,7 @@ class AddressSynchronizer(Logger, EventListener):
         return func_wrapper
 
     def load_and_cleanup(self):
+        self._utxo_txid_heights = utxo_sync.txid_heights(self.db.get_utxo_sets().values())
         self.load_local_history()
         self.check_history()
         self.load_unverified_transactions()
@@ -543,6 +547,22 @@ class AddressSynchronizer(Logger, EventListener):
         self.add_unverified_or_unconfirmed_tx(tx_hash, tx_height)
         self.add_transaction(tx, allow_unrelated=True)
 
+    def receive_utxo_set_callback(self, addr: str, utxo_set: dict) -> None:
+        """A new UTXO set for an address followed by its UTXOs (its history
+        being too large for the server to send; see utxo_sync.py)."""
+        with self.lock, self.transaction_lock:
+            self.db.set_utxo_set(addr, utxo_set)
+            self._utxo_txid_heights = utxo_sync.txid_heights(self.db.get_utxo_sets().values())
+            self._get_balance_cache.clear()  # invalidate cache
+            self._get_asset_balance_cache.clear()
+            self._get_assets_in_mempool_cache.clear()
+        if self.synchronizer is not None:  # always, but in tests
+            assets = {utxo[2] for utxo in utxo_set['utxos'].values() if utxo[2]}
+            assets |= {asset for _, asset in utxo_set['mempool_added'].values() if asset}
+            for asset in assets:
+                self.watch_asset(asset)
+        self._mark_address_history_changed(addr)
+
     def receive_history_callback(self, addr: str, hist, tx_fees: Dict[str, int]):
         with self.lock:
             old_hist = self.get_address_history(addr)
@@ -606,6 +626,7 @@ class AddressSynchronizer(Logger, EventListener):
             with self.transaction_lock:
                 self.db.clear_history()
                 self._history_local.clear()
+                self._utxo_txid_heights = {}
                 self._get_balance_cache.clear()  # invalidate cache
                 self._get_asset_balance_cache.clear()
                 self._get_assets_in_mempool_cache.clear()
@@ -1346,6 +1367,10 @@ class AddressSynchronizer(Logger, EventListener):
                     return TxMinedInfo(height=TX_HEIGHT_FUTURE, conf=0, wanted_height=wanted_height)
                 else:
                     return TxMinedInfo(height=TX_HEIGHT_LOCAL, conf=0)
+            elif (height := self._utxo_txid_heights.get(tx_hash)) is not None:
+                # a transaction of the UTXOs of an address followed by its UTXOs
+                conf = max(self.get_local_height() - height + 1, 0) if height > 0 else 0
+                return TxMinedInfo(height=height, conf=conf)
             else:
                 # local transaction
                 return TxMinedInfo(height=TX_HEIGHT_LOCAL, conf=0)
@@ -1463,6 +1488,9 @@ class AddressSynchronizer(Logger, EventListener):
         return received, sent
 
     def get_addr_outputs(self, address: str) -> Dict[TxOutpoint, PartialTxInput]:
+        utxo_set = self.db.get_utxo_set(address)
+        if utxo_set is not None:
+            return self._get_utxo_set_outputs(address, utxo_set)
         received, sent = self.get_addr_io(address)
         out = {}
         for prevout_str, v in received.items():
@@ -1482,6 +1510,39 @@ class AddressSynchronizer(Logger, EventListener):
                 utxo.spent_txid = None
                 utxo.spent_height = None
             out[prevout] = utxo
+        return out
+
+    def _get_utxo_set_outputs(self, address: str, utxo_set: dict) -> Dict[TxOutpoint, PartialTxInput]:
+        """get_addr_outputs of an address followed by its UTXOs: its set and
+        the mempool's outputs, spent by the mempool or by our own transactions.
+        The outputs it spent before are not known."""
+        mempool_spent = set(utxo_set['mempool_spent'])
+        out = {}
+
+        def add(prevout_str, height, value, asset, is_coinbase):
+            prevout = TxOutpoint.from_str(prevout_str)
+            utxo = PartialTxInput(prevout=prevout, is_coinbase_output=bool(is_coinbase))
+            utxo._trusted_address = address
+            utxo._trusted_value_sats = value
+            utxo._trusted_asset = asset
+            utxo.block_height = height
+            utxo.block_txpos = -1
+            spent_txid = self.db.get_spent_outpoint(prevout.txid.hex(), prevout.out_idx)
+            if spent_txid is not None:
+                utxo.spent_txid = spent_txid
+                utxo.spent_height = self.get_tx_height(spent_txid).height
+            elif prevout_str in mempool_spent:
+                utxo.spent_txid = None
+                utxo.spent_height = TX_HEIGHT_UNCONFIRMED
+            else:
+                utxo.spent_txid = None
+                utxo.spent_height = None
+            out[prevout] = utxo
+
+        for prevout_str, (height, value, asset, is_coinbase) in utxo_set['utxos'].items():
+            add(prevout_str, height, value, asset, is_coinbase)
+        for prevout_str, (value, asset) in utxo_set['mempool_added'].items():
+            add(prevout_str, TX_HEIGHT_UNCONFIRMED, value, asset, False)
         return out
 
     def get_addr_utxo(self, address: str) -> Dict[TxOutpoint, PartialTxInput]:
@@ -1564,7 +1625,15 @@ class AddressSynchronizer(Logger, EventListener):
             else:
                 txid = utxo.prevout.txid.hex()
                 tx = self.db.get_transaction(txid)
-                assert tx is not None # txid comes from get_addr_io
+                if tx is None:
+                    # a mempool output of an address followed by its UTXOs:
+                    # its transaction is not in the wallet
+                    if asset_aware:
+                        assets_in_mempool.add(utxo.asset)
+                        u[utxo.asset] += v
+                    else:
+                        u += v
+                    continue
                 # we look at the outputs that are spent by this transaction
                 # if those outputs are ours and confirmed, we count this coin as confirmed
 
@@ -1657,7 +1726,8 @@ class AddressSynchronizer(Logger, EventListener):
         return coins
 
     def is_used(self, address: str) -> bool:
-        return self.get_address_history_len(address) != 0
+        # an address followed by its UTXOs has a history too large to send
+        return self.get_address_history_len(address) != 0 or self.db.get_utxo_set(address) is not None
 
     def is_empty(self, address: str) -> bool:
         coins = self.get_addr_utxo(address)

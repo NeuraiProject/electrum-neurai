@@ -846,6 +846,9 @@ class SimpleConfig(Logger):
     NETWORK_SKIPMERKLECHECK = ConfigVar('skipmerklecheck', default=False, type_=bool)
     NETWORK_SERVERFINGERPRINT = ConfigVar('serverfingerprint', default=None, type_=str)
     NETWORK_MAX_INCOMING_MSG_SIZE = ConfigVar('network_max_incoming_msg_size', default=1_000_000, type_=int)  # in bytes
+    # Follow every address by its UTXOs (no history) on servers with chunked
+    # UTXO sets; otherwise only those whose history is too large (utxo_sync.py).
+    NETWORK_UTXO_SYNC_ALL = ConfigVar('utxo_sync_all', default=False, type_=bool)
     NETWORK_TIMEOUT = ConfigVar('network_timeout', default=None, type_=int)
 
     WALLET_BATCH_RBF = ConfigVar('batch_rbf', default=False, type_=bool)

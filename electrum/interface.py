@@ -130,6 +130,30 @@ def assert_list_or_tuple(val: Any) -> None:
         raise RequestCorrupted(f'{val!r} should be a list or tuple')
 
 
+def _assert_outpoint(val: Any) -> None:
+    assert_hash256_str(assert_dict_contains_field(val, field_name='tx_hash'))
+    assert_non_negative_integer(assert_dict_contains_field(val, field_name='tx_pos'))
+
+
+def _assert_utxo(val: Any) -> None:
+    _assert_outpoint(val)
+    assert_non_negative_integer(assert_dict_contains_field(val, field_name='height'))
+    assert_non_negative_integer(assert_dict_contains_field(val, field_name='value'))
+    asset = assert_dict_contains_field(val, field_name='asset')
+    if asset is not None and not isinstance(asset, str):
+        raise RequestCorrupted(f'{asset!r} should be an asset name')
+
+
+def _assert_utxo_changes(val: Any) -> None:
+    """`added` UTXOs and `removed` outpoints of a utxo_sync reply or chunk."""
+    assert_list_or_tuple(assert_dict_contains_field(val, field_name='added'))
+    assert_list_or_tuple(assert_dict_contains_field(val, field_name='removed'))
+    for utxo in val['added']:
+        _assert_utxo(utxo)
+    for outpoint in val['removed']:
+        _assert_outpoint(outpoint)
+
+
 class NotificationSession(RPCSession):
 
     def __init__(self, *args, interface: 'Interface', **kwargs):
@@ -399,6 +423,7 @@ class Interface(Logger):
         # Failing verification will get the interface closed.
         self.tip_header = None
         self.tip = 0
+        self._server_features = None  # type: Optional[dict]
 
         self.fee_estimates_eta = {}  # type: Dict[int, int]
 
@@ -1073,6 +1098,69 @@ class Interface(Logger):
             # a recently mined tx could be included in both last block and mempool?
             # Still, it's simplest to just disregard the response.
             raise RequestCorrupted(f"server history has non-unique txids for sh={sh}")
+        return res
+
+    async def get_server_features(self) -> dict:
+        """`server.features`, asked once per connection."""
+        if self._server_features is None:
+            res = await self.session.send_request('server.features')
+            if not isinstance(res, dict):
+                raise RequestCorrupted(f'{res!r} should be a dict')
+            self._server_features = res
+        return self._server_features
+
+    async def supports_utxo_chunks(self) -> bool:
+        """Whether the server has the chunked UTXO sets of electrs-neurai
+        (blockchain.scripthash.utxo_sync and friends, version 1)."""
+        try:
+            features = await self.get_server_features()
+        except aiorpcx.jsonrpc.RPCError:
+            return False
+        version = features.get('utxo_chunks')
+        return isinstance(version, int) and not isinstance(version, bool) and version >= 1
+
+    async def utxo_sync(self, sh: str, from_block: Optional[str]) -> dict:
+        """The changes of the confirmed UTXO set of `sh` since block
+        `from_block` (or the whole set), and its mempool part."""
+        if not is_hash256_str(sh):
+            raise Exception(f"{repr(sh)} is not a scripthash")
+        if from_block is not None and not is_hash256_str(from_block):
+            raise Exception(f"{repr(from_block)} is not a block hash")
+        res = await self.session.send_request('blockchain.scripthash.utxo_sync', [sh, from_block])
+        for field in ('from_block', 'height', 'block_hash', 'count', 'set_hash', 'id', 'chunks', 'mempool'):
+            assert_dict_contains_field(res, field_name=field)
+        if res['from_block'] is not None:
+            assert_hash256_str(res['from_block'])
+        assert_non_negative_integer(res['height'])
+        assert_hash256_str(res['block_hash'])
+        assert_non_negative_integer(res['count'])
+        assert_hash256_str(res['set_hash'])
+        assert_list_or_tuple(res['chunks'])
+        if not res['chunks']:
+            raise RequestCorrupted('a utxo_sync reply has at least one chunk')
+        for chunk_hash in res['chunks']:
+            assert_hash256_str(chunk_hash)
+        if res['id'] is None:
+            if len(res['chunks']) != 1:
+                raise RequestCorrupted('changes of several chunks need an id')
+            _assert_utxo_changes(res)
+        elif not isinstance(res['id'], str):
+            raise RequestCorrupted(f"{res['id']!r} should be a str")
+        mempool = res['mempool']
+        for field in ('added', 'spent'):
+            assert_list_or_tuple(assert_dict_contains_field(mempool, field_name=field))
+        for utxo in mempool['added']:
+            _assert_utxo(utxo)
+        for outpoint in mempool['spent']:
+            _assert_outpoint(outpoint)
+        return res
+
+    async def utxo_chunk(self, sh: str, reply_id: str, index: int) -> dict:
+        """Chunk `index` of the `utxo_sync` reply `reply_id`."""
+        if not is_hash256_str(sh):
+            raise Exception(f"{repr(sh)} is not a scripthash")
+        res = await self.session.send_request('blockchain.scripthash.utxo_chunk', [sh, reply_id, index])
+        _assert_utxo_changes(res)
         return res
 
     async def listunspent_for_scripthash(self, sh: str, asset) -> List[dict]:

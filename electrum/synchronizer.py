@@ -30,10 +30,10 @@ import logging
 
 from aiorpcx import run_in_thread, RPCError
 
-from . import util, constants
+from . import util, constants, utxo_sync
 from .transaction import Transaction, PartialTransaction
-from .util import make_aiohttp_session, NetworkJobOnDefaultServer, random_shuffled_copy, OldTaskGroup
-from .bitcoin import address_to_scripthash, is_address, is_b58_address, b58_address_to_hash160
+from .util import make_aiohttp_session, NetworkJobOnDefaultServer, random_shuffled_copy, OldTaskGroup, is_hash256_str
+from .bitcoin import address_to_scripthash, is_address, is_b58_address, b58_address_to_hash160, COINBASE_MATURITY
 from .asset import AssetMetadata, get_error_for_asset_name, get_error_for_asset_typed, AssetType
 from .logging import Logger
 from .interface import GracefulDisconnect, NetworkTimeout
@@ -107,6 +107,8 @@ class SynchronizerBase(NetworkJobOnDefaultServer):
         self._handling_addr_statuses = set()
         self.scripthash_to_address = {}
         self._processed_some_notifications = False  # so that we don't miss them
+        # addresses followed by their UTXOs (see utxo_sync.py)
+        self._handling_utxo_statuses = set()
         
         self._adding_assets = set()
         self.requested_assets = set()
@@ -141,6 +143,7 @@ class SynchronizerBase(NetworkJobOnDefaultServer):
         # Queues
         self.asset_status_queue = asyncio.Queue()
         self.status_queue = asyncio.Queue()
+        self.utxo_status_queue = asyncio.Queue()
         self.qualifier_tags_status_queue = asyncio.Queue()
         self.h160_tags_status_queue = asyncio.Queue()
         self.restricted_verifier_queue = asyncio.Queue()
@@ -152,6 +155,7 @@ class SynchronizerBase(NetworkJobOnDefaultServer):
         try:
             async with taskgroup as group:
                 await group.spawn(self.handle_status())
+                await group.spawn(self.handle_utxo_status())
                 await group.spawn(self.handle_asset_status())
                 await group.spawn(self.handle_qualifier_for_tags_status())
                 await group.spawn(self.handle_h160_for_tags_status())
@@ -162,6 +166,7 @@ class SynchronizerBase(NetworkJobOnDefaultServer):
         finally:
             # we are being cancelled now
             self.session.unsubscribe(self.status_queue)
+            self.session.unsubscribe(self.utxo_status_queue)
             self.session.unsubscribe(self.asset_status_queue)
             self.session.unsubscribe(self.qualifier_tags_status_queue)
             self.session.unsubscribe(self.h160_tags_status_queue)
@@ -263,6 +268,18 @@ class SynchronizerBase(NetworkJobOnDefaultServer):
         """
         raise NotImplementedError()  # implemented by subclasses
 
+    async def _on_utxo_status(self, addr, status):
+        """Handle the change of the utxo_subscribe status of an address
+        followed by its UTXOs. Should remove addr from
+        self._handling_utxo_statuses when done.
+        """
+        self._handling_utxo_statuses.discard(addr)
+
+    async def _subscribe_to_utxos_instead(self, addr: str, h: str, *, history_too_large: bool) -> bool:
+        """Whether addr is followed by its UTXOs (subscribed with
+        utxo_subscribe) instead of its history."""
+        return False
+
     async def _on_asset_status(self, asset, status):
         raise NotImplementedError()
 
@@ -284,12 +301,17 @@ class SynchronizerBase(NetworkJobOnDefaultServer):
     async def _subscribe_to_address(self, addr):
         h = address_to_scripthash(addr)
         self.scripthash_to_address[h] = addr
+        if await self._subscribe_to_utxos_instead(addr, h, history_too_large=False):
+            return
         self._requests_sent += 1
         try:
             async with self._network_request_semaphore:
                 await self.session.subscribe('blockchain.scripthash.subscribe', [h], self.status_queue)
         except RPCError as e:
             if e.message == 'history too large':  # no unique error code
+                if await self._subscribe_to_utxos_instead(addr, h, history_too_large=True):
+                    self._requests_answered += 1
+                    return
                 raise GracefulDisconnect(e, log_level=logging.ERROR) from e
             raise
         self._requests_answered += 1
@@ -337,6 +359,15 @@ class SynchronizerBase(NetworkJobOnDefaultServer):
             self._handling_addr_statuses.add(addr)
             self.requested_addrs.discard(addr)  # ok for addr not to be present
             await self.taskgroup.spawn(self._on_address_status, addr, status)
+            self._processed_some_notifications = True
+
+    async def handle_utxo_status(self):
+        while True:
+            h, status = await self.utxo_status_queue.get()
+            addr = self.scripthash_to_address[h]
+            self._handling_utxo_statuses.add(addr)
+            self.requested_addrs.discard(addr)  # ok for addr not to be present
+            await self.taskgroup.spawn(self._on_utxo_status, addr, status)
             self._processed_some_notifications = True
 
     async def handle_asset_status(self):
@@ -409,6 +440,7 @@ class Synchronizer(SynchronizerBase):
         self.requested_tx = {}
 
         self.requested_histories = set()
+        self.requested_utxo_sets = set()  # (addr, status) being synced
         self.requested_asset_metadata = set()
         self.requested_qualifiers_for_tags_results = set()
         self.requested_h160s_for_tags_results = set()
@@ -435,6 +467,8 @@ class Synchronizer(SynchronizerBase):
                 and not self.requested_histories
                 and not self.requested_tx
                 and not self._stale_histories
+                and not self._handling_utxo_statuses
+                and not self.requested_utxo_sets
 
                 and not self._adding_assets
                 and not self.requested_assets
@@ -706,6 +740,73 @@ class Synchronizer(SynchronizerBase):
 
         # Remove request; this allows up_to_date to be True
         self.requested_histories.discard((addr, status))
+
+    async def _subscribe_to_utxos_instead(self, addr: str, h: str, *, history_too_large: bool) -> bool:
+        """Addresses whose history is too large for the server are followed by
+        their UTXOs, on servers that have chunked UTXO sets (utxo_sync.py);
+        with the utxo_sync_all option, every address is."""
+        if not history_too_large and self.adb.db.get_utxo_set(addr) is None \
+                and not self.adb.config.NETWORK_UTXO_SYNC_ALL:
+            return False
+        if not await self.interface.supports_utxo_chunks():
+            return False
+        if history_too_large:
+            self.logger.info(f"history of {addr} too large: following its UTXOs instead")
+        self._requests_sent += 1
+        async with self._network_request_semaphore:
+            await self.session.subscribe('blockchain.scripthash.utxo_subscribe', [h], self.utxo_status_queue)
+        self._requests_answered += 1
+        return True
+
+    async def _on_utxo_status(self, addr, status):
+        try:
+            stored = self.adb.db.get_utxo_set(addr)
+            if stored is not None and stored.get('status') == status:
+                return
+            if (addr, status) in self.requested_utxo_sets:
+                return
+            self.requested_utxo_sets.add((addr, status))
+        finally:
+            self._handling_utxo_statuses.discard(addr)
+        h = address_to_scripthash(addr)
+        self._requests_sent += 1
+        try:
+            async with self._network_request_semaphore:
+                utxo_set = await utxo_sync.sync(self.interface, h, stored)
+        except utxo_sync.UtxoSetError as e:
+            raise SynchronizerFailure(f"bad UTXO set for {addr}: {e}") from e
+        self._requests_answered += 1
+        await self._mark_coinbase_outputs(utxo_set)
+        self.logger.info(f"UTXO set of {addr}: {len(utxo_set['utxos'])} UTXOs at height {utxo_set['height']}"
+                         f" ({'changes' if stored else 'whole set'}), {len(utxo_set['mempool_added'])} added"
+                         f" and {len(utxo_set['mempool_spent'])} spent in the mempool")
+        if utxo_set['status'] != status:
+            self.logger.info(f"UTXO set of {addr} changed meanwhile: waiting for its next status")
+        self.adb.receive_utxo_set_callback(addr, utxo_set)
+        # Remove request; this allows up_to_date to be True
+        self.requested_utxo_sets.discard((addr, status))
+
+    async def _mark_coinbase_outputs(self, utxo_set: dict) -> None:
+        """Coinbase outputs are spendable after COINBASE_MATURITY blocks: among
+        the UTXOs recent enough for it to matter, tell them apart by the first
+        transaction of their block."""
+        lowest = utxo_set['height'] - COINBASE_MATURITY + 1
+        recent = [utxo for utxo in utxo_set['utxos'].values() if utxo[3] is None and utxo[0] >= lowest]
+        coinbase_txids = {}
+
+        async def get_coinbase_txid(height):
+            self._requests_sent += 1
+            async with self._network_request_semaphore:
+                txid = await self.interface.session.send_request('blockchain.transaction.id_from_pos', [height, 0])
+            self._requests_answered += 1
+            if not is_hash256_str(txid):
+                raise SynchronizerFailure(f"bad coinbase txid {txid!r} at height {height}")
+            coinbase_txids[height] = txid
+
+        await asyncio.gather(*(get_coinbase_txid(height) for height in {utxo[0] for utxo in recent}))
+        for outpoint, utxo in utxo_set['utxos'].items():
+            if utxo[3] is None and utxo[0] >= lowest:
+                utxo[3] = outpoint.split(':')[0] == coinbase_txids[utxo[0]]
 
     async def _request_missing_txs(self, hist, *, allow_server_not_finding_tx=False):
         # "hist" is a list of [tx_hash, tx_height] lists

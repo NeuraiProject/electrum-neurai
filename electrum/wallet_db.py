@@ -427,6 +427,19 @@ class WalletDB(JsonDB):
         return addr in self.history
 
     @locked
+    def get_utxo_set(self, addr: str) -> Optional[dict]:
+        """The UTXO set of an address followed by its UTXOs (see utxo_sync.py)."""
+        return self.utxo_sets.get(addr)
+
+    @modifier
+    def set_utxo_set(self, addr: str, utxo_set: dict) -> None:
+        self.utxo_sets[addr] = utxo_set
+
+    @locked
+    def get_utxo_sets(self) -> Dict[str, dict]:
+        return dict(self.utxo_sets)
+
+    @locked
     def get_addr_history(self, addr: str) -> Sequence[Tuple[str, int]]:
         assert isinstance(addr, str)
         return self.history.get(addr, [])
@@ -987,6 +1000,8 @@ class WalletDB(JsonDB):
         self.tx_fees = self.get_dict('tx_fees')                  # type: Dict[str, TxFeesValue]
         # scripthash -> set of (outpoint, value)
         self._prevouts_by_scripthash = self.get_dict('prevouts_by_scripthash')  # type: Dict[str, Set[Tuple[str, int]]]
+        # address -> UTXO set, for the addresses followed by their UTXOs (see utxo_sync.py)
+        self.utxo_sets = self.get_dict('utxo_sets')              # type: Dict[str, dict]
         # remove unreferenced tx
         for tx_hash in list(self.transactions.keys()):
             if not self.get_txi_addresses(tx_hash) and not self.get_txo_addresses(tx_hash):
@@ -1010,6 +1025,7 @@ class WalletDB(JsonDB):
         self.verified_tx.clear()
         self.tx_fees.clear()
         self._prevouts_by_scripthash.clear()
+        self.utxo_sets.clear()
 
     def _should_convert_to_stored_dict(self, key) -> bool:
         if key == 'keystore':

@@ -556,6 +556,8 @@ class TestWalletSending(ElectrumTestCase):
     def setUp(self):
         super().setUp()
         self.config = SimpleConfig({'electrum_path': self.electrum_path})
+        # the vectors spend unconfirmed coins smaller than Neurai's default freeze threshold
+        self.config.WALLET_UNCONF_UTXO_FREEZE_THRESHOLD_SAT = 5_000
 
     def create_standard_wallet_from_seed(self, seed_words, *, config=None, gap_limit=2):
         if config is None:

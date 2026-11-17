@@ -20,13 +20,18 @@
 # ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
+import asyncio
 import os
+import secrets
 import threading
 import time
 import struct
-from typing import Optional, Dict, Mapping, Sequence, TYPE_CHECKING
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional, Dict, List, Mapping, Sequence, TYPE_CHECKING
 
 from . import util
+from . import kawpow_full
 from .bitcoin import hash_encode, int_to_hex, rev_hex
 from .crypto import sha256d
 from . import constants
@@ -163,6 +168,99 @@ def hash_raw_header_kawpow(header: str) -> str:
     return final_hash
 
 
+# kawpow_hash() takes the mix_hash of the header as it is, so it only proves work
+# if the mix_hash comes from the DAG. Above the last checkpoint, verify_mix_hash()
+# recomputes it (kawpow_full: seconds for the first header of an epoch, ~0.1 s
+# for the next ones) for every header connected at the tip and, in each chunk,
+# for the last header and one picked at random.
+
+_mix_results = OrderedDict()  # type: OrderedDict[bytes, bool]  # raw header -> mix_hash is right
+_mix_results_lock = threading.Lock()
+_pow_executor = None  # type: Optional[ThreadPoolExecutor]
+
+
+def mix_hash_check_required(height: int) -> bool:
+    """Whether the mix_hash of the header at height is recomputed before accepting it."""
+    return (not constants.net.TESTNET and not sha256d_headers()
+            and height > constants.net.max_checkpoint())
+
+
+def verify_mix_hash(header: dict) -> None:
+    """Raises InvalidHeader unless the mix_hash of header is the KAWPOW mix of
+    its nonce and header hash over the DAG of its epoch."""
+    height = header['block_height']
+    if header['timestamp'] < constants.net.KawpowActivationTS:
+        raise InvalidHeader(f"header {height} is not a KAWPOW header")
+    if header['nheight'] != height:
+        raise InvalidHeader(f"header height mismatch: {header['nheight']} vs {height}")
+    raw = bfh(serialize_header(header))
+    with _mix_results_lock:
+        ok = _mix_results.get(raw)
+    if ok is None:
+        t0 = time.monotonic()
+        header_hash = revb(sha256d(raw[:80]))
+        nonce = struct.unpack("<Q", raw[80:88])[0]
+        try:
+            ok, _ = kawpow_full.verify(height, header_hash, nonce, revb(raw[88:120]))
+        except ValueError as e:  # height out of the epochs of KAWPOW
+            raise InvalidHeader(f"header {height}: {e}") from e
+        _logger.info(f"KAWPOW mix_hash of header {height} {'verified' if ok else 'INVALID'} "
+                     f"in {time.monotonic() - t0:.2f} s")
+        with _mix_results_lock:
+            _mix_results[raw] = ok
+            while len(_mix_results) > 1000:
+                _mix_results.popitem(last=False)
+    if not ok:
+        raise InvalidHeader(f"mix_hash of header {height} is not its KAWPOW mix")
+
+
+def verify_mix_hashes(headers: Sequence[dict]) -> None:
+    for header in headers:
+        verify_mix_hash(header)
+
+
+def pick_chunk_headers_for_mix_check(headers: Sequence[dict]) -> List[dict]:
+    """Headers of a chunk (in height order) whose mix_hash is verified: the last
+    one, and another one that the server cannot predict."""
+    headers = [h for h in headers if mix_hash_check_required(h['block_height'])]
+    if len(headers) <= 1:
+        return headers
+    return [secrets.choice(headers[:-1]), headers[-1]]
+
+
+async def run_in_pow_thread(func, *args):
+    """Runs CPU-bound PoW work off the event loop, one job at a time."""
+    global _pow_executor
+    if _pow_executor is None:
+        _pow_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='kawpow')
+    return await asyncio.get_running_loop().run_in_executor(_pow_executor, func, *args)
+
+
+async def precheck_mix_hash(header: dict, chain: 'Blockchain' = None, *, check_height: bool = True) -> None:
+    """Verifies off the event loop the mix_hash of a header that can_connect()
+    of chain (or of any chain) accepts but for that check, so that the next
+    can_connect() finds the result cached, and rejects the header if invalid."""
+    if not mix_hash_check_required(header['block_height']):
+        return
+    if chain is None:
+        with blockchains_lock:
+            chains = list(blockchains.values())
+    else:
+        chains = [chain]
+    for b in chains:
+        try:
+            if b.can_connect(header, check_height=check_height, verify_mix=False):
+                break
+        except Exception:
+            pass
+    else:
+        return
+    try:
+        await run_in_pow_thread(verify_mix_hash, header)
+    except InvalidHeader:
+        pass
+
+
 # key: blockhash hex at forkpoint
 # the chain at some key is the best chain that includes the given hash
 blockchains = {}  # type: Dict[str, Blockchain]
@@ -170,6 +268,7 @@ blockchains_lock = threading.RLock()  # lock order: take this last; so after Blo
 
 
 def read_blockchains(config: 'SimpleConfig'):
+    kawpow_full.set_cache_dir(util.get_headers_dir(config))
     best_chain = Blockchain(config=config,
                             forkpoint=0,
                             parent=None,
@@ -179,7 +278,7 @@ def read_blockchains(config: 'SimpleConfig'):
     # consistency checks
     if best_chain.height() > constants.net.max_checkpoint():
         header_after_cp = best_chain.read_header(constants.net.max_checkpoint()+1)
-        if not header_after_cp or not best_chain.can_connect(header_after_cp, check_height=False):
+        if not header_after_cp or not best_chain.can_connect(header_after_cp, check_height=False, verify_mix=False):
             _logger.info("[blockchain] deleting best chain. cannot connect header after last cp to last cp.")
             os.unlink(best_chain.path())
             best_chain.update_size()
@@ -220,7 +319,7 @@ def read_blockchains(config: 'SimpleConfig'):
         if first_hash != hash_header(h):
             delete_chain(filename, "incorrect first hash for chain")
             return
-        if not b.parent.can_connect(h, check_height=False):
+        if not b.parent.can_connect(h, check_height=False, verify_mix=False):
             delete_chain(filename, "cannot connect chain to parent")
             return
         chain_id = b.get_id()
@@ -394,6 +493,11 @@ class Blockchain(Logger):
             raise InvalidHeader(f"insufficient proof of work: {block_hash_as_num} vs target {target}")
 
     def verify_chunk(self, start_height: int, data: bytes) -> None:
+        headers = self._verify_chunk_headers(start_height, data)
+        verify_mix_hashes(pick_chunk_headers_for_mix_check(headers))
+
+    def _verify_chunk_headers(self, start_height: int, data: bytes) -> List[dict]:
+        """verify_chunk() but the mix_hash checks. Returns the headers."""
         raw = []
         p = 0
         s = start_height
@@ -435,6 +539,7 @@ class Blockchain(Logger):
         if constants.net.DGW_CHECKPOINTS_START <= start_height < constants.net.max_checkpoint():
             assert start_height % constants.net.DGW_CHECKPOINTS_SPACING == 0, 'dgw chunk not from start'
             assert s - start_height == constants.net.DGW_CHECKPOINTS_SPACING, 'dgw chunk not correct size'
+        return list(headers.values())
 
     @with_lock
     def path(self):
@@ -839,7 +944,9 @@ class Blockchain(Logger):
         work_in_last_partial_chunk = (height % 2016 + 1) * work_in_single_header
         return running_total + work_in_last_partial_chunk
 
-    def can_connect(self, header: dict, check_height: bool=True) -> bool:
+    def can_connect(self, header: dict, check_height: bool=True, verify_mix: bool=True) -> bool:
+        """With verify_mix, also verifies the mix_hash of headers above the last
+        checkpoint: on the event loop, call precheck_mix_hash() first."""
         if header is None:
             return False
         height = header['block_height']
@@ -860,6 +967,8 @@ class Blockchain(Logger):
             return False
         try:
             self.verify_header(header, prev_hash, target)
+            if verify_mix and mix_hash_check_required(height):
+                verify_mix_hash(header)
         except BaseException as e:
             return False
         return True
@@ -869,9 +978,16 @@ class Blockchain(Logger):
         try:
             data = bfh(hexdata)
             # This is computationally intensive (thanks DGW)
-            self.verify_chunk(start_height, data)
+            headers = self._verify_chunk_headers(start_height, data)
+            headers = pick_chunk_headers_for_mix_check(headers)
+            if headers:
+                # seconds for the first header of an epoch: keep the event loop free.
+                # Headers above the checkpoints are only written under network.bhi_lock.
+                await run_in_pow_thread(verify_mix_hashes, headers)
             self.save_chunk(start_height, data)
             return True
+        except asyncio.CancelledError:
+            raise
         except BaseException as e:
             self.logger.info(f'verify_chunk from height {start_height} failed: {repr(e)}')
             return False

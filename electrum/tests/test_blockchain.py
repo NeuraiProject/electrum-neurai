@@ -4,8 +4,12 @@ import shutil
 import tempfile
 import os
 import struct
+import threading
+from unittest import mock
 
-from electrum import constants, blockchain
+import kawpow
+
+from electrum import constants, blockchain, kawpow_full
 from electrum.crypto import sha256d
 from electrum.simple_config import SimpleConfig
 from electrum.blockchain import (Blockchain, deserialize_header, hash_header, InvalidHeader,
@@ -533,6 +537,20 @@ class TestBlockchain(ElectrumTestCase):
         self.assertEqual(3 * header_size(), os.stat(chain_u.path()).st_size)
         self.assertEqual(self.HEADERS['Q'], chain_u.read_header(8))
 
+    async def test_no_mix_hash_check_on_test_networks(self):
+        # test networks do not check PoW at all (and the DePIN testnet uses SHA256d)
+        self.assertFalse(blockchain.mix_hash_check_required(10 ** 7))
+        blockchain.blockchains[constants.net.GENESIS] = chain_u = Blockchain(
+            config=self.config, forkpoint=0, parent=None,
+            forkpoint_hash=constants.net.GENESIS, prev_hash=None)
+        open(chain_u.path(), 'w+').close()
+        with mock.patch.object(kawpow_full, 'verify') as verify:
+            chunk = b''.join(self.RAW_HEADERS[x] for x in 'ABCDEFOPQ')
+            self.assertTrue(await chain_u.connect_chunk(0, chunk.hex()))
+            await blockchain.precheck_mix_hash(self.HEADERS['R'])
+            self._append_header(chain_u, self.HEADERS['R'])
+        verify.assert_not_called()
+
     def test_target_to_bits(self):
         # https://github.com/bitcoin/bitcoin/blob/7fcf53f7b4524572d1d0c9a5fdc388e87eb02416/src/arith_uint256.h#L269
         self.assertEqual(0x05123456, Blockchain.target_to_bits(0x1234560000))
@@ -670,3 +688,141 @@ class TestVerifyHeader(ElectrumTestCase):
         target = chain.get_target_dgwv3(last, headers)
         with self.assertRaisesRegex(InvalidHeader, "bits mismatch"):
             Blockchain.verify_header(headers[last], hash_header(headers[last - 1]), target)
+
+
+class TestMixHashCheck(ElectrumTestCase):
+    """Mainnet headers above the last checkpoint get their KAWPOW mix_hash
+    recomputed from the DAG (kawpow_full), which kawpow.light_verify() trusts."""
+
+    CP = 1870847
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        with open(os.path.join(os.path.dirname(__file__), 'blockchain_mainnet_headers.json')) as f:
+            data = json.load(f)
+        cls.FIRST = data['first_height']
+        cls.RAW = {cls.FIRST + i: bfh(raw) for i, raw in enumerate(data['headers'])}
+        cls.LAST = max(cls.RAW)  # 1870857
+
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.CP, constants.net.max_checkpoint())
+        blockchain._mix_results.clear()
+        blockchain.blockchains = {}
+        config = SimpleConfig({'electrum_path': self.electrum_path})
+        blockchain.blockchains[constants.net.GENESIS] = self.chain = Blockchain(
+            config=config, forkpoint=0, parent=None,
+            forkpoint_hash=constants.net.GENESIS, prev_hash=None)
+        # as a new client: a sparse headers file up to the checkpoint, here
+        # with the headers needed by DGW for the first ones after it
+        blockchain.init_headers_file_for_best_chain()
+        self.chain.save_chunk(self.FIRST, b''.join(self.RAW[h] for h in range(self.FIRST, self.CP + 1)))
+        self.assertEqual(self.CP, self.chain.height())
+        self.verified = []  # (height, thread name) of the mix_hash computations
+        real_verify = kawpow_full.verify
+
+        def verify(height, *args):
+            self.verified.append((height, threading.current_thread().name))
+            return real_verify(height, *args)
+        patcher = mock.patch.object(kawpow_full, 'verify', side_effect=verify)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def header(self, height: int, raw: bytes = None) -> dict:
+        return deserialize_header(raw or self.RAW[height], height)
+
+    def chunk(self, start: int, end: int, forged: dict = None) -> str:
+        forged = forged or {}
+        return b''.join(forged.get(h, self.RAW[h]) for h in range(start, end + 1)).hex()
+
+    def forge(self, height: int):
+        """The header at height with another mix_hash, as if the server had
+        ground it until the light check meets the target, which costs no DAG
+        work. That grinding is out of reach of a unit test at mainnet difficulty:
+        returns the raw header and a patch making the light check accept it."""
+        raw = self.RAW[height]
+        forged = raw[:88] + sha256d(b'forged ' + raw)
+        real_light_verify = kawpow.light_verify
+
+        def light_verify(header_hash, mix_hash, nonce):
+            if mix_hash == forged[88:120][::-1]:
+                mix_hash = raw[88:120][::-1]
+            return real_light_verify(header_hash, mix_hash, nonce)
+        return forged, mock.patch.object(blockchain.kawpow, 'light_verify', side_effect=light_verify)
+
+    def test_light_check_accepts_forged_header(self):
+        forged, light_check = self.forge(self.LAST)
+        with light_check:
+            self.assertEqual(hash_header(self.header(self.LAST)), hash_header(self.header(self.LAST, forged)))
+            Blockchain.verify_header(self.header(self.LAST, forged), hash_header(self.header(self.LAST - 1)),
+                                     Blockchain.bits_to_target(self.header(self.LAST)['bits']))
+            with self.assertRaisesRegex(InvalidHeader, "is not its KAWPOW mix"):
+                blockchain.verify_mix_hash(self.header(self.LAST, forged))
+        blockchain.verify_mix_hash(self.header(self.LAST))
+        with self.assertRaisesRegex(InvalidHeader, "height mismatch"):
+            blockchain.verify_mix_hash(dict(self.header(self.LAST), block_height=self.LAST + 1))
+
+    async def test_chunk_above_checkpoint(self):
+        self.assertTrue(await self.chain.connect_chunk(self.CP + 1, self.chunk(self.CP + 1, self.LAST)))
+        self.assertEqual(self.LAST, self.chain.height())
+        # the last header and one at random, off the event loop
+        (random_height, thread1), (last_height, thread2) = self.verified
+        self.assertIn(random_height, range(self.CP + 1, self.LAST))
+        self.assertEqual(self.LAST, last_height)
+        self.assertTrue(thread1.startswith('kawpow') and thread2.startswith('kawpow'))
+
+    async def test_chunk_with_forged_last_header(self):
+        forged, light_check = self.forge(self.LAST)
+        with light_check:
+            self.assertFalse(await self.chain.connect_chunk(
+                self.CP + 1, self.chunk(self.CP + 1, self.LAST, {self.LAST: forged})))
+        self.assertEqual(self.CP, self.chain.height())
+
+    async def test_chunk_with_forged_header(self):
+        height = self.CP + 5
+        forged, light_check = self.forge(height)
+        chunk = self.chunk(self.CP + 1, self.LAST, {height: forged})
+        pick = lambda headers: next(h for h in headers if h['block_height'] == height)
+        with light_check, mock.patch.object(blockchain.secrets, 'choice', side_effect=pick):
+            self.assertFalse(await self.chain.connect_chunk(self.CP + 1, chunk))
+        self.assertEqual(self.CP, self.chain.height())
+        # the check is a sample: a forged header that is not picked goes through
+        pick = lambda headers: headers[0]
+        with light_check, mock.patch.object(blockchain.secrets, 'choice', side_effect=pick):
+            self.assertTrue(await self.chain.connect_chunk(self.CP + 1, chunk))
+        self.assertEqual(self.LAST, self.chain.height())
+
+    async def test_headers_at_tip(self):
+        self.assertTrue(await self.chain.connect_chunk(self.CP + 1, self.chunk(self.CP + 1, self.LAST - 1)))
+        self.verified.clear()
+        forged, light_check = self.forge(self.LAST)
+        forged = self.header(self.LAST, forged)
+        with light_check:
+            self.assertTrue(self.chain.can_connect(forged, verify_mix=False))
+            await blockchain.precheck_mix_hash(forged)
+            self.assertFalse(self.chain.can_connect(forged))
+            self.assertIsNone(blockchain.can_connect(forged))
+        self.assertEqual([self.LAST], [h for h, _ in self.verified])
+        self.verified.clear()
+        header = self.header(self.LAST)
+        await blockchain.precheck_mix_hash(header)
+        self.assertTrue(self.chain.can_connect(header))
+        self.assertIs(self.chain, blockchain.can_connect(header))
+        # verified once, off the event loop, then taken from the cache
+        self.assertEqual(1, len(self.verified))
+        self.assertTrue(self.verified[0][1].startswith('kawpow'))
+        # headers that do not connect are not verified
+        self.verified.clear()
+        await blockchain.precheck_mix_hash(self.header(self.LAST - 1))
+        await blockchain.precheck_mix_hash(dict(header, prev_block_hash='00' * 32))
+        self.assertEqual([], self.verified)
+
+    async def test_checkpoint_region_is_not_verified(self):
+        headers = [self.header(h) for h in range(self.CP - 2, self.CP + 1)]
+        self.assertEqual([], blockchain.pick_chunk_headers_for_mix_check(headers))
+        self.assertTrue(self.chain.can_connect(self.header(self.CP), check_height=False))
+        await blockchain.precheck_mix_hash(self.header(self.CP))
+        self.assertEqual([], self.verified)
+        headers += [self.header(self.CP + 1), self.header(self.CP + 2)]
+        self.assertEqual(headers[-2:], blockchain.pick_chunk_headers_for_mix_check(headers))

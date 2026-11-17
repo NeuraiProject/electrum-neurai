@@ -854,7 +854,8 @@ class SimpleConfig(Logger):
     WALLET_SPEND_CONFIRMED_ONLY = ConfigVar('confirmed_only', default=False, type_=bool)
     WALLET_COIN_CHOOSER_POLICY = ConfigVar('coin_chooser', default='Privacy', type_=str)
     WALLET_COIN_CHOOSER_OUTPUT_ROUNDING = ConfigVar('coin_chooser_output_rounding', default=True, type_=bool)
-    WALLET_UNCONF_UTXO_FREEZE_THRESHOLD_SAT = ConfigVar('unconf_utxo_freeze_threshold', default=5_000, type_=int)
+    # ~9x the wallet's dust threshold (546_000 sat), the same ratio as upstream's 5_000
+    WALLET_UNCONF_UTXO_FREEZE_THRESHOLD_SAT = ConfigVar('unconf_utxo_freeze_threshold', default=5_000_000, type_=int)
     WALLET_BIP21_LIGHTNING = ConfigVar('bip21_lightning', default=False, type_=bool)
     WALLET_BOLT11_FALLBACK = ConfigVar('bolt11_fallback', default=True, type_=bool)
     WALLET_PAYREQ_EXPIRY_SECONDS = ConfigVar('request_expiry', default=invoices.PR_DEFAULT_EXPIRATION_WHEN_CREATING, type_=int)

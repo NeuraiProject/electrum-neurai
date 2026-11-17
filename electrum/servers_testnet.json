@@ -1,8 +1,7 @@
 {
-    "electrumx-testnet.neurai.org": {
+    "electrumx-testnet1.neurai.top": {
         "pruning": "-",
-        "s": "19112",
-        "t": "19111",
+        "s": "60002",
         "version": "1.0"
     }
 }

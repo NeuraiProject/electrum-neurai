@@ -881,6 +881,8 @@ class Interface(Logger):
             # this situation resolves itself on the next block
             return 'catchup', height+1
 
+        if 'mock' not in header:
+            await blockchain.precheck_mix_hash(header)
         can_connect = blockchain.can_connect(header) if 'mock' not in header else header['mock']['connect'](height)
         if not can_connect:
             self.logger.info(f"can't connect {height}")
@@ -923,6 +925,8 @@ class Interface(Logger):
         mock = 'mock' in bad_header and bad_header['mock']['connect'](height)
         real = False
         try:
+            if 'mock' not in bad_header:
+                await blockchain.precheck_mix_hash(bad_header, self.blockchain, check_height=False)
             real = not mock and self.blockchain.can_connect(bad_header, check_height=False)
         except NotEnoughHeaders:
             if height <= constants.net.max_checkpoint():
@@ -971,6 +975,8 @@ class Interface(Logger):
             chain = blockchain.check_header(header) if 'mock' not in header else header['mock']['check'](header)
             can_connect = False
             try:
+                if 'mock' not in header:
+                    await blockchain.precheck_mix_hash(header)
                 can_connect = blockchain.can_connect(header) if 'mock' not in header else header['mock']['connect'](height)
             except NotEnoughHeaders:
                 if height <= constants.net.max_checkpoint():

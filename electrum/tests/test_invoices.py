@@ -20,6 +20,8 @@ class TestWalletPaymentRequests(ElectrumTestCase):
     def setUp(self):
         super().setUp()
         self.config = SimpleConfig({'electrum_path': self.electrum_path})
+        # the vectors spend unconfirmed coins smaller than Neurai's default freeze threshold
+        self.config.WALLET_UNCONF_UTXO_FREEZE_THRESHOLD_SAT = 5_000
         self.wallet1_path = os.path.join(self.electrum_path, "somewallet1")
         self.wallet2_path = os.path.join(self.electrum_path, "somewallet2")
         self._orig_get_cur_time = BaseInvoice._get_cur_time

@@ -46,8 +46,12 @@ class ElectrumTestCase(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self._test_lock.acquire()
+        # cleanups also run when setUp fails (tearDown doesn't), so a broken
+        # setUp can't keep the lock and hang every later test
+        self.addCleanup(self._test_lock.release)
         super().setUp()
         self.electrum_path = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.electrum_path, ignore_errors=True)
 
     async def asyncSetUp(self):
         await super().asyncSetUp()
@@ -55,11 +59,6 @@ class ElectrumTestCase(unittest.IsolatedAsyncioTestCase):
         # IsolatedAsyncioTestCase creates event loops with debug=True, which makes the tests take ~4x time
         if not (os.environ.get("PYTHONASYNCIODEBUG") or os.environ.get("PYTHONDEVMODE")):
             loop.set_debug(False)
-
-    def tearDown(self):
-        shutil.rmtree(self.electrum_path)
-        super().tearDown()
-        self._test_lock.release()
 
 
 def as_testnet(func):

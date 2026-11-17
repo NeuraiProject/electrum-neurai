@@ -2297,6 +2297,18 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             self.add_input_info(item)
         def fee_estimator(size):
             return self.config.estimate_fee_for_feerate(fee_per_kb=new_fee_rate*1000, size=size)
+        # change of a restricted asset must go to a qualified address, as in make_unsigned_transaction
+        restricted_change_address = dict()
+        for txins, required in ((old_inputs, True), (coins, False)):
+            for txin in txins:
+                asset = txin.asset
+                if not asset or asset[0] != '$' or asset in restricted_change_address:
+                    continue
+                try:
+                    restricted_change_address[asset] = self.get_address_qualified_for_restricted_asset(asset, txin.address)
+                except NoQualifiedAddress:
+                    if required:  # the replaced tx spends it, so its change has nowhere to go
+                        raise CannotBumpFee(_('No qualified change address for {}').format(asset))
         coin_chooser = coinchooser.get_coin_chooser(self.config)
         try:
             return coin_chooser.make_tx(
@@ -2304,6 +2316,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                 inputs=old_inputs,
                 outputs=fixed_outputs,
                 change_addrs=change_addrs,
+                restricted_change_address=restricted_change_address,
                 fee_estimator_vb=fee_estimator,
                 dust_threshold=self.dust_threshold())
         except NotEnoughFunds as e:
@@ -3435,7 +3448,8 @@ class Imported_Wallet(Simple_Wallet):
                 except NotImplementedError:
                     pass
                 else:
-                    if self.db.has_imported_address(addr2):
+                    # addr2 is None for script types without an address here (segwit on Neurai)
+                    if addr2 and self.db.has_imported_address(addr2):
                         break
             else:
                 self.keystore.delete_imported_key(pubkey)

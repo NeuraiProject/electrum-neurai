@@ -5,11 +5,12 @@ import unittest
 from electrum import constants
 from electrum.simple_config import SimpleConfig
 from electrum import blockchain
-from electrum.interface import Interface, ServerAddr
+from electrum.interface import Interface, ServerAddr, RequestCorrupted
 from electrum.crypto import sha256
 from electrum import util
 
 from . import ElectrumTestCase
+from .test_blockchain import NeuraiUnitTestNet, make_header_tree
 
 
 class MockTaskGroup:
@@ -20,6 +21,16 @@ class MockNetwork:
 
     def __init__(self):
         self.asyncio_loop = util.get_asyncio_loop()
+
+class MockSession:
+    """Serves blockchain.block.headers from a dict: height -> header hex."""
+    def __init__(self, headers_hex):
+        self.headers_hex = headers_hex
+    async def send_request(self, method, params):
+        assert method == 'blockchain.block.headers', method
+        height, count = params
+        hexes = [self.headers_hex[h] for h in range(height, height + count) if h in self.headers_hex]
+        return {'count': len(hexes), 'hex': ''.join(hexes), 'max': 2016}
 
 class MockInterface(Interface):
     def __init__(self, config):
@@ -45,7 +56,7 @@ class TestNetwork(ElectrumTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        constants.set_regtest()
+        constants.net = NeuraiUnitTestNet
 
     @classmethod
     def tearDownClass(cls):
@@ -122,7 +133,25 @@ class TestNetwork(ElectrumTestCase):
         self.assertEqual(('catchup', 7), res)
         self.assertEqual(self.interface.q.qsize(), 0)
 
+    async def test_request_chunk_with_legacy_genesis(self):
+        # Neurai servers send the pre-KAWPOW genesis as an 80-byte header and
+        # the following blocks as 120-byte KAWPOW headers in the same chunk.
+        raw_headers, _ = make_header_tree((('A', None), ('B', 'A'), ('C', 'B'), ('D', 'C'), ('E', 'D'), ('F', 'E')))
+        served = {height: raw_headers[label].hex() for height, label in enumerate('ABCDEF')}
+        blockchain.blockchains = {}
+        ifa = self.interface
+        ifa.blockchain = blockchain.Blockchain(config=self.config, forkpoint=0, parent=None,
+                                               forkpoint_hash=constants.net.GENESIS, prev_hash=None)
+        open(ifa.blockchain.path(), 'w+').close()
+        ifa.session = MockSession(served)
+        self.assertEqual((True, 6), await ifa.request_chunk(0, tip=5))
+        self.assertEqual(5, ifa.blockchain.height())
+        # a genesis padded to 120 bytes does not fit the expected chunk size
+        served[0] = served[0].ljust(240, '0')
+        with self.assertRaises(RequestCorrupted):
+            await ifa.request_chunk(0, tip=5)
+
 
 if __name__=="__main__":
-    constants.set_regtest()
+    constants.net = NeuraiUnitTestNet
     unittest.main()

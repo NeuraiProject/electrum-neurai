@@ -520,7 +520,7 @@ class Blockchain(Logger):
         # swap parameters
         self.parent, parent.parent = parent.parent, self  # type: Optional[Blockchain], Optional[Blockchain]
         self.forkpoint, parent.forkpoint = parent.forkpoint, self.forkpoint
-        self._forkpoint_hash, parent._forkpoint_hash = parent._forkpoint_hash, hash_header(parent_data[:HEADER_SIZE])
+        self._forkpoint_hash, parent._forkpoint_hash = parent._forkpoint_hash, hash_header(deserialize_header(parent_data[:HEADER_SIZE], forkpoint))
         self._prev_hash, parent._prev_hash = parent._prev_hash, self._prev_hash
         # parent's new name
         os.replace(child_old_name, parent.path())

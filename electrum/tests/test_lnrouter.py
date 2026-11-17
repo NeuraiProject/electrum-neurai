@@ -12,7 +12,7 @@ from electrum.lnonion import (OnionHopsDataSingle, new_onion_packet,
                               process_onion_packet, _decode_onion_error, decode_onion_error,
                               OnionFailureCode, OnionPacket)
 from electrum import bitcoin, lnrouter
-from electrum.constants import BitcoinTestnet
+from electrum.constants import NeuraiTestnet
 from electrum.simple_config import SimpleConfig
 from electrum.lnrouter import PathEdge, LiquidityHintMgr, DEFAULT_PENALTY_PROPORTIONAL_MILLIONTH, DEFAULT_PENALTY_BASE_MSAT, fee_for_edge_msat
 
@@ -78,7 +78,7 @@ class Test_LNRouter(ElectrumTestCase):
             'node_id_1': node('b'), 'node_id_2': node('c'),
             'bitcoin_key_1': node('b'), 'bitcoin_key_2': node('c'),
             'short_channel_id': channel(1),
-            'chain_hash': BitcoinTestnet.rev_genesis_bytes(),
+            'chain_hash': NeuraiTestnet.rev_genesis_bytes(),
             'len': 0, 'features': b''
         }, trusted=True)
         self.assertEqual(self.cdb.num_channels, 1)
@@ -86,60 +86,60 @@ class Test_LNRouter(ElectrumTestCase):
             'node_id_1': node('b'), 'node_id_2': node('e'),
             'bitcoin_key_1': node('b'), 'bitcoin_key_2': node('e'),
             'short_channel_id': channel(2),
-            'chain_hash': BitcoinTestnet.rev_genesis_bytes(),
+            'chain_hash': NeuraiTestnet.rev_genesis_bytes(),
             'len': 0, 'features': b''
         }, trusted=True)
         self.cdb.add_channel_announcements({
             'node_id_1': node('a'), 'node_id_2': node('b'),
             'bitcoin_key_1': node('a'), 'bitcoin_key_2': node('b'),
             'short_channel_id': channel(3),
-            'chain_hash': BitcoinTestnet.rev_genesis_bytes(),
+            'chain_hash': NeuraiTestnet.rev_genesis_bytes(),
             'len': 0, 'features': b''
         }, trusted=True)
         self.cdb.add_channel_announcements({
             'node_id_1': node('c'), 'node_id_2': node('d'),
             'bitcoin_key_1': node('c'), 'bitcoin_key_2': node('d'),
             'short_channel_id': channel(4),
-            'chain_hash': BitcoinTestnet.rev_genesis_bytes(),
+            'chain_hash': NeuraiTestnet.rev_genesis_bytes(),
             'len': 0, 'features': b''
         }, trusted=True)
         self.cdb.add_channel_announcements({
             'node_id_1': node('d'), 'node_id_2': node('e'),
             'bitcoin_key_1': node('d'), 'bitcoin_key_2': node('e'),
             'short_channel_id': channel(5),
-            'chain_hash': BitcoinTestnet.rev_genesis_bytes(),
+            'chain_hash': NeuraiTestnet.rev_genesis_bytes(),
             'len': 0, 'features': b''
         }, trusted=True)
         self.cdb.add_channel_announcements({
             'node_id_1': node('a'), 'node_id_2': node('d'),
             'bitcoin_key_1': node('a'), 'bitcoin_key_2': node('d'),
             'short_channel_id': channel(6),
-            'chain_hash': BitcoinTestnet.rev_genesis_bytes(),
+            'chain_hash': NeuraiTestnet.rev_genesis_bytes(),
             'len': 0, 'features': b''
         }, trusted=True)
         self.cdb.add_channel_announcements({
             'node_id_1': node('c'), 'node_id_2': node('e'),
             'bitcoin_key_1': node('c'), 'bitcoin_key_2': node('e'),
             'short_channel_id': channel(7),
-            'chain_hash': BitcoinTestnet.rev_genesis_bytes(),
+            'chain_hash': NeuraiTestnet.rev_genesis_bytes(),
             'len': 0, 'features': b''
         }, trusted=True)
         def add_chan_upd(payload):
             self.cdb.add_channel_update(payload, verify=False)
-        add_chan_upd({'short_channel_id': channel(1), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
-        add_chan_upd({'short_channel_id': channel(1), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
-        add_chan_upd({'short_channel_id': channel(2), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 99, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
-        add_chan_upd({'short_channel_id': channel(2), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
-        add_chan_upd({'short_channel_id': channel(3), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
-        add_chan_upd({'short_channel_id': channel(3), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
-        add_chan_upd({'short_channel_id': channel(4), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
-        add_chan_upd({'short_channel_id': channel(4), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
-        add_chan_upd({'short_channel_id': channel(5), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
-        add_chan_upd({'short_channel_id': channel(5), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 999, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
-        add_chan_upd({'short_channel_id': channel(6), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 200, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
-        add_chan_upd({'short_channel_id': channel(6), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
-        add_chan_upd({'short_channel_id': channel(7), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
-        add_chan_upd({'short_channel_id': channel(7), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': BitcoinTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(1), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(1), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(2), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 99, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(2), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(3), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(3), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(4), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(4), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(5), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(5), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 999, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(6), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 200, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(6), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(7), 'message_flags': b'\x00', 'channel_flags': b'\x00', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
+        add_chan_upd({'short_channel_id': channel(7), 'message_flags': b'\x00', 'channel_flags': b'\x01', 'cltv_expiry_delta': 10, 'htlc_minimum_msat': 250, 'fee_base_msat': 100, 'fee_proportional_millionths': 150, 'chain_hash': NeuraiTestnet.rev_genesis_bytes(), 'timestamp': 0})
 
     async def test_find_path_for_payment(self):
         self.prepare_graph()

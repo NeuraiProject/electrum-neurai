@@ -2,6 +2,7 @@ import os
 from typing import Optional, Iterable
 
 from electrum.daemon import Daemon
+from electrum.ipfs_db import IPFSDB
 from electrum.simple_config import SimpleConfig
 from electrum.wallet import restore_wallet_from_text
 from electrum import util
@@ -23,6 +24,8 @@ class TestUnifiedPassword(ElectrumTestCase):
 
     async def asyncSetUp(self):
         await super().asyncSetUp()
+        # the Qt GUI sets up the IPFS metadata db before the daemon runs; Daemon.stop() saves it
+        IPFSDB.initialize(self.config.get_ipfs_data_path(), self.config.get_ipfs_raw_path())
         self.daemon = Daemon(config=self.config, listen_jsonrpc=False)
         assert self.daemon.network is None
 
@@ -61,10 +64,13 @@ class TestUnifiedPassword(ElectrumTestCase):
         can_be_unified, is_unified = self.daemon._check_password_for_directory(old_password=password, wallet_dir=self.wallet_dir)
         self.assertEqual((True, True), (can_be_unified, is_unified))
 
+    # "zt" and "x8" are short strings that happen to be valid "standard" (p2pkh)
+    # Electrum seeds. Neurai has no SegWit, so no segwit seeds here.
+
     # "cannot unify pw" tests --->
 
     async def test_cannot_unify_two_std_wallets_both_have_ks_and_sto_enc(self):
-        path1 = self._restore_wallet_from_text("9dk", password="123456", encrypt_file=True)
+        path1 = self._restore_wallet_from_text("zt", password="123456", encrypt_file=True)
         path2 = self._restore_wallet_from_text("x8",  password="asdasd", encrypt_file=True)
         with open(path1, "rb") as f:
             raw1_before = f.read()
@@ -84,9 +90,9 @@ class TestUnifiedPassword(ElectrumTestCase):
         self.assertEqual(raw2_before, raw2_after)
 
     async def test_cannot_unify_mixed_wallets(self):
-        path1 = self._restore_wallet_from_text("9dk", password="123456", encrypt_file=True)
-        path2 = self._restore_wallet_from_text("9dk",  password="asdasd", encrypt_file=False)
-        path3 = self._restore_wallet_from_text("9dk",  password=None)
+        path1 = self._restore_wallet_from_text("zt", password="123456", encrypt_file=True)
+        path2 = self._restore_wallet_from_text("zt",  password="asdasd", encrypt_file=False)
+        path3 = self._restore_wallet_from_text("zt",  password=None)
         with open(path1, "rb") as f:
             raw1_before = f.read()
         with open(path2, "rb") as f:
@@ -112,7 +118,7 @@ class TestUnifiedPassword(ElectrumTestCase):
     # "can unify pw" tests --->
 
     async def test_can_unify_two_std_wallets_both_have_ks_and_sto_enc(self):
-        path1 = self._restore_wallet_from_text("9dk", password="123456", encrypt_file=True)
+        path1 = self._restore_wallet_from_text("zt", password="123456", encrypt_file=True)
         path2 = self._restore_wallet_from_text("x8",  password="123456", encrypt_file=True)
         can_be_unified, is_unified = self.daemon._check_password_for_directory(old_password="123456", wallet_dir=self.wallet_dir)
         self.assertEqual((True, True), (can_be_unified, is_unified))
@@ -121,7 +127,7 @@ class TestUnifiedPassword(ElectrumTestCase):
         self._run_post_unif_sanity_checks([path1, path2], password="123456")
 
     async def test_can_unify_two_std_wallets_one_has_ks_enc_other_has_both_enc(self):
-        path1 = self._restore_wallet_from_text("9dk", password="123456", encrypt_file=True)
+        path1 = self._restore_wallet_from_text("zt", password="123456", encrypt_file=True)
         path2 = self._restore_wallet_from_text("x8",  password="123456", encrypt_file=False)
         with open(path2, "rb") as f:
             raw2_before = f.read()
@@ -137,7 +143,7 @@ class TestUnifiedPassword(ElectrumTestCase):
         self.assertNotEqual(raw2_before, raw2_after)
 
     async def test_can_unify_two_std_wallets_one_without_password(self):
-        path1 = self._restore_wallet_from_text("9dk", password=None)
+        path1 = self._restore_wallet_from_text("zt", password=None)
         path2 = self._restore_wallet_from_text("x8",  password="123456", encrypt_file=True)
         can_be_unified, is_unified = self.daemon._check_password_for_directory(old_password="123456", wallet_dir=self.wallet_dir)
         self.assertEqual((True, False), (can_be_unified, is_unified))
@@ -149,26 +155,26 @@ class TestUnifiedPassword(ElectrumTestCase):
     async def test_can_unify_large_folder_yet_to_be_unified(self):
         paths = []
         # seed
-        paths.append(self._restore_wallet_from_text("9dk", password="123456", encrypt_file=True))
-        paths.append(self._restore_wallet_from_text("9dk", password="123456", encrypt_file=False))
-        paths.append(self._restore_wallet_from_text("9dk", password=None))
+        paths.append(self._restore_wallet_from_text("zt", password="123456", encrypt_file=True))
+        paths.append(self._restore_wallet_from_text("zt", password="123456", encrypt_file=False))
+        paths.append(self._restore_wallet_from_text("zt", password=None))
         # xpub
-        xpub = "vpub5UqWay427dCjkpE3gPKLnkBUqDRoBed1328uNrLDoTyKo6HFSs9agfDMy1VXbVtcuBVRiAZQsPPsPdu1Ge8m8qvNZPyzJ4ecPsf6U1ieW4x"
+        xpub = "tpubD6NzVbkrYhZ4XvPFMZA3a4vojyKt7WFyBFqVFGDVkZbwyaR8NZAH8ntCU6ME6axRUyWQUbC5bFEncujLVWSpHqmGD3vThP59Demj79GXSb5"
         paths.append(self._restore_wallet_from_text(xpub, password="123456", encrypt_file=True))
         paths.append(self._restore_wallet_from_text(xpub, password="123456", encrypt_file=False))
         paths.append(self._restore_wallet_from_text(xpub, password=None))
         # xprv
-        xprv = "vprv9FrABTX8HFeSYL9aaMnLRcEkHBbJnBu9foDJaTvcF8SLvHx6uKqL8rtt7kTd66V4QPLfWPaCJMVZa3h9zuzLr7YFZd1uoEevqqyxp66oSbN"
+        xprv = "tprv8ZgxMBicQKsPeTMTTuVTAfGhAwowxB54bxEhxkBCLHoZ96AMkALgxJGLHwnXGHRZAWDvtdhJM9W57ZWsuK1F2YWVV5SBi48VkuehQXnKeL8"
         paths.append(self._restore_wallet_from_text(xprv, password="123456", encrypt_file=True))
         paths.append(self._restore_wallet_from_text(xprv, password="123456", encrypt_file=False))
         paths.append(self._restore_wallet_from_text(xprv, password=None))
         # WIFs
-        wifs= "p2wpkh:cRyfp9nJ8soK1bBUJAcWbMrsJZxKJpe7HBSxz5uXVbwydvUxz9zT p2wpkh:cV6J6T2AG4oXAXdYHAV6dbzR41QnGumDSVvWrmj2yYpos81RtyBK"
+        wifs= "p2pkh:cV3BAxhdZoxYAf3evjW4oa4Yzyb9KshLkJRnHGN23yCENCR3ZWjT p2pkh:cUGt85d5imkv5tEkEYMtcS9NKZvCqPBPb3PHgCMAsN3hqdKCnrfC"
         paths.append(self._restore_wallet_from_text(wifs, password="123456", encrypt_file=True))
         paths.append(self._restore_wallet_from_text(wifs, password="123456", encrypt_file=False))
         paths.append(self._restore_wallet_from_text(wifs, password=None))
         # addrs
-        addrs = "tb1qq2tmmcngng78nllq2pvrkchcdukemtj5s6l0zu tb1qm7ckcjsed98zhvhv3dr56a22w3fehlkxyh4wgd"
+        addrs = "tCWPafzjEErkPqXTeTyhQ4XXsT6xUvJexM tD7CgBBmLnDfDKc6Gx33GqH9j4Bru5RkQB"
         paths.append(self._restore_wallet_from_text(addrs, password="123456", encrypt_file=True))
         paths.append(self._restore_wallet_from_text(addrs, password="123456", encrypt_file=False))
         paths.append(self._restore_wallet_from_text(addrs, password=None))

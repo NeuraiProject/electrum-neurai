@@ -47,6 +47,11 @@ from .test_lnchannel import create_test_channels
 from .test_bitcoin import needs_test_with_all_chacha20_implementations
 from . import ElectrumTestCase
 
+# Lightning channels need SegWit (P2WSH funding outputs, p2wpkh wallets) and
+# Neurai has none (constants.net.SEGWIT_HRP == "").
+NO_LIGHTNING = "Neurai has no SegWit, so no Lightning"
+
+
 def keypair():
     priv = ECPrivkey.generate_random_key().get_secret_bytes()
     k1 = Keypair(
@@ -421,6 +426,7 @@ class PaymentDone(Exception): pass
 class SuccessfulTest(Exception): pass
 
 
+@unittest.skip(NO_LIGHTNING)
 class TestPeer(ElectrumTestCase):
     TESTNET = True
 

@@ -226,6 +226,9 @@ class WalletDB(JsonDB):
     @locked
     def get_seed_version(self):
         seed_version = self.get('seed_version')
+        if not isinstance(seed_version, int):
+            raise WalletFileException('Cannot open this wallet: it has no valid seed_version '
+                                      '(not an Electrum-Neurai wallet file?)')
         if seed_version > FINAL_SEED_VERSION:
             raise WalletFileException('This version of Electrum is too old to open this wallet.\n'
                                       '(highest supported storage version: {}, version of this file: {})'

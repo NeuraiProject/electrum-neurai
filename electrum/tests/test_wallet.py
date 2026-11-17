@@ -56,7 +56,9 @@ class TestWalletStorage(WalletTestCase):
 
     def test_read_dictionary_from_file(self):
 
-        some_dict = {"a":"b", "c":"d"}
+        # the fork dropped Electrum's legacy (pre-seed_version) wallet formats,
+        # so a readable wallet file must carry a seed_version
+        some_dict = {"a":"b", "c":"d", "seed_version": FINAL_SEED_VERSION}
         contents = json.dumps(some_dict)
         with open(self.wallet_path, "w") as f:
             contents = f.write(contents)
@@ -112,7 +114,8 @@ class FakeWallet:
     def __init__(self, fiat_value):
         super().__init__()
         self.fiat_value = fiat_value
-        self.db = WalletDB("{}", storage=None, manual_upgrades=True)
+        # empty data creates a fresh db (a "{}" db has no seed_version, which the fork does not accept)
+        self.db = WalletDB("", storage=None, manual_upgrades=True)
         self.adb = FakeADB()
         self.db.transactions = self.db.verified_tx = {'abc':'Tx'}
 
@@ -133,16 +136,17 @@ class TestFiat(ElectrumTestCase):
         self.fx = FakeFxThread(FakeExchange(Decimal('1000.001')))
         default_fiat = Abstract_Wallet.default_fiat_value(self.wallet, txid, self.fx, self.value_sat)
         self.assertEqual(Decimal('1000.001'), default_fiat)
-        self.assertEqual('1 000.00', self.fx.ccy_amount_str(default_fiat, add_thousands_sep=True))
+        # the fork shows fiat amounts with 3 more decimals than the currency's precision (XNA is cheap)
+        self.assertEqual('1 000.00100', self.fx.ccy_amount_str(default_fiat, add_thousands_sep=True))
 
     def test_save_fiat_and_reset(self):
         self.assertEqual(False, Abstract_Wallet.set_fiat_value(self.wallet, txid, ccy, '1000.01', self.fx, self.value_sat))
         saved = self.fiat_value[ccy][txid]
-        self.assertEqual('1 000.01', self.fx.ccy_amount_str(Decimal(saved), add_thousands_sep=True))
+        self.assertEqual('1 000.01000', self.fx.ccy_amount_str(Decimal(saved), add_thousands_sep=True))
         self.assertEqual(True,       Abstract_Wallet.set_fiat_value(self.wallet, txid, ccy, '', self.fx, self.value_sat))
         self.assertNotIn(txid, self.fiat_value[ccy])
         # even though we are not setting it to the exact fiat value according to the exchange rate, precision is truncated away
-        self.assertEqual(True, Abstract_Wallet.set_fiat_value(self.wallet, txid, ccy, '1 000.002', self.fx, self.value_sat))
+        self.assertEqual(True, Abstract_Wallet.set_fiat_value(self.wallet, txid, ccy, '1 000.001002', self.fx, self.value_sat))
 
     def test_too_high_precision_value_resets_with_no_saved_value(self):
         self.assertEqual(True, Abstract_Wallet.set_fiat_value(self.wallet, txid, ccy, '1 000.001', self.fx, self.value_sat))
@@ -170,8 +174,7 @@ class TestCreateRestoreWallet(WalletTestCase):
                               config=self.config)
         wallet = d['wallet']  # type: Standard_Wallet
 
-        # lightning initialization
-        self.assertTrue(wallet.db.get('lightning_xprv').startswith('zprv'))
+        # (no lightning initialization check: Neurai has no Lightning)
 
         wallet.check_password(password)
         self.assertEqual(passphrase, wallet.keystore.get_passphrase(password))
@@ -179,7 +182,8 @@ class TestCreateRestoreWallet(WalletTestCase):
         self.assertEqual(encrypt_file, wallet.storage.is_encrypted())
 
     async def test_restore_wallet_from_text_mnemonic(self):
-        text = 'bitter grass shiver impose acquire brush forget axis eager alone wine silver'
+        # Neurai has no SegWit: use a 'standard' (p2pkh) electrum seed
+        text = 'cycle rocket west magnet parrot shuffle foot correct salt library feed song'
         passphrase = 'mypassphrase'
         password = 'mypassword'
         encrypt_file = True
@@ -194,10 +198,11 @@ class TestCreateRestoreWallet(WalletTestCase):
         self.assertEqual(passphrase, wallet.keystore.get_passphrase(password))
         self.assertEqual(text, wallet.keystore.get_seed(password))
         self.assertEqual(encrypt_file, wallet.storage.is_encrypted())
-        self.assertEqual('bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw', wallet.get_receiving_addresses()[0])
+        self.assertEqual('NQHJsmJrAtLkeJVMXV2seHzdGr74usKeob', wallet.get_receiving_addresses()[0])
 
     async def test_restore_wallet_from_text_no_storage(self):
-        text = 'bitter grass shiver impose acquire brush forget axis eager alone wine silver'
+        # Neurai has no SegWit: use a 'standard' (p2pkh) electrum seed
+        text = 'cycle rocket west magnet parrot shuffle foot correct salt library feed song'
         d = restore_wallet_from_text(
             text,
             path=None,
@@ -207,57 +212,63 @@ class TestCreateRestoreWallet(WalletTestCase):
         wallet = d['wallet']  # type: Standard_Wallet
         self.assertEqual(None, wallet.storage)
         self.assertEqual(text, wallet.keystore.get_seed(None))
-        self.assertEqual('bc1q3g5tmkmlvxryhh843v4dz026avatc0zzr6h3af', wallet.get_receiving_addresses()[0])
+        self.assertEqual('NhHj5eaHBV3hyoa6Md4zha2jvghGiwPqhb', wallet.get_receiving_addresses()[0])
 
     async def test_restore_wallet_from_text_xpub(self):
-        text = 'zpub6nydoME6CFdJtMpzHW5BNoPz6i6XbeT9qfz72wsRqGdgGEYeivso6xjfw8cGcCyHwF7BNW4LDuHF35XrZsovBLWMF4qXSjmhTXYiHbWqGLt'
+        # upstream's zpub re-encoded with 'standard' version bytes: same key, p2pkh addresses
+        text = 'xpub69K7C1tFttYMBmSkcnVvxdCykmodiQUA1SwfUA5f5FsvA2vCDcYfrqRPtih6cPfT7xsZsYsDJaa9GWJj8Uytas99WPSgGv8iv5RRWSgCK5a'
         d = restore_wallet_from_text(text, path=self.wallet_path, gap_limit=1, config=self.config)
         wallet = d['wallet']  # type: Standard_Wallet
         self.assertEqual(text, wallet.keystore.get_master_public_key())
-        self.assertEqual('bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw', wallet.get_receiving_addresses()[0])
+        self.assertEqual('NTmh4n3hNBKQxSjgptZ11h9HNE8n84vHN7', wallet.get_receiving_addresses()[0])
 
     async def test_restore_wallet_from_text_xkey_that_is_also_a_valid_electrum_seed_by_chance(self):
-        text = 'yprvAJBpuoF4FKpK92ofzQ7ge6VJMtorow3maAGPvPGj38ggr2xd1xCrC9ojUVEf9jhW5L9SPu6fU2U3o64cLrRQ83zaQGNa6YP3ajZS6hHNPXj'
+        # Neurai has no SegWit (the upstream key is a yprv). This xprv is child m/90' of the xprv in
+        # test_restore_wallet_from_text_xprv and happens to also be a valid 'standard' electrum seed.
+        text = 'xprv9w4VnmYQZkrceSR5pNCKvjseAwo14kAUAzgq3v1XXHCqkV5rtZGTBP82GTpv4AYa15YhbAGoDQiQyyk6XdpDR7h3oUhMDj4chrWsTfwD1RV'
         d = restore_wallet_from_text(text, path=self.wallet_path, gap_limit=1, config=self.config)
         wallet = d['wallet']  # type: Standard_Wallet
         self.assertEqual(text, wallet.keystore.get_master_private_key(password=None))
-        self.assertEqual('3Pa4hfP3LFWqa2nfphYaF7PZfdJYNusAnp', wallet.get_receiving_addresses()[0])
+        self.assertEqual('Ngb9Z5KcpKCmtk2jBPkgDyn9eCEQTqftmn', wallet.get_receiving_addresses()[0])
 
     async def test_restore_wallet_from_text_xprv(self):
-        text = 'zprvAZzHPqhCMt51fskXBUYB1fTFYgG3CBjJUT4WEZTpGw6hPSDWBPZYZARC5sE9xAcX8NeWvvucFws8vZxEa65RosKAhy7r5MsmKTxr3hmNmea'
+        # upstream's zprv re-encoded with 'standard' version bytes: same key, p2pkh addresses
+        text = 'xprv9vKknWMN4Wz3yHNHWkxvbVGFCjy9JwkJeE24fmg3WvLwHEb3g5ERK36v3TJyxMJgK6QuRyiVLdA39zj78hFQDPwxyHizuYEnn1qZGbwoNAw'
         d = restore_wallet_from_text(text, path=self.wallet_path, gap_limit=1, config=self.config)
         wallet = d['wallet']  # type: Standard_Wallet
         self.assertEqual(text, wallet.keystore.get_master_private_key(password=None))
-        self.assertEqual('bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw', wallet.get_receiving_addresses()[0])
+        self.assertEqual('NTmh4n3hNBKQxSjgptZ11h9HNE8n84vHN7', wallet.get_receiving_addresses()[0])
 
     async def test_restore_wallet_from_text_addresses(self):
-        text = 'bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw bc1qnp78h78vp92pwdwq5xvh8eprlga5q8gu66960c'
+        text = 'NTmh4n3hNBKQxSjgptZ11h9HNE8n84vHN7 NZpF2ESyuMR8mAdpRzY3ADajZc7GDcP2Qv'
         d = restore_wallet_from_text(text, path=self.wallet_path, config=self.config)
         wallet = d['wallet']  # type: Imported_Wallet
-        self.assertEqual('bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw', wallet.get_receiving_addresses()[0])
+        self.assertEqual('NTmh4n3hNBKQxSjgptZ11h9HNE8n84vHN7', wallet.get_receiving_addresses()[0])
         self.assertEqual(2, len(wallet.get_receiving_addresses()))
         # also test addr deletion
-        wallet.delete_address('bc1qnp78h78vp92pwdwq5xvh8eprlga5q8gu66960c')
+        wallet.delete_address('NZpF2ESyuMR8mAdpRzY3ADajZc7GDcP2Qv')
         self.assertEqual(1, len(wallet.get_receiving_addresses()))
 
     async def test_restore_wallet_from_text_privkeys(self):
-        text = 'p2wpkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL p2wpkh:L24GxnN7NNUAfCXA6hFzB1jt59fYAAiFZMcLaJ2ZSawGpM3uqhb1'
+        text = 'p2pkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL p2pkh:L24GxnN7NNUAfCXA6hFzB1jt59fYAAiFZMcLaJ2ZSawGpM3uqhb1'
         d = restore_wallet_from_text(text, path=self.wallet_path, config=self.config)
         wallet = d['wallet']  # type: Imported_Wallet
         addr0 = wallet.get_receiving_addresses()[0]
-        self.assertEqual('bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw', addr0)
-        self.assertEqual('p2wpkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL',
+        self.assertEqual('NTmh4n3hNBKQxSjgptZ11h9HNE8n84vHN7', addr0)
+        self.assertEqual('p2pkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL',
                          wallet.export_private_key(addr0, password=None))
         self.assertEqual(2, len(wallet.get_receiving_addresses()))
         # also test addr deletion
-        wallet.delete_address('bc1qnp78h78vp92pwdwq5xvh8eprlga5q8gu66960c')
+        wallet.delete_address('NZpF2ESyuMR8mAdpRzY3ADajZc7GDcP2Qv')
         self.assertEqual(1, len(wallet.get_receiving_addresses()))
 
 
 class TestWalletPassword(WalletTestCase):
+    # The fixtures are upstream's seed_version 13 wallet files (same keys) written in the fork's
+    # wallet format (seed_version 1, no storage upgrades) with Neurai addresses.
 
     async def test_update_password_of_imported_wallet(self):
-        wallet_str = '{"addr_history":{"1364Js2VG66BwRdkaoxAaFtdPb1eQgn8Dr":[],"15CyDgLffJsJgQrhcyooFH4gnVDG82pUrA":[],"1Exet2BhHsFxKTwhnfdsBMkPYLGvobxuW6":[]},"addresses":{"change":[],"receiving":["1364Js2VG66BwRdkaoxAaFtdPb1eQgn8Dr","1Exet2BhHsFxKTwhnfdsBMkPYLGvobxuW6","15CyDgLffJsJgQrhcyooFH4gnVDG82pUrA"]},"keystore":{"keypairs":{"0344b1588589958b0bcab03435061539e9bcf54677c104904044e4f8901f4ebdf5":"L2sED74axVXC4H8szBJ4rQJrkfem7UMc6usLCPUoEWxDCFGUaGUM","0389508c13999d08ffae0f434a085f4185922d64765c0bff2f66e36ad7f745cc5f":"L3Gi6EQLvYw8gEEUckmqawkevfj9s8hxoQDFveQJGZHTfyWnbk1U","04575f52b82f159fa649d2a4c353eb7435f30206f0a6cb9674fbd659f45082c37d559ffd19bea9c0d3b7dcc07a7b79f4cffb76026d5d4dff35341efe99056e22d2":"5JyVyXU1LiRXATvRTQvR9Kp8Rx1X84j2x49iGkjSsXipydtByUq"},"type":"imported"},"pruned_txo":{},"seed_version":13,"stored_height":-1,"transactions":{},"tx_fees":{},"txi":{},"txo":{},"use_encryption":false,"verified_tx3":{},"wallet_type":"standard","winpos-qt":[100,100,840,405]}'
+        wallet_str = '{"addr_history":{"NN12VcpkteedHQ2Lt3c4GuKKkKfe7dAUym":[],"NQ7wQS8wHsRk2PFHvDTgwvVP9DsFjF4rMJ":[],"NZsd4myxvRpPfSLJ5uHkt1B5u4vvYNj37A":[]},"addresses":{"NN12VcpkteedHQ2Lt3c4GuKKkKfe7dAUym":{"pubkey":"0344b1588589958b0bcab03435061539e9bcf54677c104904044e4f8901f4ebdf5","type":"p2pkh"},"NQ7wQS8wHsRk2PFHvDTgwvVP9DsFjF4rMJ":{"pubkey":"04575f52b82f159fa649d2a4c353eb7435f30206f0a6cb9674fbd659f45082c37d559ffd19bea9c0d3b7dcc07a7b79f4cffb76026d5d4dff35341efe99056e22d2","type":"p2pkh"},"NZsd4myxvRpPfSLJ5uHkt1B5u4vvYNj37A":{"pubkey":"0389508c13999d08ffae0f434a085f4185922d64765c0bff2f66e36ad7f745cc5f","type":"p2pkh"}},"keystore":{"keypairs":{"0344b1588589958b0bcab03435061539e9bcf54677c104904044e4f8901f4ebdf5":"L2sED74axVXC4H8szBJ4rQJrkfem7UMc6usLCPUoEWxDCFGUaGUM","0389508c13999d08ffae0f434a085f4185922d64765c0bff2f66e36ad7f745cc5f":"L3Gi6EQLvYw8gEEUckmqawkevfj9s8hxoQDFveQJGZHTfyWnbk1U","04575f52b82f159fa649d2a4c353eb7435f30206f0a6cb9674fbd659f45082c37d559ffd19bea9c0d3b7dcc07a7b79f4cffb76026d5d4dff35341efe99056e22d2":"5JyVyXU1LiRXATvRTQvR9Kp8Rx1X84j2x49iGkjSsXipydtByUq"},"type":"imported"},"seed_version":1,"stored_height":-1,"transactions":{},"tx_fees":{},"txi":{},"txo":{},"use_encryption":false,"verified_tx3":{},"wallet_type":"imported","winpos-qt":[100,100,840,405]}'
         storage = WalletStorage(self.wallet_path)
         db = WalletDB(wallet_str, storage=storage, manual_upgrades=False)
         wallet = Wallet(db, config=self.config)
@@ -273,7 +284,7 @@ class TestWalletPassword(WalletTestCase):
         wallet.check_password("1234")
 
     async def test_update_password_of_standard_wallet(self):
-        wallet_str = '''{"addr_history":{"12ECgkzK6gHouKAZ7QiooYBuk1CgJLJxes":[],"12iR43FPb5M7sw4Mcrr5y1nHKepg9EtZP1":[],"13HT1pfWctsSXVFzF76uYuVdQvcAQ2MAgB":[],"13kG9WH9JqS7hyCcVL1ssLdNv4aXocQY9c":[],"14Tf3qiiHJXStSU4KmienAhHfHq7FHpBpz":[],"14gmBxYV97mzYwWdJSJ3MTLbTHVegaKrcA":[],"15FGuHvRssu1r8fCw98vrbpfc3M4xs5FAV":[],"17oJzweA2gn6SDjsKgA9vUD5ocT1sSnr2Z":[],"18hNcSjZzRcRP6J2bfFRxp9UfpMoC4hGTv":[],"18n9PFxBjmKCGhd4PCDEEqYsi2CsnEfn2B":[],"19a98ZfEezDNbCwidVigV5PAJwrR2kw4Jz":[],"19z3j2ELqbg2pR87byCCt3BCyKR7rc3q8G":[],"1A3XSmvLQvePmvm7yctsGkBMX9ZKKXLrVq":[],"1CmhFe2BN1h9jheFpJf4v39XNPj8F9U6d":[],"1DuphhHUayKzbkdvjVjf5dtjn2ACkz4zEs":[],"1E4ygSNJpWL2uPXZHBptmU2LqwZTqb1Ado":[],"1GTDSjkVc9vaaBBBGNVqTANHJBcoT5VW9z":[],"1GWqgpThAuSq3tDg6uCoLQxPXQNnU8jZ52":[],"1GhmpwqSF5cqNgdr9oJMZx8dKxPRo4pYPP":[],"1J5TTUQKhwehEACw6Jjte1E22FVrbeDmpv":[],"1JWySzjzJhsETUUcqVZHuvQLA7pfFfmesb":[],"1KQHxcy3QUHAWMHKUtJjqD9cMKXcY2RTwZ":[],"1KoxZfc2KsgovjGDxwqanbFEA76uxgYH4G":[],"1KqVEPXdpbYvEbwsZcEKkrA4A2jsgj9hYN":[],"1N16yDSYe76c5A3CoVoWAKxHeAUc8Jhf9J":[],"1Pm8JBhzUJDqeQQKrmnop1Frr4phe1jbTt":[]},"addresses":{"change":["1GhmpwqSF5cqNgdr9oJMZx8dKxPRo4pYPP","1GTDSjkVc9vaaBBBGNVqTANHJBcoT5VW9z","15FGuHvRssu1r8fCw98vrbpfc3M4xs5FAV","1A3XSmvLQvePmvm7yctsGkBMX9ZKKXLrVq","19z3j2ELqbg2pR87byCCt3BCyKR7rc3q8G","1JWySzjzJhsETUUcqVZHuvQLA7pfFfmesb"],"receiving":["14gmBxYV97mzYwWdJSJ3MTLbTHVegaKrcA","13HT1pfWctsSXVFzF76uYuVdQvcAQ2MAgB","19a98ZfEezDNbCwidVigV5PAJwrR2kw4Jz","1J5TTUQKhwehEACw6Jjte1E22FVrbeDmpv","1Pm8JBhzUJDqeQQKrmnop1Frr4phe1jbTt","13kG9WH9JqS7hyCcVL1ssLdNv4aXocQY9c","1KQHxcy3QUHAWMHKUtJjqD9cMKXcY2RTwZ","12ECgkzK6gHouKAZ7QiooYBuk1CgJLJxes","12iR43FPb5M7sw4Mcrr5y1nHKepg9EtZP1","14Tf3qiiHJXStSU4KmienAhHfHq7FHpBpz","1KqVEPXdpbYvEbwsZcEKkrA4A2jsgj9hYN","17oJzweA2gn6SDjsKgA9vUD5ocT1sSnr2Z","1E4ygSNJpWL2uPXZHBptmU2LqwZTqb1Ado","18hNcSjZzRcRP6J2bfFRxp9UfpMoC4hGTv","1KoxZfc2KsgovjGDxwqanbFEA76uxgYH4G","18n9PFxBjmKCGhd4PCDEEqYsi2CsnEfn2B","1CmhFe2BN1h9jheFpJf4v39XNPj8F9U6d","1DuphhHUayKzbkdvjVjf5dtjn2ACkz4zEs","1GWqgpThAuSq3tDg6uCoLQxPXQNnU8jZ52","1N16yDSYe76c5A3CoVoWAKxHeAUc8Jhf9J"]},"keystore":{"seed":"cereal wise two govern top pet frog nut rule sketch bundle logic","type":"bip32","xprv":"xprv9s21ZrQH143K29XjRjUs6MnDB9wXjXbJP2kG1fnRk8zjdDYWqVkQYUqaDtgZp5zPSrH5PZQJs8sU25HrUgT1WdgsPU8GbifKurtMYg37d4v","xpub":"xpub661MyMwAqRbcEdcCXm1sTViwjBn28zK9kFfrp4C3JUXiW1sfP34f6HA45B9yr7EH5XGzWuTfMTdqpt9XPrVQVUdgiYb5NW9m8ij1FSZgGBF"},"pruned_txo":{},"seed_type":"standard","seed_version":13,"stored_height":-1,"transactions":{},"tx_fees":{},"txi":{},"txo":{},"use_encryption":false,"verified_tx3":{},"wallet_type":"standard","winpos-qt":[619,310,840,405]}'''
+        wallet_str = '''{"addr_history":{"NL7jt1SHova8Vi6EZ3xYmZTqt73irDGoJh":[],"NM9AsWnajErFFHZ9QeNhWBcc6jrfyScZFu":[],"NMdPEo3fDduZDuSwv6VyffCygPUfokPJux":[],"NNCRCaTnFTRssTeaYLkoFYvKmfGA55atdL":[],"NNfELG5QwPzZ3wbCnZfmZz45GoEXWzZ9pZ":[],"NPNdEbWyus5tEQred1NYUp7z22V6w76ds1":[],"NPbjNiLkmgLRtuuDbfww46mHp29eN8M794":[],"NQAF63ihWSTTC73oENnpZFFMxn14feZL65":[],"NSiHBhSRfFLXnC8Tcup3d7dnAM71VrJ9L4":[],"NTcLoCXqczArj4gcttuKfTaB2Z1nrW9WbD":[],"NTh7a1kTNKsdcg1egRs7wUya4krsVDLXwJ":[],"NUV7KKTWHYmowBLJvjNaBiorfgWQgxzDbE":[],"NUu1un2cUAEUAPWhuCr6agbuL457chDcPf":[],"NUxVdXic3VCq7u9iGrYkyPc3stDJwSyGV5":[],"NYpntT5kDXtRwj2X2jPYnHKS8kpCSTR3sS":[],"NYywsCAaT4tUFMv9aRUnU7T3CgDTZydhWf":[],"NbNBdVYmEiV1v9ZmZc9j9onyevGo3Ekwxv":[],"NbRosaFxoU1GPrcGQ8rh34P5t92nDYeWjW":[],"Nbck1hdhseBGif2ST2xFGbZKgh3RUJMp1S":[],"NczReECbLWD8a8bXPYPnLeeiNz9rJCchbx":[],"NdRwdkYFwGRfoSsD8jDBcZq2WrUeu1ugYo":[],"NeKG9NmK32qbrKfun7xdXraJi4BcEbFCK4":[],"NeivkRQHxSFFGhepGBVUVEfvWqkugWp4xU":[],"NekTR9KuTA7MaaLTrqtDTVakWmPsPAJ9g2":[],"Ngv59yEpGff3R8Ro6jTPryNyzu8bj4PRQs":[],"Nig6UwWG6rnGzNnvA1ShWegZCoUhPP2cKf":[]},"addresses":{"change":["Nbck1hdhseBGif2ST2xFGbZKgh3RUJMp1S","NbNBdVYmEiV1v9ZmZc9j9onyevGo3Ekwxv","NQAF63ihWSTTC73oENnpZFFMxn14feZL65","NUxVdXic3VCq7u9iGrYkyPc3stDJwSyGV5","NUu1un2cUAEUAPWhuCr6agbuL457chDcPf","NdRwdkYFwGRfoSsD8jDBcZq2WrUeu1ugYo"],"receiving":["NPbjNiLkmgLRtuuDbfww46mHp29eN8M794","NNCRCaTnFTRssTeaYLkoFYvKmfGA55atdL","NUV7KKTWHYmowBLJvjNaBiorfgWQgxzDbE","NczReECbLWD8a8bXPYPnLeeiNz9rJCchbx","Nig6UwWG6rnGzNnvA1ShWegZCoUhPP2cKf","NNfELG5QwPzZ3wbCnZfmZz45GoEXWzZ9pZ","NeKG9NmK32qbrKfun7xdXraJi4BcEbFCK4","NM9AsWnajErFFHZ9QeNhWBcc6jrfyScZFu","NMdPEo3fDduZDuSwv6VyffCygPUfokPJux","NPNdEbWyus5tEQred1NYUp7z22V6w76ds1","NekTR9KuTA7MaaLTrqtDTVakWmPsPAJ9g2","NSiHBhSRfFLXnC8Tcup3d7dnAM71VrJ9L4","NYywsCAaT4tUFMv9aRUnU7T3CgDTZydhWf","NTcLoCXqczArj4gcttuKfTaB2Z1nrW9WbD","NeivkRQHxSFFGhepGBVUVEfvWqkugWp4xU","NTh7a1kTNKsdcg1egRs7wUya4krsVDLXwJ","NL7jt1SHova8Vi6EZ3xYmZTqt73irDGoJh","NYpntT5kDXtRwj2X2jPYnHKS8kpCSTR3sS","NbRosaFxoU1GPrcGQ8rh34P5t92nDYeWjW","Ngv59yEpGff3R8Ro6jTPryNyzu8bj4PRQs"]},"keystore":{"seed":"cereal wise two govern top pet frog nut rule sketch bundle logic","seed_type":"standard","type":"bip32","xprv":"xprv9s21ZrQH143K29XjRjUs6MnDB9wXjXbJP2kG1fnRk8zjdDYWqVkQYUqaDtgZp5zPSrH5PZQJs8sU25HrUgT1WdgsPU8GbifKurtMYg37d4v","xpub":"xpub661MyMwAqRbcEdcCXm1sTViwjBn28zK9kFfrp4C3JUXiW1sfP34f6HA45B9yr7EH5XGzWuTfMTdqpt9XPrVQVUdgiYb5NW9m8ij1FSZgGBF"},"seed_version":1,"stored_height":-1,"transactions":{},"tx_fees":{},"txi":{},"txo":{},"use_encryption":false,"verified_tx3":{},"wallet_type":"standard","winpos-qt":[619,310,840,405]}'''
         storage = WalletStorage(self.wallet_path)
         db = WalletDB(wallet_str, storage=storage, manual_upgrades=False)
         wallet = Wallet(db, config=self.config)
@@ -288,7 +299,7 @@ class TestWalletPassword(WalletTestCase):
         wallet.check_password("1234")
 
     async def test_update_password_with_app_restarts(self):
-        wallet_str = '{"addr_history":{"1364Js2VG66BwRdkaoxAaFtdPb1eQgn8Dr":[],"15CyDgLffJsJgQrhcyooFH4gnVDG82pUrA":[],"1Exet2BhHsFxKTwhnfdsBMkPYLGvobxuW6":[]},"addresses":{"change":[],"receiving":["1364Js2VG66BwRdkaoxAaFtdPb1eQgn8Dr","1Exet2BhHsFxKTwhnfdsBMkPYLGvobxuW6","15CyDgLffJsJgQrhcyooFH4gnVDG82pUrA"]},"keystore":{"keypairs":{"0344b1588589958b0bcab03435061539e9bcf54677c104904044e4f8901f4ebdf5":"L2sED74axVXC4H8szBJ4rQJrkfem7UMc6usLCPUoEWxDCFGUaGUM","0389508c13999d08ffae0f434a085f4185922d64765c0bff2f66e36ad7f745cc5f":"L3Gi6EQLvYw8gEEUckmqawkevfj9s8hxoQDFveQJGZHTfyWnbk1U","04575f52b82f159fa649d2a4c353eb7435f30206f0a6cb9674fbd659f45082c37d559ffd19bea9c0d3b7dcc07a7b79f4cffb76026d5d4dff35341efe99056e22d2":"5JyVyXU1LiRXATvRTQvR9Kp8Rx1X84j2x49iGkjSsXipydtByUq"},"type":"imported"},"pruned_txo":{},"seed_version":13,"stored_height":-1,"transactions":{},"tx_fees":{},"txi":{},"txo":{},"use_encryption":false,"verified_tx3":{},"wallet_type":"standard","winpos-qt":[100,100,840,405]}'
+        wallet_str = '{"addr_history":{"NN12VcpkteedHQ2Lt3c4GuKKkKfe7dAUym":[],"NQ7wQS8wHsRk2PFHvDTgwvVP9DsFjF4rMJ":[],"NZsd4myxvRpPfSLJ5uHkt1B5u4vvYNj37A":[]},"addresses":{"NN12VcpkteedHQ2Lt3c4GuKKkKfe7dAUym":{"pubkey":"0344b1588589958b0bcab03435061539e9bcf54677c104904044e4f8901f4ebdf5","type":"p2pkh"},"NQ7wQS8wHsRk2PFHvDTgwvVP9DsFjF4rMJ":{"pubkey":"04575f52b82f159fa649d2a4c353eb7435f30206f0a6cb9674fbd659f45082c37d559ffd19bea9c0d3b7dcc07a7b79f4cffb76026d5d4dff35341efe99056e22d2","type":"p2pkh"},"NZsd4myxvRpPfSLJ5uHkt1B5u4vvYNj37A":{"pubkey":"0389508c13999d08ffae0f434a085f4185922d64765c0bff2f66e36ad7f745cc5f","type":"p2pkh"}},"keystore":{"keypairs":{"0344b1588589958b0bcab03435061539e9bcf54677c104904044e4f8901f4ebdf5":"L2sED74axVXC4H8szBJ4rQJrkfem7UMc6usLCPUoEWxDCFGUaGUM","0389508c13999d08ffae0f434a085f4185922d64765c0bff2f66e36ad7f745cc5f":"L3Gi6EQLvYw8gEEUckmqawkevfj9s8hxoQDFveQJGZHTfyWnbk1U","04575f52b82f159fa649d2a4c353eb7435f30206f0a6cb9674fbd659f45082c37d559ffd19bea9c0d3b7dcc07a7b79f4cffb76026d5d4dff35341efe99056e22d2":"5JyVyXU1LiRXATvRTQvR9Kp8Rx1X84j2x49iGkjSsXipydtByUq"},"type":"imported"},"seed_version":1,"stored_height":-1,"transactions":{},"tx_fees":{},"txi":{},"txo":{},"use_encryption":false,"verified_tx3":{},"wallet_type":"imported","winpos-qt":[100,100,840,405]}'
         storage = WalletStorage(self.wallet_path)
         db = WalletDB(wallet_str, storage=storage, manual_upgrades=False)
         wallet = Wallet(db, config=self.config)

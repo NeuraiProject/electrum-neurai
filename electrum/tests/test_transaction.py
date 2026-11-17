@@ -1,3 +1,4 @@
+import unittest
 from typing import NamedTuple, Union
 
 from electrum import transaction, bitcoin
@@ -94,20 +95,24 @@ class TestTransaction(ElectrumTestCase):
         script_type = 'p2pkh'
         desc = descriptor.get_singlesig_descriptor_from_legacy_leaf(pubkey=pubkey.hex(), script_type=script_type)
         tx.inputs()[0].script_descriptor = desc
-        tx.update_signatures(signed_blob_signatures)
+        tx.update_signatures(signed_blob_signatures, None)
         self.assertEqual(tx.serialize(), signed_blob)
 
     def test_tx_setting_locktime_invalidates_ser_cache(self):
-        tx = tx_from_any("cHNidP8BAJICAAAAAdAEtnw/IOVkr4oexG2xYnm+Vevsn3J7nbZsGpiBWS8MAQAAAAD9////A2Q5AwAAAAAAF6kUF6jKG6BuNVhq1RilflIDCitepw6H/NEEAAAAAAAXqRQx9SsFxDAaaOWbLB2ely1ZoZ61DYeIbQoAAAAAABYAFItCjFDsC28Z1R3tFaoi//pcInvnI3AZAAABAR+weRIAAAAAABYAFEK0I6qyqoA/lXCEgysQNZvqokaQIgYC9tgRn6/8hlDLEvEg3lKD1HmNim0gGRYwt4x3aJURIq4MqAq7DwEAAAAUAAAAAAAAIgICXYdVjyDIufLQ3yeDA4M8016luFER2SWaGPk6UF8CbuQMqAq7DwEAAAAXAAAAAA==")
-        self.assertEqual("2774c819a05e44861a0555401d2741e6c03079cc4d892c69b910c0f52f407859", tx.txid())
+        # Neurai has no SegWit: legacy p2pkh PSBT (signed_blob, finalized with
+        # PSBT_IN_FINAL_SCRIPTSIG), as the txid of an unsigned legacy tx is unknown
+        tx = tx_from_any("cHNidP8BAFUBAAAAASpcmpT83pj1WBzQAWLGChOTbOt1OJ6mW/OGM7Qk60AxAAAAAAD/////AUBCDwAAAAAAGXapFCMKw3g0BzpCFG8R74QUrpKf6q/DiKwAAAAAAAEHbEkwRgIhAKgrvFegE2dR5UM/Qc8ACz8amcZ0R3Xnbsdk+3jFTuEAAiEA+egLfeid6GHcb7DBQp1dpywray7iQGvJv7G+7dcp2YUBIQLmHRdtoW7dHSWKIArZdZ72Ot+OFM2X9TInuuNc24TS9gAA")
+        self.assertEqual("8334c637900f1d2cd1d8abbd94a676e0ac92c2a20d19b3ca210a0f538ab157c8", tx.txid())
         tx.locktime = 111222333
-        self.assertEqual("3d33a69c3f7717840b266c24ae1a6d29486820249b47261232e93ee118a6565b", tx.txid())
+        self.assertEqual("3ba3b42aa17392520fe4e8d42a44a22e83a50cd191cde9c309082c7b6a9f168d", tx.txid())
 
     def test_tx_setting_version_invalidates_ser_cache(self):
-        tx = tx_from_any("cHNidP8BAJICAAAAAdAEtnw/IOVkr4oexG2xYnm+Vevsn3J7nbZsGpiBWS8MAQAAAAD9////A2Q5AwAAAAAAF6kUF6jKG6BuNVhq1RilflIDCitepw6H/NEEAAAAAAAXqRQx9SsFxDAaaOWbLB2ely1ZoZ61DYeIbQoAAAAAABYAFItCjFDsC28Z1R3tFaoi//pcInvnI3AZAAABAR+weRIAAAAAABYAFEK0I6qyqoA/lXCEgysQNZvqokaQIgYC9tgRn6/8hlDLEvEg3lKD1HmNim0gGRYwt4x3aJURIq4MqAq7DwEAAAAUAAAAAAAAIgICXYdVjyDIufLQ3yeDA4M8016luFER2SWaGPk6UF8CbuQMqAq7DwEAAAAXAAAAAA==")
-        self.assertEqual("2774c819a05e44861a0555401d2741e6c03079cc4d892c69b910c0f52f407859", tx.txid())
+        # Neurai has no SegWit: legacy p2pkh PSBT (signed_blob, finalized with
+        # PSBT_IN_FINAL_SCRIPTSIG), as the txid of an unsigned legacy tx is unknown
+        tx = tx_from_any("cHNidP8BAFUBAAAAASpcmpT83pj1WBzQAWLGChOTbOt1OJ6mW/OGM7Qk60AxAAAAAAD/////AUBCDwAAAAAAGXapFCMKw3g0BzpCFG8R74QUrpKf6q/DiKwAAAAAAAEHbEkwRgIhAKgrvFegE2dR5UM/Qc8ACz8amcZ0R3Xnbsdk+3jFTuEAAiEA+egLfeid6GHcb7DBQp1dpywray7iQGvJv7G+7dcp2YUBIQLmHRdtoW7dHSWKIArZdZ72Ot+OFM2X9TInuuNc24TS9gAA")
+        self.assertEqual("8334c637900f1d2cd1d8abbd94a676e0ac92c2a20d19b3ca210a0f538ab157c8", tx.txid())
         tx.version = 555
-        self.assertEqual("8a9b89a1a7aac1995dd013069d9866197d77c14c22315958d612fc02fd4b596a", tx.txid())
+        self.assertEqual("25cb9f47a7bca71bc868ddbeca3fc765e6c1f280d037e68678ee0a36b058edb9", tx.txid())
 
     def test_tx_deserialize_for_signed_network_tx(self):
         tx = transaction.Transaction(signed_blob)
@@ -122,7 +127,7 @@ class TestTransaction(ElectrumTestCase):
         self.assertEqual('3140eb24b43386f35ba69e3875eb6c93130ac66201d01c58f598defc949a5c2a:0', tx.inputs()[0].prevout.to_str())
         self.assertEqual(1, len(tx.outputs()))
         self.assertEqual(bfh('76a914230ac37834073a42146f11ef8414ae929feaafc388ac'), tx.outputs()[0].scriptpubkey)
-        self.assertEqual('14CHYaaByjJZpx4oHBpfDMdqhTyXnZ3kVs', tx.outputs()[0].address)
+        self.assertEqual('NP7FjLNTcHs1AvTPaRUYv14Y4CdXUFWnyG', tx.outputs()[0].address)
         self.assertEqual(1000000, tx.outputs()[0].value)
 
         self.assertEqual(tx.serialize(), signed_blob)
@@ -138,8 +143,12 @@ class TestTransaction(ElectrumTestCase):
 
     def test_estimated_output_size(self):
         estimated_output_size = transaction.Transaction.estimated_output_size_for_address
-        self.assertEqual(estimated_output_size('14gcRovpkCoGkCNBivQBvw7eso7eiNAbxG'), 34)
-        self.assertEqual(estimated_output_size('35ZqQJcBQMZ1rsv8aSuJ2wkC7ohUCQMJbT'), 32)
+        self.assertEqual(estimated_output_size('NPbacZj6NmMi6Akn2A45daYMEXmeQRZiHu'), 34)
+        self.assertEqual(estimated_output_size('p9RPgTzSvZT9TRXqKSCzLzEJcJZ7oeGdDu'), 32)
+
+    @unittest.skip("Neurai has no SegWit (no bech32 addresses)")
+    def test_estimated_output_size_segwit(self):
+        estimated_output_size = transaction.Transaction.estimated_output_size_for_address
         self.assertEqual(estimated_output_size('bc1q3g5tmkmlvxryhh843v4dz026avatc0zzr6h3af'), 31)
         self.assertEqual(estimated_output_size('bc1qnvks7gfdu72de8qv6q6rhkkzu70fqz4wpjzuxjf6aydsx7wxfwcqnlxuv3'), 43)
 
@@ -169,25 +178,15 @@ class TestTransaction(ElectrumTestCase):
         # the inverse of this test is in test_bitcoin: test_address_to_script
         addr_from_script = lambda script: transaction.get_address_from_output_script(bfh(script))
 
-        # bech32/bech32m native segwit
-        # test vectors from BIP-0173/BIP-0350
-        self.assertEqual('bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', addr_from_script('0014751e76e8199196d454941c45d1b3a323f1433bd6'))
-        self.assertEqual('bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7kt5nd6y', addr_from_script('5128751e76e8199196d454941c45d1b3a323f1433bd6751e76e8199196d454941c45d1b3a323f1433bd6'))
-        self.assertEqual('bc1sw50qgdz25j', addr_from_script('6002751e'))
-        self.assertEqual('bc1zw508d6qejxtdg4y5r3zarvaryvaxxpcs', addr_from_script('5210751e76e8199196d454941c45d1b3a323'))
-        self.assertEqual('bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0', addr_from_script('512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'))
-        # almost but not quite
-        self.assertEqual(None, addr_from_script('0013751e76e8199196d454941c45d1b3a323f1433b'))
-
         # base58 p2pkh
-        self.assertEqual('14gcRovpkCoGkCNBivQBvw7eso7eiNAbxG', addr_from_script('76a91428662c67561b95c79d2257d2a93d9d151c977e9188ac'))
-        self.assertEqual('1BEqfzh4Y3zzLosfGhw1AsqbEKVW6e1qHv', addr_from_script('76a914704f4b81cadb7bf7e68c08cd3657220f680f863c88ac'))
+        self.assertEqual('NPbacZj6NmMi6Akn2A45daYMEXmeQRZiHu', addr_from_script('76a91428662c67561b95c79d2257d2a93d9d151c977e9188ac'))
+        self.assertEqual('NW9orkVLAcZRgnGFZwatsXGHb49VjkhtkX', addr_from_script('76a914704f4b81cadb7bf7e68c08cd3657220f680f863c88ac'))
         # almost but not quite
         self.assertEqual(None, addr_from_script('76a9130000000000000000000000000000000000000088ac'))
 
         # base58 p2sh
-        self.assertEqual('35ZqQJcBQMZ1rsv8aSuJ2wkC7ohUCQMJbT', addr_from_script('a9142a84cf00d47f699ee7bbc1dea5ec1bdecb4ac15487'))
-        self.assertEqual('3PyjzJ3im7f7bcV724GR57edKDqoZvH7Ji', addr_from_script('a914f47c8954e421031ad04ecd8e7752c9479206b9d387'))
+        self.assertEqual('p9RPgTzSvZT9TRXqKSCzLzEJcJZ7oeGdDu', addr_from_script('a9142a84cf00d47f699ee7bbc1dea5ec1bdecb4ac15487'))
+        self.assertEqual('pTqJGTRzHKZFCA6om3a7PA8joihT8g6KvJ', addr_from_script('a914f47c8954e421031ad04ecd8e7752c9479206b9d387'))
         # almost but not quite
         self.assertEqual(None, addr_from_script('a912f47c8954e421031ad04ecd8e7752c947920687'))
 
@@ -197,6 +196,19 @@ class TestTransaction(ElectrumTestCase):
         # almost but not quite
         self.assertEqual(None, addr_from_script('200289e14468d94537493c62e2168318b568912dec0fb95609afd56f2527c2751cac'))
         self.assertEqual(None, addr_from_script('210589e14468d94537493c62e2168318b568912dec0fb95609afd56f2527c2751c8bac'))
+
+    def test_get_address_from_output_script_witness_program(self):
+        addr_from_script = lambda script: transaction.get_address_from_output_script(bfh(script))
+        # Neurai has no SegWit: SEGWIT_HRP is empty, so witness programs have no address
+        # encoding. Like other scripts without an address (e.g. p2pk), they map to None.
+        # scripts from the BIP-0173/BIP-0350 test vectors
+        self.assertEqual(None, addr_from_script('0014751e76e8199196d454941c45d1b3a323f1433bd6'))
+        self.assertEqual(None, addr_from_script('5128751e76e8199196d454941c45d1b3a323f1433bd6751e76e8199196d454941c45d1b3a323f1433bd6'))
+        self.assertEqual(None, addr_from_script('6002751e'))
+        self.assertEqual(None, addr_from_script('5210751e76e8199196d454941c45d1b3a323'))
+        self.assertEqual(None, addr_from_script('512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'))
+        # almost but not quite
+        self.assertEqual(None, addr_from_script('0013751e76e8199196d454941c45d1b3a323f1433b'))
 
     def test_tx_serialize_methods_for_psbt(self):
         raw_hex = "70736274ff01009a020000000258e87a21b56daf0c23be8e7070456c336f7cbaa5c8757924f545887bb2abdd750000000000ffffffff838d0427d0ec650a68aa46bb0b098aea4422c071b2ca78352a077959d07cea1d0100000000ffffffff0270aaf00800000000160014d85c2b71d0060b09c9886aeb815e50991dda124d00e1f5050000000016001400aea9a2e5f0f876a588df5546e8742d1d87008f00000000000100bb0200000001aad73931018bd25f84ae400b68848be09db706eac2ac18298babee71ab656f8b0000000048473044022058f6fc7c6a33e1b31548d481c826c015bd30135aad42cd67790dab66d2ad243b02204a1ced2604c6735b6393e5b41691dd78b00f0c5942fb9f751856faa938157dba01feffffff0280f0fa020000000017a9140fb9463421696b82c833af241c78c17ddbde493487d0f20a270100000017a91429ca74f8a08f81999428185c97b5d852e4063f618765000000010304010000000104475221029583bf39ae0a609747ad199addd634fa6108559d6c5cd39b4c2183f1ab96e07f2102dab61ff49a14db6a7d02b0cd1fbb78fc4b18312b5b4e54dae4dba2fbfef536d752ae2206029583bf39ae0a609747ad199addd634fa6108559d6c5cd39b4c2183f1ab96e07f10d90c6a4f000000800000008000000080220602dab61ff49a14db6a7d02b0cd1fbb78fc4b18312b5b4e54dae4dba2fbfef536d710d90c6a4f0000008000000080010000800001012000c2eb0b0000000017a914b7f5faf40e3d40a5a459b1db3535f2b72fa921e8870103040100000001042200208c2353173743b595dfb4a07b72ba8e42e3797da74e87fe7d9d7497e3b2028903010547522103089dc10c7ac6db54f91329af617333db388cead0c231f723379d1b99030b02dc21023add904f3d6dcf59ddb906b0dee23529b7ffb9ed50e5e86151926860221f0e7352ae2206023add904f3d6dcf59ddb906b0dee23529b7ffb9ed50e5e86151926860221f0e7310d90c6a4f000000800000008003000080220603089dc10c7ac6db54f91329af617333db388cead0c231f723379d1b99030b02dc10d90c6a4f00000080000000800200008000220203a9a4c37f5996d3aa25dbac6b570af0650394492942460b354753ed9eeca5877110d90c6a4f000000800000008004000080002202027f6399757d2eff55a136ad02c684b1838b6556e5f1b6b34282a94b6b5005109610d90c6a4f00000080000000800500008000"
@@ -864,6 +876,8 @@ class TestTransactionTestnet(ElectrumTestCase):
 
     def test_spending_op_cltv_p2sh(self):
         # from https://github.com/brianddk/reddit/blob/8ca383c9e00cb5a4c1201d1bab534d5886d3cb8f/python/elec-p2sh-hodl.py
+        # adapted to Neurai: the output pays to p2pkh instead of p2wpkh (same hash160
+        # as the original tb1qv9hg20f0g08d460l67ph6p4ukwt7m0ttqzj7mk)
         wif = 'cQNjiPwYKMBr2oB3bWzf3rgBsu198xb8Nxxe51k6D3zVTA98L25N'
         sats = 9999
         sats_less_fees = sats - 200
@@ -882,18 +896,19 @@ class TestTransactionTestnet(ElectrumTestCase):
 
         # Build the Transaction Output
         txout = PartialTxOutput.from_address_and_value(
-            'tb1qv9hg20f0g08d460l67ph6p4ukwt7m0ttqzj7mk', sats_less_fees)
+            'tFomzVh68W9ojmYuakgkvrwCMo7yJs6VMz', sats_less_fees)
 
         # Build and sign the transaction
         tx = PartialTransaction.from_io([txin], [txout], locktime=locktime, version=1)
-        sig = tx.sign_txin(0, privkey)
+        sig = tx.sign_txin(0, privkey, None)
         txin.script_sig = bfh(construct_script([sig, redeem_script]))
 
-        # note: in testnet3 chain, signature differs (no low-R grinding),
-        # so txid there is: a8110bbdd40d65351f615897d98c33cbe33e4ebedb4ba2fc9e8c644423dadc93
-        self.assertEqual('3266138b0b79007f35ac9a1824e294763708bd4a6440b5c227f4e1251b66e92b',
+        # note: without low-R grinding the signature differs,
+        # and the txid would be: 24caf9f8d1ae78903741d92405afd48a7a9196fa6beba97ac08552f3a9a3c34a
+        self.assertEqual('a8fa86846592edfc0ba156057e746f262656f068cd1752caae5f64ed102df99c',
                          tx.txid())
 
+    @unittest.skip("Neurai has no SegWit")
     def test_spending_op_cltv_p2wsh(self):
         wif = 'cSw3py1CQa2tmzzDm3ghQVrgqqNuFhUyBXjABge5j8KRxzd6kaFj'
         sats = 99_878
@@ -921,7 +936,7 @@ class TestTransactionTestnet(ElectrumTestCase):
 
         # Build and sign the transaction
         tx = PartialTransaction.from_io([txin], [txout], locktime=locktime, version=2)
-        sig = tx.sign_txin(0, privkey)
+        sig = tx.sign_txin(0, privkey, None)
         txin.witness = bfh(construct_witness([sig, witness_script]))
 
         self.assertEqual('1cdb274755b144090c7134b6459e8d4cb6b4552fe620102836d751e8389b2694',
@@ -930,14 +945,15 @@ class TestTransactionTestnet(ElectrumTestCase):
                          tx.serialize())
 
 class TestSighashTypes(ElectrumTestCase):
-    #These tests are taken from bip143, https://github.com/bitcoin/bips/blob/master/bip-0143.mediawiki
+    #These tests are adapted from bip143, https://github.com/bitcoin/bips/blob/master/bip-0143.mediawiki
+    #Neurai has no SegWit: the 6-of-6 multisig witness script of the bip143 example is
+    #spent here as a legacy p2sh redeem script, so the legacy (pre-bip143) sighash is used.
     #Input of transaction
     locktime=0
     prevout = TxOutpoint(txid=bfh('6eb98797a21c6c10aa74edf29d618be109f48a8e94c694f3701e08ca69186436'), out_idx=1)
     txin = PartialTxInput(prevout=prevout)
     txin.nsequence=0xffffffff
-    txin.witness_script = bfh('56210307b8ae49ac90a048e9b53357a2354b3334e9c8bee813ecb98e99a7e07e8c3ba32103b28f0c28bfab54554ae8c658ac5c3e0ce6e79ad336331f78c428dd43eea8449b21034b8113d703413d57761b8b9781957b8c0ac1dfe69f492580ca4195f50376ba4a21033400f6afecb833092a9a21cfdf1ed1376e58c5d1f47de74683123987e967a8f42103a6d48b1131e94ba04d9737d61acdaa1322008af9602b3b14862c07a1789aac162102d8b661b0b3302ee2f162b09e07a55ad5dfbe673a9f01d9f0c19617681024306b56ae')
-    txin.redeem_script = bfh('0020a16b5755f7f6f96dbd65f5f0d6ab9418b89af4b1f14a1bb8a09062c35f0dcb54')
+    txin.redeem_script = bfh('56210307b8ae49ac90a048e9b53357a2354b3334e9c8bee813ecb98e99a7e07e8c3ba32103b28f0c28bfab54554ae8c658ac5c3e0ce6e79ad336331f78c428dd43eea8449b21034b8113d703413d57761b8b9781957b8c0ac1dfe69f492580ca4195f50376ba4a21033400f6afecb833092a9a21cfdf1ed1376e58c5d1f47de74683123987e967a8f42103a6d48b1131e94ba04d9737d61acdaa1322008af9602b3b14862c07a1789aac162102d8b661b0b3302ee2f162b09e07a55ad5dfbe673a9f01d9f0c19617681024306b56ae')
     txin._trusted_value_sats = 987654321
     #Output of Transaction
     txout1 = PartialTxOutput(scriptpubkey=bfh('76a914389ffce9cd9ae88dcc0631e88a821ffdbe9bfe2688ac'), value=900000000)
@@ -947,24 +963,24 @@ class TestSighashTypes(ElectrumTestCase):
         self.txin.sighash=Sighash.ALL
         privkey = bfh('730fff80e1413068a05b57d6a58261f07551163369787f349438ea38ca80fac6')
         tx = PartialTransaction.from_io(inputs=[self.txin], outputs=[self.txout1,self.txout2], locktime=self.locktime, version=1, BIP69_sort=False)
-        sig = tx.sign_txin(0,privkey)
-        self.assertEqual('304402206ac44d672dac41f9b00e28f4df20c52eeb087207e8d758d76d92c6fab3b73e2b0220367750dbbe19290069cba53d096f44530e4f98acaa594810388cf7409a1870ce01',
+        sig = tx.sign_txin(0, privkey, None)
+        self.assertEqual('3044022040383e7a8300f263d582cb397387111acf1248f932d0efe8b619988af1002c4b022054087c98d2c8f77d252fc811d84abe8fcfa2c3a7c9e1eac8074409c2c2929fcf01',
                         sig)
 
     def test_check_sighash_types_sighash_none(self):
         self.txin.sighash=Sighash.NONE
         privkey = bfh('11fa3d25a17cbc22b29c44a484ba552b5a53149d106d3d853e22fdd05a2d8bb3')
         tx = PartialTransaction.from_io(inputs=[self.txin], outputs=[self.txout1,self.txout2], locktime=self.locktime, version=1, BIP69_sort=False)
-        sig = tx.sign_txin(0,privkey)
-        self.assertEqual('3044022068c7946a43232757cbdf9176f009a928e1cd9a1a8c212f15c1e11ac9f2925d9002205b75f937ff2f9f3c1246e547e54f62e027f64eefa2695578cc6432cdabce271502',
+        sig = tx.sign_txin(0, privkey, None)
+        self.assertEqual('30440220659e8499494b67a137e9c0ca58845f8e99f07d9d9fb716110652e8cf7463f1a20220357c8adfc216cb368f32dfadb95e332a255c02a79ad13f9f9309d7a68409407302',
                         sig)
 
     def test_check_sighash_types_sighash_single(self):
         self.txin.sighash=Sighash.SINGLE
         privkey = bfh('77bf4141a87d55bdd7f3cd0bdccf6e9e642935fec45f2f30047be7b799120661')
         tx = PartialTransaction.from_io(inputs=[self.txin], outputs=[self.txout1,self.txout2], locktime=self.locktime, version=1, BIP69_sort=False)
-        sig = tx.sign_txin(0,privkey)
-        self.assertEqual('3044022059ebf56d98010a932cf8ecfec54c48e6139ed6adb0728c09cbe1e4fa0915302e022007cd986c8fa870ff5d2b3a89139c9fe7e499259875357e20fcbb15571c76795403',
+        sig = tx.sign_txin(0, privkey, None)
+        self.assertEqual('30440220057cc254d39349cc9737a9c9aade5f7350245a101baacacd3d1601456afc60e702203b9ed19b50f2b8952faa284df31bc03c0f6738dab164b2065c90ce886d51a59503',
                         sig)
 
     @disable_ecdsa_r_value_grinding
@@ -972,8 +988,8 @@ class TestSighashTypes(ElectrumTestCase):
         self.txin.sighash=Sighash.ALL|Sighash.ANYONECANPAY
         privkey = bfh('14af36970f5025ea3e8b5542c0f8ebe7763e674838d08808896b63c3351ffe49')
         tx = PartialTransaction.from_io(inputs=[self.txin], outputs=[self.txout1,self.txout2], locktime=self.locktime, version=1, BIP69_sort=False)
-        sig = tx.sign_txin(0,privkey)
-        self.assertEqual('3045022100fbefd94bd0a488d50b79102b5dad4ab6ced30c4069f1eaa69a4b5a763414067e02203156c6a5c9cf88f91265f5a942e96213afae16d83321c8b31bb342142a14d16381',
+        sig = tx.sign_txin(0, privkey, None)
+        self.assertEqual('304502210084294a425882cdd63266fcb4ef85d91bc7473e86579dc7c7e5af8803ae674aa702205d9c41399b7680abac848c6c88ddef4a2e73894b4f6e4d9251c04e2b923dad6081',
                          sig)
 
     @disable_ecdsa_r_value_grinding
@@ -981,14 +997,14 @@ class TestSighashTypes(ElectrumTestCase):
         self.txin.sighash=Sighash.NONE|Sighash.ANYONECANPAY
         privkey = bfh('fe9a95c19eef81dde2b95c1284ef39be497d128e2aa46916fb02d552485e0323')
         tx = PartialTransaction.from_io(inputs=[self.txin], outputs=[self.txout1,self.txout2], locktime=self.locktime, version=1, BIP69_sort=False)
-        sig = tx.sign_txin(0,privkey)
-        self.assertEqual('3045022100a5263ea0553ba89221984bd7f0b13613db16e7a70c549a86de0cc0444141a407022005c360ef0ae5a5d4f9f2f87a56c1546cc8268cab08c73501d6b3be2e1e1a8a0882',
+        sig = tx.sign_txin(0, privkey, None)
+        self.assertEqual('304402201aa89070b488aa17e99385049d1aa96c6f43ec63196dc6fd2699085e157433b8022057b95ba9b829fe57fe113d7e4d8a2d3d79663f6a2586b80d26702553aaf0a12482',
                          sig)
 
     def test_check_sighash_types_sighash_single_anyonecanpay(self):
         self.txin.sighash=Sighash.SINGLE|Sighash.ANYONECANPAY
         privkey = bfh('428a7aee9f0c2af0cd19af3cf1c78149951ea528726989b2e83e4778d2c3f890')
         tx = PartialTransaction.from_io(inputs=[self.txin], outputs=[self.txout1,self.txout2], locktime=self.locktime, version=1, BIP69_sort=False)
-        sig = tx.sign_txin(0,privkey)
-        self.assertEqual('30440220525406a1482936d5a21888260dc165497a90a15669636d8edca6b9fe490d309c022032af0c646a34a44d1f4576bf6a4a74b67940f8faa84c7df9abe12a01a11e2b4783',
+        sig = tx.sign_txin(0, privkey, None)
+        self.assertEqual('304402207e77fc834d102c7e21c6b429eabdf4bdfb8a96dc855f58fe5acd22e0eea7380402201ccc92730e53e0d17a7a22967d822cf5ce90e47af58825eea630e4f64d962c7083',
                          sig)

@@ -13,6 +13,10 @@ from electrum.util import UserFacingException
 from . import ElectrumTestCase
 from .test_wallet_vertical import WalletIntegrityHelper
 
+# serialize and signtransaction_with_privkey are stubbed out in this fork
+# (commands.py raises NotImplementedError: signing needs a wallet here)
+WALLETLESS_SIGNING_DISABLED = 'wallet-less signing commands are disabled in Electrum-Neurai'
+
 
 class TestCommands(ElectrumTestCase):
 
@@ -76,7 +80,7 @@ class TestCommands(ElectrumTestCase):
 
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_encrypt_decrypt(self, mock_save_db):
-        wallet = restore_wallet_from_text('p2wpkh:L4rYY5QpfN6wJEF4SEKDpcGhTPnCe9zcGs6hiSnhpprZqVywFifN',
+        wallet = restore_wallet_from_text('p2pkh:L4rYY5QpfN6wJEF4SEKDpcGhTPnCe9zcGs6hiSnhpprZqVywFifN',
                                           path='if_this_exists_mocking_failed_648151893',
                                           config=self.config)['wallet']
         cmds = Commands(config=self.config)
@@ -87,7 +91,7 @@ class TestCommands(ElectrumTestCase):
 
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_export_private_key_imported(self, mock_save_db):
-        wallet = restore_wallet_from_text('p2wpkh:L4rYY5QpfN6wJEF4SEKDpcGhTPnCe9zcGs6hiSnhpprZqVywFifN p2wpkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL',
+        wallet = restore_wallet_from_text('p2pkh:L4rYY5QpfN6wJEF4SEKDpcGhTPnCe9zcGs6hiSnhpprZqVywFifN p2pkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL',
                                           path='if_this_exists_mocking_failed_648151893',
                                           config=self.config)['wallet']
         cmds = Commands(config=self.config)
@@ -95,15 +99,16 @@ class TestCommands(ElectrumTestCase):
         with self.assertRaises(UserFacingException):
             await cmds.getprivatekeys("asdasd", wallet=wallet)  # invalid addr, though might raise "not in wallet"
         with self.assertRaises(UserFacingException):
-            await cmds.getprivatekeys("bc1qgfam82qk7uwh5j2xxmcd8cmklpe0zackyj6r23", wallet=wallet)  # not in wallet
-        self.assertEqual("p2wpkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL",
-                         await cmds.getprivatekeys("bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw", wallet=wallet))
+            await cmds.getprivatekeys("NRyVyNG4MUKT6g6xAVZCfEyejU1Q8ZgsRk", wallet=wallet)  # not in wallet
+        self.assertEqual("p2pkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL",
+                         await cmds.getprivatekeys("NTmh4n3hNBKQxSjgptZ11h9HNE8n84vHN7", wallet=wallet))
         # list of addresses tests
         with self.assertRaises(UserFacingException):
-            await cmds.getprivatekeys(['bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw', 'asd'], wallet=wallet)
-        self.assertEqual(['p2wpkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL', 'p2wpkh:L4rYY5QpfN6wJEF4SEKDpcGhTPnCe9zcGs6hiSnhpprZqVywFifN'],
-                         await cmds.getprivatekeys(['bc1q2ccr34wzep58d4239tl3x3734ttle92a8srmuw', 'bc1q9pzjpjq4nqx5ycnywekcmycqz0wjp2nq604y2n'], wallet=wallet))
+            await cmds.getprivatekeys(['NTmh4n3hNBKQxSjgptZ11h9HNE8n84vHN7', 'asd'], wallet=wallet)
+        self.assertEqual(['p2pkh:L4jkdiXszG26SUYvwwJhzGwg37H2nLhrbip7u6crmgNeJysv5FHL', 'p2pkh:L4rYY5QpfN6wJEF4SEKDpcGhTPnCe9zcGs6hiSnhpprZqVywFifN'],
+                         await cmds.getprivatekeys(['NTmh4n3hNBKQxSjgptZ11h9HNE8n84vHN7', 'NPau2XiqvSh2hdCLxEQft5ddzfEeh3S4a9'], wallet=wallet))
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_export_private_key_deterministic(self, mock_save_db):
         wallet = restore_wallet_from_text('bitter grass shiver impose acquire brush forget axis eager alone wine silver',
@@ -152,6 +157,7 @@ class TestCommandsTestnet(ElectrumTestCase):
             for xkey2, xtype2 in xprvs:
                 self.assertEqual(xkey2, await cmds.convert_xkey(xkey1, xtype2))
 
+    @unittest.skip(WALLETLESS_SIGNING_DISABLED)
     async def test_serialize(self):
         cmds = Commands(config=self.config)
         jsontx = {
@@ -160,19 +166,20 @@ class TestCommandsTestnet(ElectrumTestCase):
                     "prevout_hash": "9d221a69ca3997cbeaf5624d723e7dc5f829b1023078c177d37bdae95f37c539",
                     "prevout_n": 1,
                     "value_sats": 1000000,
-                    "privkey": "p2wpkh:cVDXzzQg6RoCTfiKpe8MBvmm5d5cJc6JLuFApsFDKwWa6F5TVHpD"
+                    "privkey": "p2pkh:cVDXzzQg6RoCTfiKpe8MBvmm5d5cJc6JLuFApsFDKwWa6F5TVHpD"
                 }
             ],
             "outputs": [
                 {
-                    "address": "tb1q4s8z6g5jqzllkgt8a4har94wl8tg0k9m8kv5zd",
+                    "address": "tNcMFmp9SPyApNcUvYXY7Vwt2HxtaZXTfZ",  # same hash160 as tb1q4s8z6g5jqzllkgt8a4har94wl8tg0k9m8kv5zd
                     "value_sats": 990000
                 }
             ]
         }
-        self.assertEqual("0200000000010139c5375fe9da7bd377c1783002b129f8c57d3e724d62f5eacb9739ca691a229d0100000000feffffff01301b0f0000000000160014ac0e2d229200bffb2167ed6fd196aef9d687d8bb0247304402206367fb2ddd723985f5f51e0f2435084c0a66f5c26f4403a75d3dd417b71a20450220545dc3637bcb49beedbbdf5063e05cad63be91af4f839886451c30ecd6edf1d20121021f110909ded653828a254515b58498a6bafc96799fb0851554463ed44ca7d9da00000000",
+        self.assertEqual("020000000139c5375fe9da7bd377c1783002b129f8c57d3e724d62f5eacb9739ca691a229d010000006a47304402205afaa91a9590d6ba8e8cb1733ba520c6ae28821988677ebdadbf2858696c773502205d1cef8a2d25f1de5a9722f1af9e14f5c7760b6ba774e1fbe3d410d5416c60d70121021f110909ded653828a254515b58498a6bafc96799fb0851554463ed44ca7d9dafeffffff01301b0f00000000001976a914ac0e2d229200bffb2167ed6fd196aef9d687d8bb88ac00000000",
                          await cmds.serialize(jsontx))
 
+    @unittest.skip(WALLETLESS_SIGNING_DISABLED)
     async def test_serialize_custom_nsequence(self):
         cmds = Commands(config=self.config)
         jsontx = {
@@ -181,20 +188,21 @@ class TestCommandsTestnet(ElectrumTestCase):
                     "prevout_hash": "9d221a69ca3997cbeaf5624d723e7dc5f829b1023078c177d37bdae95f37c539",
                     "prevout_n": 1,
                     "value_sats": 1000000,
-                    "privkey": "p2wpkh:cVDXzzQg6RoCTfiKpe8MBvmm5d5cJc6JLuFApsFDKwWa6F5TVHpD",
+                    "privkey": "p2pkh:cVDXzzQg6RoCTfiKpe8MBvmm5d5cJc6JLuFApsFDKwWa6F5TVHpD",
                     "nsequence": 0xfffffffd
                 }
             ],
             "outputs": [
                 {
-                    "address": "tb1q4s8z6g5jqzllkgt8a4har94wl8tg0k9m8kv5zd",
+                    "address": "tNcMFmp9SPyApNcUvYXY7Vwt2HxtaZXTfZ",  # same hash160 as tb1q4s8z6g5jqzllkgt8a4har94wl8tg0k9m8kv5zd
                     "value_sats": 990000
                 }
             ]
         }
-        self.assertEqual("0200000000010139c5375fe9da7bd377c1783002b129f8c57d3e724d62f5eacb9739ca691a229d0100000000fdffffff01301b0f0000000000160014ac0e2d229200bffb2167ed6fd196aef9d687d8bb0247304402201c551df0458528d19ba1dd79b134dcf0055f7b029dfc3d0d024e6253d069d13e02206d03cfc85a6fc648acb6fc6be630e4567d1dd00ddbcdee551ee0711414e2f33f0121021f110909ded653828a254515b58498a6bafc96799fb0851554463ed44ca7d9da00000000",
+        self.assertEqual("020000000139c5375fe9da7bd377c1783002b129f8c57d3e724d62f5eacb9739ca691a229d010000006a473044022039625082992c146c1c5bd4d649f619c4a5d38962f8ae26c37ec651261d81c59d02200e213ac3c912df6a0dde5fb694a1f9616a76ffc0be8da97ce80878158ee82dcf0121021f110909ded653828a254515b58498a6bafc96799fb0851554463ed44ca7d9dafdffffff01301b0f00000000001976a914ac0e2d229200bffb2167ed6fd196aef9d687d8bb88ac00000000",
                          await cmds.serialize(jsontx))
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_getprivatekeyforpath(self, mock_save_db):
         wallet = restore_wallet_from_text('north rent dawn bunker hamster invest wagon market romance pig either squeeze',
@@ -209,6 +217,7 @@ class TestCommandsTestnet(ElectrumTestCase):
         self.assertEqual("p2wpkh:cQAj4WGf1socCPCJNMjXYCJ8Bs5JUAk5pbDr4ris44QdgAXcV24S",
                          await cmds.getprivatekeyforpath("m/5h/100000/88h/7", wallet=wallet))
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_payto(self, mock_save_db):
         wallet = restore_wallet_from_text('disagree rug lemon bean unaware square alone beach tennis exhibit fix mimic',
@@ -236,6 +245,7 @@ class TestCommandsTestnet(ElectrumTestCase):
         self.assertEqual("02000000000101a0a8800d2d6bb0a4a8b93b793f39439c4139a40d30e634cf5cd601e5391de6ed0100000000fdffffff0240e2010000000000160014810480bbaf62145abf945ebe5f657c665a3a3732462b060000000000160014a5103285eb519f826520a9f7d3227e1eaa7ec5f802473044022057a6f4b1ec63336c7d0ba233e785ec9f2e2d9c2d67617a50e069f4498ee6a3b7022032fb331e0bef06f46e9cb77bfe94413142653c4912516835e941fa7f170c1a53012103001b55f19541faaf7e6d57dd1bdb9fdc37725fc500e12f2418cc11e0aed4154978181e00",
                          tx_str)
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_paytomany_multiple_max_spends(self, mock_save_db):
         wallet = restore_wallet_from_text('kit virtual quantum festival fortune inform ladder saddle filter soldier start ghost',
@@ -263,6 +273,7 @@ class TestCommandsTestnet(ElectrumTestCase):
         self.assertEqual("0200000000010115de15adc19661582a948876fbff49fa5deee24a158f1bec847d859cbd77e9e80100000000fdffffff04400d030000000000160014b450f5942ea3b0bb085e45f568fe49e72d3f28b0e09304000000000016001484770005f3783adcaafdece4e536dded3fbf798e12190f00000000001600141fb2ce607fffe4b193bbd11568cd7bf856053ce19ca5160000000000160014e8ea4cd62b6a65a2527124da12f5b7829dc1298f02473044022079570c62352d7c462ee50851d27f829f7ea5757d258b6b38a6b377a4910ba597022056653f1b15a9693ba790e89ebac60e33b7a1d8357e05cd3d7ecc1ae00e9ab4a8012102eed460ead0cbaa71ad52b70899acf4ea12682ab237207b045c5cf9c6d11c2bcfe6f31f00",
                          tx_str)
 
+    @unittest.skip(WALLETLESS_SIGNING_DISABLED)
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_signtransaction_without_wallet(self, mock_save_db):
         cmds = Commands(config=self.config)
@@ -271,6 +282,7 @@ class TestCommandsTestnet(ElectrumTestCase):
         self.assertEqual("020000000221d3645ba44f33fff6fe2666dc080279bc34b531c66888729712a80b204a32a1010000006a47304402205b30e188e30c846f98dacc714c16b7cd3a58a3fa24973d289683c9d32813e24c0220153855a29e96fb083084417ba3e3873ccaeb08435dad93773ab60716f94a36160121033f6737e40a3a6087bc58bc5b82b427f9ed26d710b8fe2f70bfdd3d62abebcf74fdffffffdd7f90d51acf98dc45ad7489316a983868c75e16bf14ffeb9eae01603a7b4da4010000006a473044022010daa3dadf53bdcb071c6eff6b8787e3f675ed61feb4fef72d0bf9d99c0162f802200e73abd880b6f2ee5fe8c0abab731f1dddeb0f60df5e050a79c365bd718da1c80121033f6737e40a3a6087bc58bc5b82b427f9ed26d710b8fe2f70bfdd3d62abebcf74fdffffff02e8030000000000001976a9149a9ec2b35a7660c80dae38dd806fdf9b0fde68fd88ac74c11000000000001976a914f0dc093f7fb1b76cfd06610d5359d6595676cc2b88aca79b1d00",
                          await cmds.signtransaction_with_privkey(tx=unsigned_tx, privkey=privkey))
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_signtransaction_with_wallet(self, mock_save_db):
         wallet = restore_wallet_from_text('bitter grass shiver impose acquire brush forget axis eager alone wine silver',
@@ -287,11 +299,12 @@ class TestCommandsTestnet(ElectrumTestCase):
 
         cmds = Commands(config=self.config)
 
-        unsigned_tx = "cHNidP8BAHECAAAAAQOSwZQOLsnyNykZyjiHMn/luYuGYCLMebq1y+1aU9KtAAAAAAD+////AigjAAAAAAAAFgAUaQtZqBQGAvsjzCkE7OnMTa82EFIwGw8AAAAAABYAFKwOLSKSAL/7IWftb9GWxnaWh9i7AAAAAAABAN8BAAAAAUV22sziZMJNgYh2Qrcm9dZKp4JbIbNQx7daV/M32mhFAQAAAGtIMEUCIQCj+LYVXHGpitmYbt1hYbINJPrZm2RjwjtGOFbA7lSCbQIgD2BgF/2YdpbrvlIA2u3eki7uJkMloYTVu9qWW6UWCCEBIQLlxHPAUdrjEEPDNSZtDvicHaqy802IXMdwayZ/MmnGCf////8CQEIPAAAAAAAWABSKKL3bf2GGS9z1iyrRPVrrOrw8QqLduQ4AAAAAGXapFMOElQNCy2+N9VF1tIWGg4sDEw+tiKwAAAAAIgYDD67ptKJbfbggI8qYkZJxLN1MtT09kzhZHHkJ5YGuHAwQsuNafQAAAIAAAAAAAAAAAAAiAgKFhOeJ459BORsvJ4UsoYq+wGpUEcIb41D+1h7scSDeUxCy41p9AAAAgAEAAAAAAAAAAAA="
+        unsigned_tx = "cHNidP8BAHECAAAAAQOSwZQOLsnyNykZyjiHMn/luYuGYCLMebq1y+1aU9KtAAAAAAD+////AigjAAAAAAAAFgAUaQtZqBQGAvsjzCkE7OnMTa82EFIwGw8AAAAAABYAFKwOLSKSAL/7IWftb9GWrvnWh9i7AAAAAAABAN8BAAAAAUV22sziZMJNgYh2Qrcm9dZKp4JbIbNQx7daV/M32mhFAQAAAGtIMEUCIQCj+LYVXHGpitmYbt1hYbINJPrZm2RjwjtGOFbA7lSCbQIgD2BgF/2YdpbrvlIA2u3eki7uJkMloYTVu9qWW6UWCCEBIQLlxHPAUdrjEEPDNSZtDvicHaqy802IXMdwayZ/MmnGCf////8CQEIPAAAAAAAWABSKKL3bf2GGS9z1iyrRPVrrOrw8QqLduQ4AAAAAGXapFMOElQNCy2+N9VF1tIWGg4sDEw+tiKwAAAAAIgYDD67ptKJbfbggI8qYkZJxLN1MtT09kzhZHHkJ5YGuHAwQsuNafQAAAIAAAAAAAAAAAAAiAgKFhOeJ459BORsvJ4UsoYq+wGpUEcIb41D+1h7scSDeUxCy41p9AAAAgAEAAAAAAAAAAAA="
 
         self.assertEqual("020000000001010392c1940e2ec9f2372919ca3887327fe5b98b866022cc79bab5cbed5a53d2ad0000000000feffffff022823000000000000160014690b59a8140602fb23cc2904ece9cc4daf361052301b0f0000000000160014ac0e2d229200bffb2167ed6fd196aef9d687d8bb02473044022027e1e37172e52b2d84106663cff5bcf6e447dcb41f6483f99584cfb4de2785f4022005c72f6324ad130c78fca43fe5fc565526d1723f2c9dc3efea78f66d7ae9d4360121030faee9b4a25b7db82023ca989192712cdd4cb53d3d9338591c7909e581ae1c0c00000000",
                          await cmds.signtransaction(tx=unsigned_tx, wallet=wallet))
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_bumpfee(self, mock_save_db):
         wallet = restore_wallet_from_text('right nominee cheese afford exotic pilot mask illness rug fringe degree pottery',

@@ -42,7 +42,7 @@ class TestDescriptor(ElectrumTestCase):
         self.assertEqual(e.output_script, unhexlify("0014d95fc47eada9e4c3cf59a2cbf9e96517c3ba2efa"))
         self.assertEqual(e.redeem_script, None)
         self.assertEqual(e.witness_script, None)
-        self.assertEqual(e.address(), "tb1qm90ugl4d48jv8n6e5t9ln6t9zlpm5th690vysp")
+        # no bech32 address for the p2wpkh output script: Neurai has no SegWit
 
     @as_testnet
     def test_parse_multisig_descriptor_with_origin(self):

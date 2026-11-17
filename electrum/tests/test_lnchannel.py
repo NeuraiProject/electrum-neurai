@@ -42,6 +42,11 @@ from electrum.coinchooser import PRNG
 from . import ElectrumTestCase
 
 
+# Lightning channels need SegWit (P2WSH funding outputs, p2wpkh wallets) and
+# Neurai has none (constants.net.SEGWIT_HRP == "").
+NO_LIGHTNING = "Neurai has no SegWit, so no Lightning"
+
+
 one_bitcoin_in_msat = bitcoin.COIN * 1000
 
 
@@ -198,6 +203,7 @@ def create_test_channels(*, feerate=6000, local_msat=None, remote_msat=None,
 
     return alice, bob
 
+@unittest.skip(NO_LIGHTNING)
 class TestFee(ElectrumTestCase):
     """
     test
@@ -209,6 +215,7 @@ class TestFee(ElectrumTestCase):
                                                           remote_msat=5000000000)
         self.assertIn(9999817, [x.value for x in alice_channel.get_latest_commitment(LOCAL).outputs()])
 
+@unittest.skip(NO_LIGHTNING)
 class TestChannel(ElectrumTestCase):
     maxDiff = 999
 
@@ -636,6 +643,7 @@ class TestChannel(ElectrumTestCase):
         self.assertIn('Not enough local balance', cm.exception.args[0])
 
 
+@unittest.skip(NO_LIGHTNING)
 class TestAvailableToSpend(ElectrumTestCase):
     def test_DesyncHTLCs(self):
         alice_channel, bob_channel = create_test_channels()
@@ -684,6 +692,7 @@ class TestAvailableToSpend(ElectrumTestCase):
         alice_channel.add_htlc(htlc_dict)
 
 
+@unittest.skip(NO_LIGHTNING)
 class TestChanReserve(ElectrumTestCase):
     def setUp(self):
         alice_channel, bob_channel = create_test_channels()
@@ -813,6 +822,7 @@ class TestChanReserve(ElectrumTestCase):
         self.assertEqual(self.alice_channel.available_to_spend(REMOTE), amt2)
         self.assertEqual(self.bob_channel.available_to_spend(LOCAL), amt2)
 
+@unittest.skip(NO_LIGHTNING)
 class TestDust(ElectrumTestCase):
     def test_DustLimit(self):
         alice_channel, bob_channel = create_test_channels()

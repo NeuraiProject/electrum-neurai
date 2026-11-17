@@ -50,14 +50,14 @@ SEED_TEST_CASES = {
         passphrase_hex=UNICODE_HORROR_HEX,
         bip32_seed='251ee6b45b38ba0849e8f40794540f7e2c6d9d604c31d68d3ac50c034f8b64e4bc037c5e1e985a2fed8aad23560e690b03b120daf2e84dceb1d7857dda042457'),
     'chinese': SeedTestCase(
-        lang='zh',
+        lang='zh_s',  # simplified Chinese wordlist code in this fork, see electrum.mnemonic.filenames
         words='眼 悲 叛 改 节 跃 衡 响 疆 股 遂 冬',
         words_hex='e79cbc20e682b220e58f9b20e694b920e88a8220e8b78320e8a1a120e5938d20e7968620e882a120e9818220e586ac',
         seed_version=SEED_PREFIX_SW,
         entropy=3083737086352778425940060465574397809099,
         bip32_seed='0b9077db7b5a50dbb6f61821e2d35e255068a5847e221138048a20e12d80b673ce306b6fe7ac174ebc6751e11b7037be6ee9f17db8040bb44f8466d519ce2abf'),
     'chinese_with_passphrase': SeedTestCase(
-        lang='zh',
+        lang='zh_s',  # simplified Chinese wordlist code in this fork, see electrum.mnemonic.filenames
         words='眼 悲 叛 改 节 跃 衡 响 疆 股 遂 冬',
         words_hex='e79cbc20e682b220e58f9b20e694b920e88a8220e8b78320e8a1a120e5938d20e7968620e882a120e9818220e586ac',
         seed_version=SEED_PREFIX_SW,

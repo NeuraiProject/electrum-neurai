@@ -184,8 +184,9 @@ class TestLNMsg(ElectrumTestCase):
             lnser.read_tlv_stream(fd=io.BytesIO(bfh("ffffffffffffffffff000000")), tlv_stream_name="n2")
 
     def test_encode_decode_msg__missing_mandatory_field_gets_set_to_zeroes(self):
+        # chain_hash is the one of constants.net (Neurai testnet)
         # "channel_update": "signature" missing -> gets set to zeroes
-        self.assertEqual(bfh("01020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000043497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea33090000000000d43100006f00025e6ed0830100009000000000000000c8000001f400000023000000003b9aca00"),
+        self.assertEqual(bfh("010200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000cfb0e3de75b86962ae7ecc818f76f912c73e4783025b60487429b8f86a00000000d43100006f00025e6ed0830100009000000000000000c8000001f400000023000000003b9aca00"),
                          encode_msg(
                              "channel_update",
                              short_channel_id=ShortChannelID.from_components(54321, 111, 2),
@@ -200,7 +201,7 @@ class TestLNMsg(ElectrumTestCase):
                              timestamp=1584320643,
                          ))
         self.assertEqual(('channel_update',
-                         {'chain_hash': b'CI\x7f\xd7\xf8&\x95q\x08\xf4\xa3\x0f\xd9\xce\xc3\xae\xbay\x97 \x84\xe9\x0e\xad\x01\xea3\t\x00\x00\x00\x00',
+                         {'chain_hash': bfh("cfb0e3de75b86962ae7ecc818f76f912c73e4783025b60487429b8f86a000000"),
                           'channel_flags': b'\x00',
                           'cltv_expiry_delta': 144,
                           'fee_base_msat': 500,
@@ -212,10 +213,10 @@ class TestLNMsg(ElectrumTestCase):
                           'signature': bytes(64),
                           'timestamp': 1584320643}
                           ),
-                         decode_msg(bfh("01020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000043497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea33090000000000d43100006f00025e6ed0830100009000000000000000c8000001f400000023000000003b9aca00")))
+                         decode_msg(bfh("010200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000cfb0e3de75b86962ae7ecc818f76f912c73e4783025b60487429b8f86a00000000d43100006f00025e6ed0830100009000000000000000c8000001f400000023000000003b9aca00")))
 
     def test_encode_decode_msg__ints_can_be_passed_as_bytes(self):
-        self.assertEqual(bfh("01020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000043497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea33090000000000d43100006f00025e6ed0830100009000000000000000c8000001f400000023000000003b9aca00"),
+        self.assertEqual(bfh("010200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000cfb0e3de75b86962ae7ecc818f76f912c73e4783025b60487429b8f86a00000000d43100006f00025e6ed0830100009000000000000000c8000001f400000023000000003b9aca00"),
                          encode_msg(
                              "channel_update",
                              short_channel_id=ShortChannelID.from_components(54321, 111, 2),
@@ -230,7 +231,7 @@ class TestLNMsg(ElectrumTestCase):
                              timestamp=int.to_bytes(1584320643, length=4, byteorder="big", signed=False),
                          ))
         self.assertEqual(('channel_update',
-                         {'chain_hash': b'CI\x7f\xd7\xf8&\x95q\x08\xf4\xa3\x0f\xd9\xce\xc3\xae\xbay\x97 \x84\xe9\x0e\xad\x01\xea3\t\x00\x00\x00\x00',
+                         {'chain_hash': bfh("cfb0e3de75b86962ae7ecc818f76f912c73e4783025b60487429b8f86a000000"),
                           'channel_flags': b'\x00',
                           'cltv_expiry_delta': 144,
                           'fee_base_msat': 500,
@@ -242,7 +243,7 @@ class TestLNMsg(ElectrumTestCase):
                           'signature': bytes(64),
                           'timestamp': 1584320643}
                           ),
-                         decode_msg(bfh("01020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000043497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea33090000000000d43100006f00025e6ed0830100009000000000000000c8000001f400000023000000003b9aca00")))
+                         decode_msg(bfh("010200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000cfb0e3de75b86962ae7ecc818f76f912c73e4783025b60487429b8f86a00000000d43100006f00025e6ed0830100009000000000000000c8000001f400000023000000003b9aca00")))
         # "htlc_minimum_msat" is passed as bytes but with incorrect length
         with self.assertRaises(UnexpectedFieldSizeForEncoder):
             encode_msg(

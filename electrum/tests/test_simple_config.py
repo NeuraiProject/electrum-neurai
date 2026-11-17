@@ -183,29 +183,31 @@ class Test_SimpleConfig(ElectrumTestCase):
         self.assertEqual(5_555_555, config.NETWORK_MAX_INCOMING_MSG_SIZE)
 
     def test_depth_target_to_fee(self):
+        # Neurai's minimum relay fee is 1000 sat/vbyte (0.01 XNA/kB), 1000x Bitcoin's,
+        # so the histogram fees are scaled by 1000 and the floor is 1000 * 1000 sat/kbyte
         config = SimpleConfig(self.options)
-        config.mempool_fees = [[49, 100110], [10, 121301], [6, 153731], [5, 125872], [1, 36488810]]
-        self.assertEqual( 2 * 1000, config.depth_target_to_fee(1000000))
-        self.assertEqual( 6 * 1000, config.depth_target_to_fee( 500000))
-        self.assertEqual( 7 * 1000, config.depth_target_to_fee( 250000))
-        self.assertEqual(11 * 1000, config.depth_target_to_fee( 200000))
-        self.assertEqual(50 * 1000, config.depth_target_to_fee( 100000))
+        config.mempool_fees = [[49000, 100110], [10000, 121301], [6000, 153731], [5000, 125872], [1000, 36488810]]
+        self.assertEqual( 1001 * 1000, config.depth_target_to_fee(1000000))
+        self.assertEqual( 5001 * 1000, config.depth_target_to_fee( 500000))
+        self.assertEqual( 6001 * 1000, config.depth_target_to_fee( 250000))
+        self.assertEqual(10001 * 1000, config.depth_target_to_fee( 200000))
+        self.assertEqual(49001 * 1000, config.depth_target_to_fee( 100000))
         config.mempool_fees = []
-        self.assertEqual( 1 * 1000, config.depth_target_to_fee(10 ** 5))
-        self.assertEqual( 1 * 1000, config.depth_target_to_fee(10 ** 6))
-        self.assertEqual( 1 * 1000, config.depth_target_to_fee(10 ** 7))
-        config.mempool_fees = [[1, 36488810]]
-        self.assertEqual( 2 * 1000, config.depth_target_to_fee(10 ** 5))
-        self.assertEqual( 2 * 1000, config.depth_target_to_fee(10 ** 6))
-        self.assertEqual( 2 * 1000, config.depth_target_to_fee(10 ** 7))
-        self.assertEqual( 1 * 1000, config.depth_target_to_fee(10 ** 8))
-        config.mempool_fees = [[5, 125872], [1, 36488810]]
-        self.assertEqual( 6 * 1000, config.depth_target_to_fee(10 ** 5))
-        self.assertEqual( 2 * 1000, config.depth_target_to_fee(10 ** 6))
-        self.assertEqual( 2 * 1000, config.depth_target_to_fee(10 ** 7))
-        self.assertEqual( 1 * 1000, config.depth_target_to_fee(10 ** 8))
+        self.assertEqual( 1000 * 1000, config.depth_target_to_fee(10 ** 5))
+        self.assertEqual( 1000 * 1000, config.depth_target_to_fee(10 ** 6))
+        self.assertEqual( 1000 * 1000, config.depth_target_to_fee(10 ** 7))
+        config.mempool_fees = [[1000, 36488810]]
+        self.assertEqual( 1001 * 1000, config.depth_target_to_fee(10 ** 5))
+        self.assertEqual( 1001 * 1000, config.depth_target_to_fee(10 ** 6))
+        self.assertEqual( 1001 * 1000, config.depth_target_to_fee(10 ** 7))
+        self.assertEqual( 1000 * 1000, config.depth_target_to_fee(10 ** 8))
+        config.mempool_fees = [[5000, 125872], [1000, 36488810]]
+        self.assertEqual( 5001 * 1000, config.depth_target_to_fee(10 ** 5))
+        self.assertEqual( 1001 * 1000, config.depth_target_to_fee(10 ** 6))
+        self.assertEqual( 1001 * 1000, config.depth_target_to_fee(10 ** 7))
+        self.assertEqual( 1000 * 1000, config.depth_target_to_fee(10 ** 8))
         config.mempool_fees = []
-        self.assertEqual(1 * 1000, config.depth_target_to_fee(10 ** 5))
+        self.assertEqual(1000 * 1000, config.depth_target_to_fee(10 ** 5))
         config.mempool_fees = None
         self.assertEqual(None, config.depth_target_to_fee(10 ** 5))
 

@@ -1,3 +1,5 @@
+import unittest
+
 from electrum import SimpleConfig
 from electrum.util import bfh
 from electrum.transaction import PartialTxInput, TxOutpoint
@@ -6,6 +8,12 @@ from electrum.submarine_swaps import SwapManager, SwapData
 from . import ElectrumTestCase
 
 
+# Submarine swaps use P2WSH scripts and a Lightning wallet; Neurai has no
+# SegWit (constants.net.SEGWIT_HRP == ""), hence no Lightning and no swaps.
+NO_LIGHTNING = "Neurai has no SegWit, so no Lightning or submarine swaps"
+
+
+@unittest.skip(NO_LIGHTNING)
 class TestSwapTxs(ElectrumTestCase):
     TESTNET = True
 

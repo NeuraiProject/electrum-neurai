@@ -21,8 +21,6 @@ from electrum.transaction import (TxOutput, Transaction, PartialTransaction, Par
 from electrum.mnemonic import seed_type
 from electrum.network import Network
 
-from electrum.plugins.trustedcoin import trustedcoin
-
 from . import ElectrumTestCase
 
 
@@ -104,9 +102,10 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
         self.assertEqual(w.txin_type, 'p2pkh')
 
-        self.assertEqual(w.get_receiving_addresses()[0], '1NNkttn1YvVGdqBW4PR6zvc3Zx3H5owKRf')
-        self.assertEqual(w.get_change_addresses()[0], '1KSezYMhAJMWqFbVFB2JshYg69UpmEXR4D')
+        self.assertEqual(w.get_receiving_addresses()[0], 'NhHj5eaHBV3hyoa6Md4zha2jvghGiwPqhb')
+        self.assertEqual(w.get_change_addresses()[0], 'NeMdBJ9xnruxBDz5YQgCaLyNSt8pQaxqUz')
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_electrum_seed_segwit(self, mock_save_db):
         seed_words = 'bitter grass shiver impose acquire brush forget axis eager alone wine silver'
@@ -129,6 +128,7 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         self.assertEqual('zprvAabC4ncjU4qVMNbpYZ5G4XqmKJoJN3EA4TVCodaPwyvEatrZpVYmWVHfKwS1fdq2uCdPyCmbjAjQ5FzeqHFSGv9KUmUFptTMAcyKzHiUM6Q',
                          ks.get_lightning_xprv(None))
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_electrum_seed_segwit_passphrase(self, mock_save_db):
         seed_words = 'bitter grass shiver impose acquire brush forget axis eager alone wine silver'
@@ -166,112 +166,8 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
         self.assertEqual(w.txin_type, 'p2pkh')
 
-        self.assertEqual(w.get_receiving_addresses()[0], '1FJEEB8ihPMbzs2SkLmr37dHyRFzakqUmo')
-        self.assertEqual(w.get_change_addresses()[0], '1KRW8pH6HFHZh889VDq6fEKvmrsmApwNfe')
-
-    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
-    async def test_electrum_seed_2fa_legacy_pre27(self, mock_save_db):
-        # pre-version-2.7 2fa seed
-        seed_words = 'bind clever room kidney crucial sausage spy edit canvas soul liquid ribbon slam open alpha suffer gate relax voice carpet law hill woman tonight abstract'
-        self.assertEqual(seed_type(seed_words), '2fa')
-
-        xprv1, xpub1, xprv2, xpub2 = trustedcoin.TrustedCoinPlugin.xkeys_from_seed(seed_words, '')
-
-        ks1 = keystore.from_xprv(xprv1)
-        self.assertTrue(isinstance(ks1, keystore.BIP32_KeyStore))
-        self.assertEqual(ks1.xprv, 'xprv9s21ZrQH143K2TsDemiaPqaTuBkW3gns4sGi9f65pWtg27nmmmAut6fErgaHFxj3d4rHgyFKjhvtAUafqF3wwU8Bkou8LefQgBtRWjUKN3V')
-        self.assertEqual(ks1.xpub, 'xpub661MyMwAqRbcEwwgkoFakyXCTDazT9WiS6CJx3VhNrRetv7vKJVARtyihwCVatSsUtVsEYcvdxhvDtkSk8qKV3VVtcL3csz6sQTbGzmEckd')
-        self.assertEqual(ks1.xpub, xpub1)
-
-        ks2 = keystore.from_xprv(xprv2)
-        self.assertTrue(isinstance(ks2, keystore.BIP32_KeyStore))
-        self.assertEqual(ks2.xprv, 'xprv9s21ZrQH143K3r6H1h91TqRECE7tmDB5PYGZDKPuSjefTzNbDMauUMUnjsUSv8X8nuzQsrtGmtCuA51CNz7XimRj2HPYxUxXGGf4KB7M74y')
-        self.assertEqual(ks2.xpub, 'xpub661MyMwAqRbcGLAk7ig1pyMxkFxPAftvkmCA1hoX15BeLnhjktuA29oGb7bh9opQgNERu6iWhwcY6b5bZX57dYsGo7zYjwXTNCryfKuPfek')
-        self.assertEqual(ks2.xpub, xpub2)
-
-        long_user_id, short_id = trustedcoin.get_user_id(
-            {'x1/': {'xpub': xpub1},
-             'x2/': {'xpub': xpub2}})
-        xtype = bip32.xpub_type(xpub1)
-        xpub3 = trustedcoin.make_xpub(trustedcoin.get_signing_xpub(xtype), long_user_id)
-        ks3 = keystore.from_xpub(xpub3)
-        WalletIntegrityHelper.check_xpub_keystore_sanity(self, ks3)
-        self.assertTrue(isinstance(ks3, keystore.BIP32_KeyStore))
-
-        w = WalletIntegrityHelper.create_multisig_wallet([ks1, ks2, ks3], '2of3', config=self.config)
-        self.assertEqual(w.txin_type, 'p2sh')
-
-        self.assertEqual(w.get_receiving_addresses()[0], '3Bw5jczNModhFAbvfwvUHbdGrC2Lh2qRQp')
-        self.assertEqual(w.get_change_addresses()[0], '3Ke6pKrmtSyyQaMob1ES4pk8siAAkRmst9')
-
-    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
-    async def test_electrum_seed_2fa_legacy_post27(self, mock_save_db):
-        # post-version-2.7 2fa seed
-        seed_words = 'kiss live scene rude gate step hip quarter bunker oxygen motor glove'
-        self.assertEqual(seed_type(seed_words), '2fa')
-
-        xprv1, xpub1, xprv2, xpub2 = trustedcoin.TrustedCoinPlugin.xkeys_from_seed(seed_words, '')
-
-        ks1 = keystore.from_xprv(xprv1)
-        self.assertTrue(isinstance(ks1, keystore.BIP32_KeyStore))
-        self.assertEqual(ks1.xprv, 'xprv9uraXy9F3HP7i8QDqwNTBiD8Jf4bPD4Epif8cS8qbUbgeidUesyZpKmzfcSeHutsGfFnjgih7kzwTB5UQVRNB5LoXaNc8pFusKYx3KVVvYR')
-        self.assertEqual(ks1.xpub, 'xpub68qvwUg8sewQvcUgwxuTYr9rrgu5nfn6BwajQpYT9p8fXWxdCRHpN86UWruWJAD1ede8Sv8ERrTa22Gyc4SBfm7zFpcyoVWVBKCVwnw6s1J')
-        self.assertEqual(ks1.xpub, xpub1)
-
-        ks2 = keystore.from_xprv(xprv2)
-        self.assertTrue(isinstance(ks2, keystore.BIP32_KeyStore))
-        self.assertEqual(ks2.xprv, 'xprv9uraXy9F3HP7kKSiRAvLV7Nrjj7YzspDys7dvGLLu4tLZT49CEBxPWp88dHhVxvZ69SHrPQMUCWjj4Ka2z9kNvs1HAeEf3extGGeSWqEVqf')
-        self.assertEqual(ks2.xpub, 'xpub68qvwUg8sewQxoXBXCTLrFKbHkx3QLY5M63EiejxTQRKSFPHjmWCwK8byvZMM2wZNYA3SmxXoma3M1zxhGESHZwtB7SwrxRgKXAG8dCD2eS')
-        self.assertEqual(ks2.xpub, xpub2)
-
-        long_user_id, short_id = trustedcoin.get_user_id(
-            {'x1/': {'xpub': xpub1},
-             'x2/': {'xpub': xpub2}})
-        xtype = bip32.xpub_type(xpub1)
-        xpub3 = trustedcoin.make_xpub(trustedcoin.get_signing_xpub(xtype), long_user_id)
-        ks3 = keystore.from_xpub(xpub3)
-        WalletIntegrityHelper.check_xpub_keystore_sanity(self, ks3)
-        self.assertTrue(isinstance(ks3, keystore.BIP32_KeyStore))
-
-        w = WalletIntegrityHelper.create_multisig_wallet([ks1, ks2, ks3], '2of3', config=self.config)
-        self.assertEqual(w.txin_type, 'p2sh')
-
-        self.assertEqual(w.get_receiving_addresses()[0], '35L8XmCDoEBKeaWRjvmZvoZvhp8BXMMMPV')
-        self.assertEqual(w.get_change_addresses()[0], '3PeZEcumRqHSPNN43hd4yskGEBdzXgY8Cy')
-
-    @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
-    async def test_electrum_seed_2fa_segwit(self, mock_save_db):
-        seed_words = 'universe topic remind silver february ranch shine worth innocent cattle enhance wise'
-        self.assertEqual(seed_type(seed_words), '2fa_segwit')
-
-        xprv1, xpub1, xprv2, xpub2 = trustedcoin.TrustedCoinPlugin.xkeys_from_seed(seed_words, '')
-
-        ks1 = keystore.from_xprv(xprv1)
-        self.assertTrue(isinstance(ks1, keystore.BIP32_KeyStore))
-        self.assertEqual(ks1.xprv, 'ZprvAm1R3RZMrkSLYKZer8QECGoc8oA1RQuKfsztHkBTmi2yF8RhmN1JRb7Ag69mMrL88sP67WiaegaSSDnKndorWEpFr7a5B2QgrD7TkERSYX6')
-        self.assertEqual(ks1.xpub, 'Zpub6yzmSw6Fh7zdkoe7x9wEZQkLgpzVpsdB36vV68b5L3Zx7vkrJuKYyPReXMSjBegmtUjFBxP2uZEdL87cYvtTtGaVuwtRRCTSFUsoAdKZMge')
-        self.assertEqual(ks1.xpub, xpub1)
-
-        ks2 = keystore.from_xprv(xprv2)
-        self.assertTrue(isinstance(ks2, keystore.BIP32_KeyStore))
-        self.assertEqual(ks2.xprv, 'ZprvAm1R3RZMrkSLab4jVKTwuroBgKEfnsmK9CQa1ErkuRzpsPauYuv9z2UzhDNn9YgbLHcmXpmxbNq4MdDRAUM5B2N9Wr3Uq9yp2c4AtTJDFdi')
-        self.assertEqual(ks2.xpub, 'Zpub6yzmSw6Fh7zdo59CbLzxGzjvEM5ACLVAWRLAodGNTmXokBv46TEQXpoUYUaoxPCeynysxg7APfScikCQ2jhCfM3NcNEk46BCVfSSrdrSkbR')
-        self.assertEqual(ks2.xpub, xpub2)
-
-        long_user_id, short_id = trustedcoin.get_user_id(
-            {'x1/': {'xpub': xpub1},
-             'x2/': {'xpub': xpub2}})
-        xtype = bip32.xpub_type(xpub1)
-        xpub3 = trustedcoin.make_xpub(trustedcoin.get_signing_xpub(xtype), long_user_id)
-        ks3 = keystore.from_xpub(xpub3)
-        WalletIntegrityHelper.check_xpub_keystore_sanity(self, ks3)
-        self.assertTrue(isinstance(ks3, keystore.BIP32_KeyStore))
-
-        w = WalletIntegrityHelper.create_multisig_wallet([ks1, ks2, ks3], '2of3', config=self.config)
-        self.assertEqual(w.txin_type, 'p2wsh')
-
-        self.assertEqual(w.get_receiving_addresses()[0], 'bc1qpmufh0zjp5prfsrk2yskcy82sa26srqkd97j0457andc6m0gh5asw7kqd2')
-        self.assertEqual(w.get_change_addresses()[0], 'bc1qd4q50nft7kxm9yglfnpup9ed2ukj3tkxp793y0zya8dc9m39jcwq308dxz')
+        self.assertEqual(w.get_receiving_addresses()[0], 'NaDCQvvzKwv3LqR33aRjjm3zL9uzGDZbL3')
+        self.assertEqual(w.get_change_addresses()[0], 'NeLUKa5Muor136WjnTUzMskd8bXktWZNY5')
 
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_bip39_seed_bip44_standard(self, mock_save_db):
@@ -289,8 +185,8 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
         self.assertEqual(w.txin_type, 'p2pkh')
 
-        self.assertEqual(w.get_receiving_addresses()[0], '16j7Dqk3Z9DdTdBtHcCVLaNQy9MTgywUUo')
-        self.assertEqual(w.get_change_addresses()[0], '1GG5bVeWgAp5XW7JLCphse14QaC4qiHyWn')
+        self.assertEqual(w.get_receiving_addresses()[0], 'NRe5QbYKBhn4obaUaqrP3Do7Kt1TTEcNhC')
+        self.assertEqual(w.get_change_addresses()[0], 'NbB3nFSnJjNWsUVtdSUbaHRkmJr4VKDZRr')
 
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_bip39_seed_bip44_standard_passphrase(self, mock_save_db):
@@ -308,9 +204,10 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
         self.assertEqual(w.txin_type, 'p2pkh')
 
-        self.assertEqual(w.get_receiving_addresses()[0], '1F88g2naBMhDB7pYFttPWGQgryba3hPevM')
-        self.assertEqual(w.get_change_addresses()[0], '1H4QD1rg2zQJ4UjuAVJr5eW1fEM8WMqyxh')
+        self.assertEqual(w.get_receiving_addresses()[0], 'Na36rnaqovFeX6D8Z8YHCuqPDiFZjJuuDi')
+        self.assertEqual(w.get_change_addresses()[0], 'NbyNPmewfYxjQT8VTixjnHvi1y189EoxGd')
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_bip39_seed_bip49_p2sh_segwit(self, mock_save_db):
         seed_words = 'treat dwarf wealth gasp brass outside high rent blood crowd make initial'
@@ -327,9 +224,10 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
         self.assertEqual(w.txin_type, 'p2wpkh-p2sh')
 
-        self.assertEqual(w.get_receiving_addresses()[0], '35ohQTdNykjkF1Mn9nAVEFjupyAtsPAK1W')
-        self.assertEqual(w.get_change_addresses()[0], '3KaBTcviBLEJajTEMstsA2GWjYoPzPK7Y7')
+        self.assertEqual(w.get_receiving_addresses()[0], 'p9fFgd1eVxdsqYyUtmUBYJE2KU2YT8udC2')
+        self.assertEqual(w.get_change_addresses()[0], 'pPRjjnJyhY8SBH4w6sCZU4kdE3f3aF9dMC')
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_bip39_seed_bip84_native_segwit(self, mock_save_db):
         # test case from bip84
@@ -369,9 +267,10 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         w = WalletIntegrityHelper.create_multisig_wallet([ks1, ks2], '2of2', config=self.config)
         self.assertEqual(w.txin_type, 'p2sh')
 
-        self.assertEqual(w.get_receiving_addresses()[0], '32ji3QkAgXNz6oFoRfakyD3ys1XXiERQYN')
-        self.assertEqual(w.get_change_addresses()[0], '36XWwEHrrVCLnhjK5MrVVGmUHghr9oWTN1')
+        self.assertEqual(w.get_receiving_addresses()[0], 'p6bGKa8SCjH7hLsWAetTHFY6MWPBLtEhZJ')
+        self.assertEqual(w.get_change_addresses()[0], 'pAP5DPg8Nh6UPFM1pMABoKFanBZVrnVNju')
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_electrum_multisig_seed_segwit(self, mock_save_db):
         seed_words = 'snow nest raise royal more walk demise rotate smooth spirit canyon gun'
@@ -414,9 +313,10 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         w = WalletIntegrityHelper.create_multisig_wallet([ks1, ks2], '2of2', config=self.config)
         self.assertEqual(w.txin_type, 'p2sh')
 
-        self.assertEqual(w.get_receiving_addresses()[0], '3JPTQ2nitVxXBJ1yhMeDwH6q417UifE3bN')
-        self.assertEqual(w.get_change_addresses()[0], '3FGyDuxgUDn2pSZe5xAJH1yUwSdhzDMyEE')
+        self.assertEqual(w.get_receiving_addresses()[0], 'pNF1gCAzQhremqdgSLwvFKawYVy8SZVALW')
+        self.assertEqual(w.get_change_addresses()[0], 'pK8XW5LwzRgAQzBLpwTzb4TbRwVMbHo5Ez')
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_bip39_multisig_seed_p2sh_segwit(self, mock_save_db):
         # bip39 seed: pulse mixture jazz invite dune enrich minor weapon mosquito flight fly vapor
@@ -435,8 +335,8 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         w = WalletIntegrityHelper.create_multisig_wallet([ks1, ks2], '2of2', config=self.config)
         self.assertEqual(w.txin_type, 'p2wsh-p2sh')
 
-        self.assertEqual(w.get_receiving_addresses()[0], '35LeC45QgCVeRor1tJD6LiDgPbybBXisns')
-        self.assertEqual(w.get_change_addresses()[0], '39RhtDchc6igmx5tyoimhojFL1ZbQBrXa6')
+        self.assertEqual(w.get_receiving_addresses()[0], 'p9CCUDTgCQPn2MTidHWnekhnt6qErwb1CS')
+        self.assertEqual(w.get_change_addresses()[0], 'pDHGANzy8JcpNVhbio2U1rDMpWREvothet')
 
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_bip32_extended_version_bytes(self, mock_save_db):
@@ -455,47 +355,20 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         self.assertEqual('033a05ec7ae9a9833b0696eb285a762f17379fa208b3dc28df1c501cf84fe415d0', ks.derive_pubkey(0, 0).hex())
         self.assertEqual('02bf27f41683d84183e4e930e66d64fc8af5508b4b5bf3c473c505e4dbddaeed80', ks.derive_pubkey(1, 0).hex())
 
+        # NOTE: the segwit xtypes (p2wpkh-p2sh, p2wpkh, p2wsh-p2sh, p2wsh) are not tested: Neurai has no SegWit
         ks = create_keystore_from_bip32seed(xtype='standard')  # p2pkh
         w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
         self.assertEqual(ks.xprv, 'xprv9s21ZrQH143K3nyWMZVjzGL4KKAE1zahmhTHuV5pdw4eK3o3igC5QywgQG7UTRe6TGBniPDpPFWzXMeMUFbBj8uYsfXGjyMmF54wdNt8QBm')
         self.assertEqual(ks.xpub, 'xpub661MyMwAqRbcGH3yTb2kMQGnsLziRTJZ8vNthsVSCGbdBr8CGDWKxnGAFYgyKTzBtwvPPmfVAWJuFmxRXjSbUTg87wDkWQ5GmzpfUcN9t8Z')
-        self.assertEqual(w.get_receiving_addresses()[0], '19fWEVaXqgJFFn7JYNr6ouxyjZy3uK7CdK')
-        self.assertEqual(w.get_change_addresses()[0], '1EEX7da31qndYyeKdbM665w1ze5gbkkAZZ')
-
-        ks = create_keystore_from_bip32seed(xtype='p2wpkh-p2sh')
-        w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
-        self.assertEqual(ks.xprv, 'yprvABrGsX5C9janu6AdBvHNCMRZVHJfxcaCgoyWgsyi1wSXN9cGyLMe33bpRU54TLJ1ruJbTrpNqusYQeFvBx1CXNb9k1DhKtBFWo8b1sLbXhN')
-        self.assertEqual(ks.xpub, 'ypub6QqdH2c5z7967aF6HwpNZVNJ3K9AN5J442u7VGPKaGyWEwwRWsftaqvJGkeZKNe7Jb3C9FG3dAfT94ZzFRrcGhMizGvB6Jtm3itJsEFhxMC')
-        self.assertEqual(w.get_receiving_addresses()[0], '34SAT5gGF5UaBhhSZ8qEuuxYvZ2cm7Zi23')
-        self.assertEqual(w.get_change_addresses()[0], '38unULZaetSGSKvDx7Krukh8zm8NQnxGiA')
-
-        ks = create_keystore_from_bip32seed(xtype='p2wpkh')
-        w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
-        self.assertEqual(ks.xprv, 'zprvAWgYBBk7JR8GkPMk2H4zQSX4fFT7uEZhbvVjUGsbPwpQRFRWDzXCf7FxSg2eTEwwGYRQDLQwJaE6HvsUueRDKcGkcLv7unzjnXCEQVWhrF9')
-        self.assertEqual(ks.xpub, 'zpub6jftahH18ngZxsSD8JbzmaToDHHcJhHYy9RLGfHCxHMPJ3kemXqTCuaSHxc9KHJ2iE9ztirc5q212MBYy8Gd4w3KrccbgDiFKSwxFpYKEH6')
-        self.assertEqual(w.get_receiving_addresses()[0], 'bc1qtuynwzd0d6wptvyqmc6ehkm70zcamxpshyzu5e')
-        self.assertEqual(w.get_change_addresses()[0], 'bc1qjy5zunxh6hjysele86qqywfa437z4xwmleq8wk')
+        self.assertEqual(w.get_receiving_addresses()[0], 'NUaURFNoUErgbkVtqcVzWZPg6Jd3d1SmCf')
+        self.assertEqual(w.get_change_addresses()[0], 'NZ9VJPNJeQM4tx2uvpzynjMiMNjgFuPw8X')
 
         ks = create_keystore_from_bip32seed(xtype='standard')  # p2sh
         w = WalletIntegrityHelper.create_multisig_wallet([ks], '1of1', config=self.config)
         self.assertEqual(ks.xprv, 'xprv9s21ZrQH143K3nyWMZVjzGL4KKAE1zahmhTHuV5pdw4eK3o3igC5QywgQG7UTRe6TGBniPDpPFWzXMeMUFbBj8uYsfXGjyMmF54wdNt8QBm')
         self.assertEqual(ks.xpub, 'xpub661MyMwAqRbcGH3yTb2kMQGnsLziRTJZ8vNthsVSCGbdBr8CGDWKxnGAFYgyKTzBtwvPPmfVAWJuFmxRXjSbUTg87wDkWQ5GmzpfUcN9t8Z')
-        self.assertEqual(w.get_receiving_addresses()[0], '3F4nm8Vunb7mxVvqhUP238PYge2hpU5qYv')
-        self.assertEqual(w.get_change_addresses()[0], '3N8jvKGmxzVHENn6B4zTdZt3N9bmRKjj96')
-
-        ks = create_keystore_from_bip32seed(xtype='p2wsh-p2sh')
-        w = WalletIntegrityHelper.create_multisig_wallet([ks], '1of1', config=self.config)
-        self.assertEqual(ks.xprv, 'YprvANkMzkodih9AKfL18akM2RmND5LwAyFo15dBc9FFPiGvzLBBjjjv8ATkEB2Y1mWv6NNaLSpVj8G3XosgVBA9frhpaUL6jHeFQXQTbqVPcv2')
-        self.assertEqual(ks.xpub, 'Ypub6bjiQGLXZ4hTY9QUEcHMPZi6m7BRaRyeNJYnQXerx3ous8WLHH4AfxnE5Tc2sos1Y47B1qGAWP3xGEBkYf1ZRBUPpk2aViMkwTABT6qoiBb')
-        self.assertEqual(w.get_receiving_addresses()[0], '3L1BxLLASGKE3DR1ruraWm3hZshGCKqcJx')
-        self.assertEqual(w.get_change_addresses()[0], '3NDGcbZVXTpaQWRhiuVPpXsNt4g2JiCX4E')
-
-        ks = create_keystore_from_bip32seed(xtype='p2wsh')
-        w = WalletIntegrityHelper.create_multisig_wallet([ks], '1of1', config=self.config)
-        self.assertEqual(ks.xprv, 'ZprvAhadJRUYsNgeAxX7xwXyEWrsP3VP7bFHvC9QPY98miep3RzQzPuUkE7tFNz81gAqW1VP5vR4BncbR6VFCsaAU6PRSp2XKCTjgFU6zRpk6Xp')
-        self.assertEqual(ks.xpub, 'Zpub6vZyhw1ShkEwPSbb4y4ybeobw5KsX3y9HR51BvYkL4BnvEKZXwDjJ2SN6fZcsiWvwhDymJriy3QW9WoKGMRaDR9zh5j15dBFDBDpqjK1ekQ')
-        self.assertEqual(w.get_receiving_addresses()[0], 'bc1q84x0yrztvcjg88qef4d6978zccxulcmc9y88xcg4ghjdau999x7q7zv2qe')
-        self.assertEqual(w.get_change_addresses()[0], 'bc1q0fj5mra96hhnum80kllklc52zqn6kppt3hyzr49yhr3ecr42z3tsrkg3gs')
+        self.assertEqual(w.get_receiving_addresses()[0], 'pJvM3HtBJo1uZ3YYSTgiMAsfB8tMSUYFJC')
+        self.assertEqual(w.get_change_addresses()[0], 'pRzJCUf3VCPQpvPnv4J9wcN9reTR2iM3yD')
 
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_slip39_basic_3of6_bip44_standard(self, mock_save_db):
@@ -521,9 +394,10 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
         self.assertEqual(w.txin_type, 'p2pkh')
 
-        self.assertEqual(w.get_receiving_addresses()[0], '1NomKAUNnbASwbPuGHmkSVmnrJS5tZeVce')
-        self.assertEqual(w.get_change_addresses()[0], '1Aw4wpXsAyEHSgMZqPdyewoAtJqH9Jaso3')
+        self.assertEqual(w.get_receiving_addresses()[0], 'NhijVvGeR9itHZnVZXRe99CVD365cd8QG3')
+        self.assertEqual(w.get_change_addresses()[0], 'NVr38aL8oXninekA8dHsMbDsF3VGsd6A3M')
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_slip39_basic_2of5_bip49_p2sh_segwit(self, mock_save_db):
         """
@@ -547,9 +421,10 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
         self.assertEqual(w.txin_type, 'p2wpkh-p2sh')
 
-        self.assertEqual(w.get_receiving_addresses()[0], '3GCgNoWWVqVdhBxWxrnWQHgwLtffGSYn7D')
-        self.assertEqual(w.get_change_addresses()[0], '3FVvdRhR7racZhmcvrGAqX9eJoP8Sw3ypp')
+        self.assertEqual(w.get_receiving_addresses()[0], 'pL4Eextn23PmHjaDhr6CiLB3qPXJt9cqQ9')
+        self.assertEqual(w.get_change_addresses()[0], 'pKMUub5ge4UkAFPKfqZs9ZdkoJEn3ZoS8Z')
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_slip39_groups_128bit_bip84_native_segwit(self, mock_save_db):
         """
@@ -580,6 +455,7 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         self.assertEqual(w.get_receiving_addresses()[0], 'bc1qaggygkqgqjjpt58zrmhvjz5m9dj8mjshw0lpgu')
         self.assertEqual(w.get_change_addresses()[0], 'bc1q8l6hcvlczu4mtjcnlwhczw7vdxnvwccpjl3cwz')
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_slip39_groups_256bit_bip49_p2sh_segwit(self, mock_save_db):
         """
@@ -605,8 +481,8 @@ class TestWalletKeystoreAddressIntegrityForMainnet(ElectrumTestCase):
         w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
         self.assertEqual(w.txin_type, 'p2wpkh-p2sh')
 
-        self.assertEqual(w.get_receiving_addresses()[0], '3FoqkcrEHgkKQ3iXStantygCetRGSRMMNE')
-        self.assertEqual(w.get_change_addresses()[0], '32tvTmBLfLofu8ps4SWpUJC4fS699jiWvC')
+        self.assertEqual(w.get_receiving_addresses()[0], 'pKfQ2nEVoteSzbLEBstVD2AK9PGv8V7zG4')
+        self.assertEqual(w.get_change_addresses()[0], 'p6kUjvZcBYhoVgSZoRpWnLgB9vwnoQCGJk')
 
 
 class TestWalletKeystoreAddressIntegrityForTestnet(ElectrumTestCase):
@@ -616,6 +492,7 @@ class TestWalletKeystoreAddressIntegrityForTestnet(ElectrumTestCase):
         super().setUp()
         self.config = SimpleConfig({'electrum_path': self.electrum_path})
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_bip39_multisig_seed_p2sh_segwit_testnet(self, mock_save_db):
         # bip39 seed: finish seminar arrange erosion sunny coil insane together pretty lunch lunch rose
@@ -654,26 +531,13 @@ class TestWalletKeystoreAddressIntegrityForTestnet(ElectrumTestCase):
         self.assertEqual('033a05ec7ae9a9833b0696eb285a762f17379fa208b3dc28df1c501cf84fe415d0', ks.derive_pubkey(0, 0).hex())
         self.assertEqual('02bf27f41683d84183e4e930e66d64fc8af5508b4b5bf3c473c505e4dbddaeed80', ks.derive_pubkey(1, 0).hex())
 
+        # NOTE: the segwit xtypes (p2wpkh-p2sh, p2wpkh, p2wsh-p2sh, p2wsh) are not tested: Neurai has no SegWit
         ks = create_keystore_from_bip32seed(xtype='standard')  # p2pkh
         w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
         self.assertEqual(ks.xprv, 'tprv8ZgxMBicQKsPecD328MF9ux3dSaSFWci7FNQmuWH7uZ86eY8i3XpvjK8KSH8To2QphiZiUqaYc6nzDC6bTw8YCB9QJjaQL5pAApN4z7vh2B')
         self.assertEqual(ks.xpub, 'tpubD6NzVbkrYhZ4Y5Epun1qZKcACU6NQqocgYyC4RYaYBMWw8nuLSMR7DvzVamkqxwRgrTJ1MBMhc8wwxT2vbHqMu8RBXy4BvjWMxR5EdZroxE')
-        self.assertEqual(w.get_receiving_addresses()[0], 'mpBTXYfWehjW2tavFwpUdqBJbZZkup13k2')
-        self.assertEqual(w.get_change_addresses()[0], 'mtkUQgf1psDtL67wMAKTv19LrdgPWy6GDQ')
-
-        ks = create_keystore_from_bip32seed(xtype='p2wpkh-p2sh')
-        w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
-        self.assertEqual(ks.xprv, 'uprv8tXDerPXZ1QsVuQ9rV8sN13YoQitC8cD2MtdZJQAVuw19kMMxhhPYnyGLeEiThgLELqNTxS91GTLsVofKAM9LRrkGeRzzEuJRtt1Tcostr7')
-        self.assertEqual(ks.xpub, 'upub57Wa4MvRPNyAiPUcxWfsj8zHMSZNbbL4PapEMgon4FTz2YgWWF1e6bHkBvpDKk2Rg2Zy9LsonXFFbv7jNeCZ5kdKWv8UkfcoxpdjJrZuBX6')
-        self.assertEqual(w.get_receiving_addresses()[0], '2MuzNWpcHrXyvPVKzEGT7Xrwp8uEnXXjWnK')
-        self.assertEqual(w.get_change_addresses()[0], '2MzTzY5VcGLwce7YmdEwjXhgQD7LYEKLJTm')
-
-        ks = create_keystore_from_bip32seed(xtype='p2wpkh')
-        w = WalletIntegrityHelper.create_standard_wallet(ks, config=self.config)
-        self.assertEqual(ks.xprv, 'vprv9DMUxX4ShgxMMCbGgqvVa693yNsL8kbhwUQrLhJ3svJtCrAbDMrxArdQMrCJTcLFdyxBDS2hTvotknRE2rmA8fYM8z8Ra9inhcwerEsG6Ev')
-        self.assertEqual(ks.xpub, 'vpub5SLqN2bLY4WeZgfjnsTVwE5nXQhpYDKZJhLT95hfSFqs5eVjkuBCiewtD8moKegM5fgmtpUNFBboVCjJ6LcZszJvPFpuLaSJEYhNhUAnrCS')
-        self.assertEqual(w.get_receiving_addresses()[0], 'tb1qtuynwzd0d6wptvyqmc6ehkm70zcamxpsaze002')
-        self.assertEqual(w.get_change_addresses()[0], 'tb1qjy5zunxh6hjysele86qqywfa437z4xwm4lm549')
+        self.assertEqual(w.get_receiving_addresses()[0], 'tFb7HHS81b9X7ppJef9aPqXtfdgrHG9JXx')
+        self.assertEqual(w.get_change_addresses()[0], 'tLA8ARRdBkduR2MKjseZg1VvvhoUti3UzY')
 
         ks = create_keystore_from_bip32seed(xtype='standard')  # p2sh
         w = WalletIntegrityHelper.create_multisig_wallet([ks], '1of1', config=self.config)
@@ -681,20 +545,6 @@ class TestWalletKeystoreAddressIntegrityForTestnet(ElectrumTestCase):
         self.assertEqual(ks.xpub, 'tpubD6NzVbkrYhZ4Y5Epun1qZKcACU6NQqocgYyC4RYaYBMWw8nuLSMR7DvzVamkqxwRgrTJ1MBMhc8wwxT2vbHqMu8RBXy4BvjWMxR5EdZroxE')
         self.assertEqual(w.get_receiving_addresses()[0], '2N6czpsRwQ3d8AHZPNbztf5NotzEsaZmVQ8')
         self.assertEqual(w.get_change_addresses()[0], '2NDgwz4CoaSzdSAQdrCcLFWsJaVowCNgiPA')
-
-        ks = create_keystore_from_bip32seed(xtype='p2wsh-p2sh')
-        w = WalletIntegrityHelper.create_multisig_wallet([ks], '1of1', config=self.config)
-        self.assertEqual(ks.xprv, 'Uprv95RJn67y7xyEvUZXo9brC5PMXCm9QVHoLdYJUZfhsgmQmvvGj75fduqC9MCC28uETouMLYSFtUqqzfRRcPW6UuyR77YQPeNJKd9t3XutF8b')
-        self.assertEqual(ks.xpub, 'Upub5JQfBberxLXY8xdzuB8rZDL65Ebdox1ehrTuGx5KS2JPejFRGePvBi9fzdmgtBFKuVdx1vsvfjdkj5jVfsMWEEjzMPEtA55orYubtrCZmRr')
-        self.assertEqual(w.get_receiving_addresses()[0], '2NBZQ25GC3ipaF13ZY3UT8i2xnDuS17pJqx')
-        self.assertEqual(w.get_change_addresses()[0], '2NDmUgLVX8vKvcJ4FQ37GSUre6QtBzKkb6k')
-
-        ks = create_keystore_from_bip32seed(xtype='p2wsh')
-        w = WalletIntegrityHelper.create_multisig_wallet([ks], '1of1', config=self.config)
-        self.assertEqual(ks.xprv, 'Vprv16YtLrHXxePM6noKqtFtMtmUgBE9bEpF3fPLmpvuPksssLostujtdHBwqhEeVuzESz22UY8hyPx9ed684SQpCmUKSVhpxPFbvVNY7qnviNR')
-        self.assertEqual(ks.xpub, 'Vpub5dEvVGKn7251zFq7jXvUmJRbFCk5ka19cxz84LyCp2gGhq4eXJZUomop1qjGt5uFK8kkmQUV8PzJcNM4PZmX2URbDiwJjyuJ8GyFHRrEmmG')
-        self.assertEqual(w.get_receiving_addresses()[0], 'tb1q84x0yrztvcjg88qef4d6978zccxulcmc9y88xcg4ghjdau999x7qf2696k')
-        self.assertEqual(w.get_change_addresses()[0], 'tb1q0fj5mra96hhnum80kllklc52zqn6kppt3hyzr49yhr3ecr42z3ts5777jl')
 
 
 class TestWalletSending(ElectrumTestCase):
@@ -710,6 +560,7 @@ class TestWalletSending(ElectrumTestCase):
         ks = keystore.from_seed(seed_words, '', False)
         return WalletIntegrityHelper.create_standard_wallet(ks, gap_limit=gap_limit, config=config)
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_sending_between_p2wpkh_and_compressed_p2pkh(self, mock_save_db):
         wallet1 = self.create_standard_wallet_from_seed('bitter grass shiver impose acquire brush forget axis eager alone wine silver')
@@ -833,10 +684,11 @@ class TestWalletSending(ElectrumTestCase):
         tx_copy = tx_from_any(tx.serialize())
         self.assertTrue(wallet2.is_mine(wallet2.adb.get_txin_address(tx_copy.inputs()[0])))
 
-        self.assertEqual('01000000011e83f7d0783543a4fbbb20636bcbc7fbdf04392a5b8aa1d2551e180819ee08b5000000008a473044022007569f938b5d7a7f529ceccc413363d84325c11d589c1897660bebfd5fd1cc4302203ef71fa42f9b31bb1e816af13b0bf725c493a0405433390c783cd9374713c5880141045f7ba332df2a7b4f5d13f246e307c9174cfa9b8b05f3b83410a3c23ef8958d610be285963d67c7bc1feb082f168fa9877c25999963ff8b56b242a852b23e25edfeffffff02a08601000000000017a914efe136b8275f49bc0f9871eebb9a48d0516229fd87280b0400000000001976a914ca14915184a2662b5d1505ce7142c8ca066c70e288ac00000000',
+        # the 265000 sat change is below the Neurai dust threshold (546000 sat), so it is added to the fee
+        self.assertEqual('01000000011e83f7d0783543a4fbbb20636bcbc7fbdf04392a5b8aa1d2551e180819ee08b5000000008a4730440220561642ee69f3268cc10207499ff21bf515ce666ed335b2254c217da9ea05044102207e6783b9dc8b651d3877bd86cd7ed5b05a4073a0dc0e532bdc24dc7b003902040141045f7ba332df2a7b4f5d13f246e307c9174cfa9b8b05f3b83410a3c23ef8958d610be285963d67c7bc1feb082f168fa9877c25999963ff8b56b242a852b23e25edfeffffff01a08601000000000017a914efe136b8275f49bc0f9871eebb9a48d0516229fd8700000000',
                          str(tx_copy))
-        self.assertEqual('30f6eec4db5e6b1dfe572dfbc7077661df9a15a2a1b7701612b906d3e1bee3d8', tx_copy.txid())
-        self.assertEqual('30f6eec4db5e6b1dfe572dfbc7077661df9a15a2a1b7701612b906d3e1bee3d8', tx_copy.wtxid())
+        self.assertEqual('27c8e4fe4c26ebe82b84ab609b2851e85c580839ec59f0ba3699f93f60af9237', tx_copy.txid())
+        self.assertEqual('27c8e4fe4c26ebe82b84ab609b2851e85c580839ec59f0ba3699f93f60af9237', tx_copy.wtxid())
         self.assertEqual(tx.wtxid(), tx_copy.wtxid())
 
         wallet1a.adb.receive_tx_callback(tx.txid(), tx, TX_HEIGHT_UNCONFIRMED)
@@ -844,8 +696,9 @@ class TestWalletSending(ElectrumTestCase):
 
         # wallet level checks
         self.assertEqual((0, funding_output_value - 370000 - 5000 + 100000, 0), wallet1a.get_balance())
-        self.assertEqual((0, 370000 - 5000 - 100000, 0), wallet2.get_balance())
+        self.assertEqual((0, 0, 0), wallet2.get_balance())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_sending_between_p2wsh_2of3_and_p2wsh_p2sh_2of2(self, mock_save_db):
         wallet1a = WalletIntegrityHelper.create_multisig_wallet(
@@ -1009,28 +862,11 @@ class TestWalletSending(ElectrumTestCase):
         wallet1a.adb.receive_tx_callback(tx.txid(), tx, TX_HEIGHT_UNCONFIRMED)
         wallet2.adb.receive_tx_callback(tx.txid(), tx, TX_HEIGHT_UNCONFIRMED)
 
-        # wallet2 -> wallet1
-        outputs = [PartialTxOutput.from_address_and_value(wallet1a.get_receiving_address(), 300000)]
-        tx = wallet2.mktx(outputs=outputs, password=None, fee=5000, tx_version=1, rbf=False)
-
-        self.assertTrue(tx.is_complete())
-        self.assertTrue(tx.is_segwit())
-        self.assertEqual(1, len(tx.inputs()))
-        tx_copy = tx_from_any(tx.serialize())
-        self.assertTrue(wallet2.is_mine(wallet2.adb.get_txin_address(tx_copy.inputs()[0])))
-
-        self.assertEqual('01000000000101e6f9dffd569129216d4d4fcb2ea98a623e40d7c615de0943a867f9f8b6d6494600000000171600149fad840ed174584ee054bd26f3e411817338c5edfeffffff02e09304000000000017a9145ae3933a6e13100f301f23227b98b0bdb5d16b8487d89a0a000000000017a9148ccd0efb2be5b412c4033715f560ed8f446c8ceb8702473044022020a3c46886b72f4ec561c5983a789098202307eae9679ff74fcb0879f65fff1d0220242ec3bfa747c513ef31874670d9c68ad235892588be55564696dd6690952e5a0121038362bbf0b4918b37e9d7c75930ed3a78e3d445724cb5c37ade4a59b6e411fe4e00000000',
-                         str(tx_copy))
-        self.assertEqual('ae5dcacdf9e3067e18fcfd33582c24f60f844730e7872049bb627796929879ee', tx_copy.txid())
-        self.assertEqual('f70bce6418fc44dcab41cbd466086aea54283821487189e4d15c4d1e2d1e267d', tx_copy.wtxid())
-        self.assertEqual(tx.wtxid(), tx_copy.wtxid())
-
-        wallet1a.adb.receive_tx_callback(tx.txid(), tx, TX_HEIGHT_UNCONFIRMED)
-        wallet2.adb.receive_tx_callback(tx.txid(), tx, TX_HEIGHT_UNCONFIRMED)
+        # NOTE: the wallet2 -> wallet1 leg (spending the p2wpkh-p2sh coin) is not tested: Neurai has no SegWit
 
         # wallet level checks
-        self.assertEqual((0, funding_output_value - 1000000 - 5000 + 300000, 0), wallet1a.get_balance())
-        self.assertEqual((0, 1000000 - 5000 - 300000, 0), wallet2.get_balance())
+        self.assertEqual((0, funding_output_value - 1000000 - 5000, 0), wallet1a.get_balance())
+        self.assertEqual((0, 1000000, 0), wallet2.get_balance())
 
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_rbf(self, mock_save_db):
@@ -1172,6 +1008,7 @@ class TestWalletSending(ElectrumTestCase):
         """This tests a regression where sometimes we created a replacement tx
         that spent from the original (which is clearly invalid).
         """
+        self.skipTest('Bitcoin vector amounts are below the Neurai dust threshold')
         wallet = self.create_standard_wallet_from_seed('amazing vapor slab rib chat cousin east float plug baby session weird',
                                                        config=config)
 
@@ -1211,6 +1048,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual((0, 461600, 0), wallet.get_balance())
 
     async def _bump_fee_p2wpkh_decrease_payment(self, *, simulate_moving_txs, config):
+        self.skipTest('Neurai has no SegWit')
         wallet = self.create_standard_wallet_from_seed('leader company camera enlist crash sleep insane aware anger hole hammer label',
                                                        config=config)
 
@@ -1253,6 +1091,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual((0, 45000, 0), wallet.get_balance())
 
     async def _bump_fee_p2wpkh_decrease_payment_batch(self, *, simulate_moving_txs, config):
+        self.skipTest('Neurai has no SegWit')
         wallet = self.create_standard_wallet_from_seed('leader company camera enlist crash sleep insane aware anger hole hammer label',
                                                        config=config)
 
@@ -1295,6 +1134,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual((0, 18700, 0), wallet.get_balance())
 
     async def _bump_fee_p2wpkh_insane_high_target_fee(self, *, config):
+        self.skipTest('Neurai has no SegWit')
         wallet = self.create_standard_wallet_from_seed('leader company camera enlist crash sleep insane aware anger hole hammer label',
                                                        config=config)
 
@@ -1365,6 +1205,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual((0, funding_output_value - 50000, 0), wallet.get_balance())
 
     async def _bump_fee_p2wpkh_when_there_is_a_change_address(self, *, simulate_moving_txs, config):
+        self.skipTest('Neurai has no SegWit')
         wallet = self.create_standard_wallet_from_seed('frost repair depend effort salon ring foam oak cancel receive save usage',
                                                        config=config)
 
@@ -1429,6 +1270,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual((0, 7490060, 0), wallet.get_balance())
 
     async def _bump_fee_when_not_all_inputs_are_ismine_subcase_some_outputs_are_ismine_but_not_all(self, *, simulate_moving_txs, config):
+        self.skipTest('Neurai has no SegWit')
         class NetworkMock:
             relay_fee = 1000
             async def get_transaction(self, txid, timeout=None):
@@ -1485,6 +1327,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual('6a8ed07cd97a10ace851b67a65035f04ff477d67cde62bb8679007e87b214e79', tx_copy.txid())
 
     async def _bump_fee_when_not_all_inputs_are_ismine_subcase_all_outputs_are_ismine(self, *, simulate_moving_txs, config):
+        self.skipTest('Neurai has no SegWit')
         class NetworkMock:
             relay_fee = 1000
             async def get_transaction(self, txid, timeout=None):
@@ -1545,6 +1388,7 @@ class TestWalletSending(ElectrumTestCase):
 
 
     async def _bump_fee_p2wpkh_when_there_is_only_a_single_output_and_that_is_a_change_address(self, *, simulate_moving_txs, config):
+        self.skipTest('Neurai has no SegWit')
         wallet = self.create_standard_wallet_from_seed('frost repair depend effort salon ring foam oak cancel receive save usage',
                                                        config=config)
 
@@ -1607,6 +1451,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual((0, 9991750, 0), wallet.get_balance())
 
     async def _bump_fee_when_user_sends_max(self, *, simulate_moving_txs, config):
+        self.skipTest('Neurai has no SegWit')
         wallet = self.create_standard_wallet_from_seed('frost repair depend effort salon ring foam oak cancel receive save usage',
                                                        config=config)
 
@@ -1670,6 +1515,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual((0, 0, 0), wallet.get_balance())
 
     async def _bump_fee_when_new_inputs_need_to_be_added(self, *, simulate_moving_txs, config):
+        self.skipTest('Neurai has no SegWit')
         wallet = self.create_standard_wallet_from_seed('frost repair depend effort salon ring foam oak cancel receive save usage',
                                                        config=config)
 
@@ -1742,6 +1588,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual((0, 4_990_300, 0), wallet.get_balance())
 
     async def _rbf_batching(self, *, simulate_moving_txs, config):
+        self.skipTest('Neurai has no SegWit')
         wallet = self.create_standard_wallet_from_seed('frost repair depend effort salon ring foam oak cancel receive save usage',
                                                        config=config)
         wallet.config.WALLET_BATCH_RBF = True
@@ -1853,6 +1700,7 @@ class TestWalletSending(ElectrumTestCase):
         wallet.adb.receive_tx_callback(tx.txid(), tx, TX_HEIGHT_UNCONFIRMED)
         self.assertEqual((0, 3_900_000, 0), wallet.get_balance())
 
+    @unittest.skip('Neurai has no SegWit')
     async def test_rbf_batching__cannot_batch_as_would_need_to_use_ismine_outputs_of_basetx(self):
         """Wallet history contains unconf tx1 that spends all its coins to two ismine outputs,
         one 'recv' address (20k sats) and one 'change' (80k sats).
@@ -1888,6 +1736,7 @@ class TestWalletSending(ElectrumTestCase):
                 self.assertEqual('02000000000102bbef0182c2c746bd28517b6fd27ba9eef9c7fb5982efd27bd612cc5a28615a3a0000000000fdffffffbbef0182c2c746bd28517b6fd27ba9eef9c7fb5982efd27bd612cc5a28615a3a0100000000fdffffff02602200000000000016001413fabce9be995554a722fc4e1c5ae53ebfd58164905f010000000000160014b266f4f1b9f0bc72f090573d049df66d4efa082c0247304402205c50b9ddb1b3ead6214d7d9707c74ba29ff547880d017aae2459db156bf85b9b022041134562fffa3dccf1ac05d9b07da62a8d57dd158d25d22d1965a011325e64aa012102c72b815ba00ccb0b469cc61a0ceb843d974e630cf34abcfac178838f1974f68f02473044022049774c32b0ad046b7acdb4acc38107b6b1be57c0d167643a48cbc045850c86c202205189ed61342fc52a377c2865a879c4c2606de98eebd6bf4d73874d62329668c70121033484c8ed83c359d1c3e569accb04b77988daab9408fc82869051c10d0749ac2006fa2400',
                                  str(tx))
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_cpfp_p2wpkh(self, mock_save_db):
         wallet = self.create_standard_wallet_from_seed('frost repair depend effort salon ring foam oak cancel receive save usage')
@@ -1924,7 +1773,7 @@ class TestWalletSending(ElectrumTestCase):
     async def test_sweep_uncompressed_p2pk(self):
         class NetworkMock:
             relay_fee = 1000
-            async def listunspent_for_scripthash(self, scripthash):
+            async def listunspent_for_scripthash(self, scripthash, *, asset=False):
                 if scripthash == '460e4fb540b657d775d84ff4955c9b13bd954c2adc26a6b998331343f85b6a45':
                     return [{'tx_hash': 'ac24de8b58e826f60bd7b9ba31670bdfc3e8aedb2f28d0e91599d741569e3429', 'tx_pos': 1, 'height': 1325785, 'value': 1000000}]
                 else:
@@ -1937,19 +1786,20 @@ class TestWalletSending(ElectrumTestCase):
 
         privkeys = ['93NQ7CFbwTPyKDJLXe97jczw33fiLijam2SCZL3Uinz1NSbHrTu',]
         network = NetworkMock()
-        dest_addr = 'tb1q3ws2p0qjk5vrravv065xqlnkckvzcpclk79eu2'
+        dest_addr = 'tKetQ5MaMdRzPd4DhuvJboL9tQLMMtK8Dk'  # p2pkh, same hash160 as tb1q3ws2p0qjk5vrravv065xqlnkckvzcpclk79eu2
         tx = await sweep(privkeys, network=network, config=self.config, to_address=dest_addr, fee=5000, locktime=1325785, tx_version=1)
 
+        # note: sweep() does not signal RBF in this fork, so nSequence is 0xfffffffe
         tx_copy = tx_from_any(tx.serialize())
-        self.assertEqual('010000000129349e5641d79915e9d0282fdbaee8c3df0b6731bab9d70bf626e8588bde24ac010000004847304402206bf0d0a93abae0d5873a62ebf277a5dd2f33837821e8b93e74d04e19d71b578002201a6d729bc159941ef5c4c9e5fe13ece9fc544351ba531b00f68ba549c8b38a9a01fdffffff01b82e0f00000000001600148ba0a0bc12b51831f58c7ea8607e76c5982c071fd93a1400',
+        self.assertEqual('010000000129349e5641d79915e9d0282fdbaee8c3df0b6731bab9d70bf626e8588bde24ac0100000048473044022033ce803c609ad75ade5fe93b02b2d7db42e8fabc02726bfb6393cde86267c98702204b9d4248524375ad6917d5bdb46ce5c9ba143b265afa6a38aa226f863972a1e201feffffff01b82e0f00000000001976a9148ba0a0bc12b51831f58c7ea8607e76c5982c071f88acd93a1400',
                          str(tx_copy))
-        self.assertEqual('7f827fc5256c274fd1094eb7e020c8ded0baf820356f61aa4f14a9093b0ea0ee', tx_copy.txid())
-        self.assertEqual('7f827fc5256c274fd1094eb7e020c8ded0baf820356f61aa4f14a9093b0ea0ee', tx_copy.wtxid())
+        self.assertEqual('9de3a810b20449b9480b510b634af24b8a9f10e5badb956a4ce2f4e6b3d2e3a0', tx_copy.txid())
+        self.assertEqual('9de3a810b20449b9480b510b634af24b8a9f10e5badb956a4ce2f4e6b3d2e3a0', tx_copy.wtxid())
 
     async def test_sweep_compressed_p2pk(self):
         class NetworkMock:
             relay_fee = 1000
-            async def listunspent_for_scripthash(self, scripthash):
+            async def listunspent_for_scripthash(self, scripthash, *, asset=False):
                 if scripthash == 'cc911adb9fb939d0003a138ebdaa5195bf1d6f9172e438309ab4c00a5ebc255b':
                     return [{'tx_hash': '84a4a1943f7a620e0d8413f4c10877000768797a93bb106b3e7cd6fccc59b35e', 'tx_pos': 1, 'height': 2420005, 'value': 111111}]
                 else:
@@ -1962,19 +1812,19 @@ class TestWalletSending(ElectrumTestCase):
 
         privkeys = ['cUygTZe4jZLVwE4G44NznCPTeGvgsgassqucUHkAJxGC71Rst2kH',]
         network = NetworkMock()
-        dest_addr = 'tb1q5uy5xjcn55gwdkmghht8yp3vwz3088f6e3e0em'
-        tx = await sweep(privkeys, network=network, config=self.config, to_address=dest_addr, fee=5000, locktime=2420006, tx_version=2)
-
-        tx_copy = tx_from_any(tx.serialize())
-        self.assertEqual('02000000015eb359ccfcd67c3e6b10bb937a796807007708c1f413840d0e627a3f94a1a48401000000484730440220043fc85a43e918ac41e494e309fdf204ca245d260cb5ea09108b196ca65d8a09022056f852f0f521e79ab2124d7e9f779c7290329ce5628ef8e92601980b065d3eb501fdffffff017f9e010000000000160014a709434b13a510e6db68bdd672062c70a2f39d3a26ed2400',
-                         str(tx_copy))
-        self.assertEqual('968a501350b954ecb51948202b8d0613aa84123ca9b745c14e208cb14feeff59', tx_copy.txid())
-        self.assertEqual('968a501350b954ecb51948202b8d0613aa84123ca9b745c14e208cb14feeff59', tx_copy.wtxid())
+        dest_addr = 'tN9ozRSXH5WdzJKam1K6kW6kW96TK3rGE6'  # p2pkh, same hash160 as tb1q5uy5xjcn55gwdkmghht8yp3vwz3088f6e3e0em
+        # 111111 sat is below the Neurai dust threshold (3 * 182 bytes at the 0.01 XNA/kB minimum relay fee = 546000 sat),
+        # so the coin is found but sweeping it is refused.
+        with self.assertRaises(Exception) as ctx:
+            await sweep(privkeys, network=network, config=self.config, to_address=dest_addr, fee=5000, locktime=2420006, tx_version=2)
+        self.assertIn('Not enough funds on address.', str(ctx.exception))
+        self.assertIn('Total: 111111 satoshis', str(ctx.exception))
+        self.assertIn('Dust Threshold: 546000', str(ctx.exception))
 
     async def test_sweep_uncompressed_p2pkh(self):
         class NetworkMock:
             relay_fee = 1000
-            async def listunspent_for_scripthash(self, scripthash):
+            async def listunspent_for_scripthash(self, scripthash, *, asset=False):
                 if scripthash == '71e8c6a9fd8ab498290d5ccbfe1cfe2c5dc2a389b4c036dd84e305a59c4a4d53':
                     return [{'tx_hash': '15a78cc7664c42f1040474763bf794d555f6092bfba97d6c276f296c2d141506', 'tx_pos': 0, 'height': -1, 'value': 222222}]
                 else:
@@ -1987,19 +1837,19 @@ class TestWalletSending(ElectrumTestCase):
 
         privkeys = ['p2pkh:91gxDahzHiJ63HXmLP7pvZrkF8i5gKBXk4VqWfhbhJjtf6Ni5NU',]
         network = NetworkMock()
-        dest_addr = 'tb1q3ws2p0qjk5vrravv065xqlnkckvzcpclk79eu2'
-        tx = await sweep(privkeys, network=network, config=self.config, to_address=dest_addr, fee=5000, locktime=2420010, tx_version=2)
-
-        tx_copy = tx_from_any(tx.serialize())
-        self.assertEqual('02000000010615142d6c296f276c7da9fb2b09f655d594f73b76740404f1424c66c78ca715000000008a47304402206d2dae571ca2f51e0d4a8ce6a6335fa25ac09f4bbed26439124d93f035bdbb130220249dc2039f1da338a40679f0e79c25a2dc2983688e6c04753348f2aa8435e375014104b875ab889006d4a9be8467c9256cf54e1073f7f9a037604f571cc025bbf47b2987b4c862d5b687bb5328adccc69e67a17b109b6328228695a1c384573acd6199fdffffff0186500300000000001600148ba0a0bc12b51831f58c7ea8607e76c5982c071f2aed2400',
-                         str(tx_copy))
-        self.assertEqual('d62048493bf8459be5e1e3cab6caabc8f15661d02c364d8dc008297e573772bf', tx_copy.txid())
-        self.assertEqual('d62048493bf8459be5e1e3cab6caabc8f15661d02c364d8dc008297e573772bf', tx_copy.wtxid())
+        dest_addr = 'tKetQ5MaMdRzPd4DhuvJboL9tQLMMtK8Dk'  # p2pkh, same hash160 as tb1q3ws2p0qjk5vrravv065xqlnkckvzcpclk79eu2
+        # 222222 sat is below the Neurai dust threshold (3 * 182 bytes at the 0.01 XNA/kB minimum relay fee = 546000 sat),
+        # so the coin is found but sweeping it is refused.
+        with self.assertRaises(Exception) as ctx:
+            await sweep(privkeys, network=network, config=self.config, to_address=dest_addr, fee=5000, locktime=2420010, tx_version=2)
+        self.assertIn('Not enough funds on address.', str(ctx.exception))
+        self.assertIn('Total: 222222 satoshis', str(ctx.exception))
+        self.assertIn('Dust Threshold: 546000', str(ctx.exception))
 
     async def test_sweep_compressed_p2pkh(self):
         class NetworkMock:
             relay_fee = 1000
-            async def listunspent_for_scripthash(self, scripthash):
+            async def listunspent_for_scripthash(self, scripthash, *, asset=False):
                 if scripthash == '941b2ca8bd850e391abc5e024c83b773842c40268a8fa8a5ef7aeca19fb395c5':
                     return [{'tx_hash': '8a764102b4a5c5d1b5235e6ce7e67ed3c146130f8a52e7692a151e2e5a831767', 'tx_pos': 0, 'height': -1, 'value': 123456}]
                 else:
@@ -2012,19 +1862,20 @@ class TestWalletSending(ElectrumTestCase):
 
         privkeys = ['p2pkh:cN3LiXmurmGRF5xngYd8XS2ZsP2KeXFUh4SH7wpC8uJJzw52JPq1',]
         network = NetworkMock()
-        dest_addr = 'tb1q782f750ekkxysp2rrscr6yknmn634e2pv8lktu'
-        tx = await sweep(privkeys, network=network, config=self.config, to_address=dest_addr, fee=1000, locktime=2420010, tx_version=2)
+        dest_addr = 'tUyHcHK4FFmt1SARbHqkjXqNx3d67tTfYT'  # p2pkh, same hash160 as tb1q782f750ekkxysp2rrscr6yknmn634e2pv8lktu
+        # 123456 sat is below the Neurai dust threshold (3 * 182 bytes at the 0.01 XNA/kB minimum relay fee = 546000 sat),
+        # so the coin is found but sweeping it is refused.
+        with self.assertRaises(Exception) as ctx:
+            await sweep(privkeys, network=network, config=self.config, to_address=dest_addr, fee=1000, locktime=2420010, tx_version=2)
+        self.assertIn('Not enough funds on address.', str(ctx.exception))
+        self.assertIn('Total: 123456 satoshis', str(ctx.exception))
+        self.assertIn('Dust Threshold: 546000', str(ctx.exception))
 
-        tx_copy = tx_from_any(tx.serialize())
-        self.assertEqual('02000000016717835a2e1e152a69e7528a0f1346c1d37ee6e76c5e23b5d1c5a5b40241768a000000006a473044022038ad38003943bfd3ed39ba4340d545753fcad632a8fe882d01e4f0140ddb3cfb022019498260e29f5fbbcde9176bfb3553b7acec5fe284a9a3a33547a2d082b60355012103b875ab889006d4a9be8467c9256cf54e1073f7f9a037604f571cc025bbf47b29fdffffff0158de010000000000160014f1d49f51f9b58c4805431c303d12d3dcf51ae5412aed2400',
-                         str(tx_copy))
-        self.assertEqual('432c108626581fc6a7d3efc9dac5f3dec8286cec47dfaab86b4267d10381586c', tx_copy.txid())
-        self.assertEqual('432c108626581fc6a7d3efc9dac5f3dec8286cec47dfaab86b4267d10381586c', tx_copy.wtxid())
-
+    @unittest.skip('Neurai has no SegWit')
     async def test_sweep_p2wpkh_p2sh(self):
         class NetworkMock:
             relay_fee = 1000
-            async def listunspent_for_scripthash(self, scripthash):
+            async def listunspent_for_scripthash(self, scripthash, *, asset=False):
                 if scripthash == '9ee9bddbe9dc47f7f6c5a652a09012f49dfc54d5b997f58d7ccc49040871e61b':
                     return [{'tx_hash': '9a7bf98ed72b1002559d3d61805838a00e94afec78b8597a68606e2a0725171d', 'tx_pos': 0, 'height': -1, 'value': 150000}]
                 else:
@@ -2046,10 +1897,11 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual('0680124954ccc158cbf24d289c93579f68fd75916509214066f69e09adda1861', tx_copy.txid())
         self.assertEqual('da8567d9b28e9e0ed8b3dcef6e619eba330cec6cb0c55d57f658f5ca06e02eb0', tx_copy.wtxid())
 
+    @unittest.skip('Neurai has no SegWit')
     async def test_sweep_p2wpkh(self):
         class NetworkMock:
             relay_fee = 1000
-            async def listunspent_for_scripthash(self, scripthash):
+            async def listunspent_for_scripthash(self, scripthash, *, asset=False):
                 if scripthash == '7630f6b2121336279b55e5b71d4a59be5ffa782e86bae249ba0b5ad6a791933f':
                     return [{'tx_hash': '01d76acdb8992f4262fb847f5efbd95ea178049be59c70a2851bdcf9b4ae28e3', 'tx_pos': 0, 'height': 2420006, 'value': 98300}]
                 else:
@@ -2071,6 +1923,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual('e02641928e5394332eec0a36c196f1e30e2b8645ebbeef89d6cc27bf237ae548', tx_copy.txid())
         self.assertEqual('b062d2e19880c66b36e80b823c2d00a2769658d1e574ff854dab15efd8fd7da8', tx_copy.wtxid())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_coinjoin_between_two_p2wpkh_electrum_seeds(self, mock_save_db):
         wallet1 = WalletIntegrityHelper.create_standard_wallet(
@@ -2155,6 +2008,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual((0, 10995000, 0), wallet1.get_balance())
         self.assertEqual((0, 10495000, 0), wallet2.get_balance())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_standard_wallet_cannot_sign_multisig_input_even_if_cosigner(self, mock_save_db):
         """Just because our keystore recognizes the pubkeys in a txin, if the prevout does not belong to the wallet,
@@ -2243,7 +2097,7 @@ class TestWalletSending(ElectrumTestCase):
         wallet.adb.receive_tx_callback(funding_txid, funding_tx, TX_HEIGHT_UNCONFIRMED)
 
         # create tx
-        outputs = [PartialTxOutput.from_address_and_value('miFLSDZBXUo4on8PGhTRTAufUn4mP61uoH', '!')]
+        outputs = [PartialTxOutput.from_address_and_value('t9ezBxKntND5tiMmfQnXDBGFYrBri26CCm', '!')]
         coins = wallet.get_spendable_coins(domain=None)
         tx = wallet.make_unsigned_transaction(coins=coins, outputs=outputs, fee=5000)
         tx.set_rbf(True)
@@ -2277,6 +2131,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertFalse(tx_details.can_dscancel)
 
     async def _dscancel_p2wpkh_when_there_is_a_change_address(self, *, simulate_moving_txs, config):
+        self.skipTest('Neurai has no SegWit')
         wallet = self.create_standard_wallet_from_seed('frost repair depend effort salon ring foam oak cancel receive save usage',
                                                        config=config)
 
@@ -2343,6 +2198,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual((0, 9992300, 0), wallet.get_balance())
 
     async def _dscancel_when_user_sends_max(self, *, simulate_moving_txs, config):
+        self.skipTest('Neurai has no SegWit')
         wallet = self.create_standard_wallet_from_seed('frost repair depend effort salon ring foam oak cancel receive save usage',
                                                        config=config)
 
@@ -2408,6 +2264,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual((0, 9992300, 0), wallet.get_balance())
 
     async def _dscancel_when_not_all_inputs_are_ismine(self, *, simulate_moving_txs, config):
+        self.skipTest('Neurai has no SegWit')
         class NetworkMock:
             relay_fee = 1000
             async def get_transaction(self, txid, timeout=None):
@@ -2463,6 +2320,7 @@ class TestWalletSending(ElectrumTestCase):
                          str(tx_copy))
         self.assertEqual('3021a4fe24e33af9d0ccdf25c478387c97df671fe1fd8b4db0de4255b3a348c5', tx_copy.txid())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_wallet_history_chain_of_unsigned_transactions(self, mock_save_db):
         wallet = self.create_standard_wallet_from_seed('cross end slow expose giraffe fuel track awake turtle capital ranch pulp',
@@ -2505,6 +2363,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual("bf08206effded4126a95fbed375cedc0452b5e16a5d2025ac645dfae81addbe4:0",
                          coins[0].prevout.to_str())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_wallet_does_not_create_zero_input_tx(self, mock_save_db):
         wallet = self.create_standard_wallet_from_seed('cross end slow expose giraffe fuel track awake turtle capital ranch pulp',
@@ -2529,6 +2388,7 @@ class TestWalletSending(ElectrumTestCase):
             self.assertEqual(1, len(tx.inputs()))
             self.assertEqual(2, len(tx.outputs()))
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_imported_wallet_usechange_off(self, mock_save_db):
         wallet = restore_wallet_from_text(
@@ -2565,6 +2425,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual('02000000000101ce010c0cab95cde544f713771916613a1a84c8787bbc95321854410b212aed9b0100000000fdffffff02cac00000000000001600147a65e09bb1da80abfc65d545388a2e61aab7c721eec100000000000016001405424089c64d39d9a498b6e1c8e646327431b240024730440220526eac6c56cba19842b67f6c9e45af113b1a2d44fb229335bdeaf08cb2cc164e0220087fba65619016fd3f62f6c8717070e48f94b45743b86d8e0517698d2b9c3afc012102d67eaa10463f5c786271feb9ae3456c27d35c3cf6c7d881617e915d1f32cb875c4951e00',
                          str(tx_copy))
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_imported_wallet_usechange_on(self, mock_save_db):
         wallet = restore_wallet_from_text(
@@ -2600,6 +2461,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual('02000000000101ce010c0cab95cde544f713771916613a1a84c8787bbc95321854410b212aed9b0100000000fdffffff02cac0000000000000160014caf086bb82f85b35d13b118cd0e052bf5a27eb04eec100000000000016001405424089c64d39d9a498b6e1c8e646327431b24002473044022006dfe30f851b0174e5c920fd5b2e294a25fe5d449b17b422f3fda485d514c39b022047a6760f9d6ddfac5273094bed1f640fc1622a42938ebfb0b5f61cce7b161a00012102d67eaa10463f5c786271feb9ae3456c27d35c3cf6c7d881617e915d1f32cb875c4951e00',
                          str(tx_copy))
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_imported_wallet_usechange_on__no_more_unused_addresses(self, mock_save_db):
         wallet = restore_wallet_from_text(
@@ -2645,6 +2507,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual('02000000000101ce010c0cab95cde544f713771916613a1a84c8787bbc95321854410b212aed9b0100000000fdffffff02cac00000000000001600147a65e09bb1da80abfc65d545388a2e61aab7c721eec100000000000016001405424089c64d39d9a498b6e1c8e646327431b240024730440220526eac6c56cba19842b67f6c9e45af113b1a2d44fb229335bdeaf08cb2cc164e0220087fba65619016fd3f62f6c8717070e48f94b45743b86d8e0517698d2b9c3afc012102d67eaa10463f5c786271feb9ae3456c27d35c3cf6c7d881617e915d1f32cb875c4951e00',
                          str(tx_copy))
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_get_spendable_coins(self, mock_save_db):
         wallet = self.create_standard_wallet_from_seed('frost repair depend effort salon ring foam oak cancel receive save usage',
@@ -2681,6 +2544,7 @@ class TestWalletSending(ElectrumTestCase):
              '52e669a20a26c8b3df5b41e5e6309b18bcde8e1ad7ea17a18f63b6dc6c8becc0:1'},
             {txi.prevout.to_str() for txi in wallet.get_spendable_coins()})
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_export_psbt_with_xpubs__multisig(self, mock_save_db):
         """When exporting a PSBT to be signed by a hw device, test that we populate
@@ -2761,6 +2625,7 @@ class TestWalletSending(ElectrumTestCase):
         self.assertEqual("70736274ff01007d020000000122c3730eb6314cf59e11988c41bfdd73f70cb55b294ec6f2eda828b5c939c0980100000000fdffffff0240e20100000000001600147e45d43294b0ff2b08a5f45232649815e516cff058ab05000000000022002014d2823afee4d75f0f83b91a9d625972df41be222c1373d28e068c3eaae9e00a7b4a24004f01043587cf04b5faa014800000021044dcc4a72f0084f25ca3b7927abd5596715a515e2a59004ce10a51a17cf4b403a5b8b89c28c5a51832be51bb184749ac2ea6c561259bfc5bf58b852ad60f6fe41430cf1be5300000800100008000000080020000804f01043587cf019559fbd18000270f1b7a7db8a20f23be687941c8bcc8b330fd8823f19eea6ad5cb4af09b00cf6fd802db662ac8cf00e16cebe67e4d9f88b266eddbe0dfbb24b884bf3002b68ade721b089559fbd10f2700800001012b20a10700000000002200207f50b9d6eb4d899c710d8c48903de33d966ff52445d5a57b5210d02a5dd7e3bf0100fd7e0102000000000102deab5844de4aadc177d992696fda2aa6e4692403633d31a4b4073710594d2fca0000000000fdffffffdeab5844de4aadc177d992696fda2aa6e4692403633d31a4b4073710594d2fca0100000000fdffffff02f49f070000000000160014473b34b7da0aa9f7add803019f649e0729fd39d220a10700000000002200207f50b9d6eb4d899c710d8c48903de33d966ff52445d5a57b5210d02a5dd7e3bf0247304402202a4ec3df7bf2b82505bcd4833eeb32875784b4e93d09ac3cf4a8981dc89a049b02205239bad290877fb810a12538a275d5467f3f6afc88d1e0be3d8f6dc4876e6793012103e48cae7f140e15440f4ad6b3d96cb0deb471bbb45daf527e6eb4d5f6c5e26ec802473044022031028192a8307e52829ad1428941000629de73726306ca71d18c5bcfcb98a4a602205ad0240f7dd6c83686ea257f3146ba595b787d7f68b514569962fd5d3692b07c0121033c8af340bd9abf4a56c7cf7554f52e84a1128e5206ffe5da166ca18a57a260077b4a24000105475221022c4338968f87a09b0fefd0aaac36f1b983bab237565d521944c60fdc482750492103cf9a6ac058d36a6dc325b19715a2223c6416e1cef13bc047a99bded8c99463ca52ae2206022c4338968f87a09b0fefd0aaac36f1b983bab237565d521944c60fdc48275049109559fbd10f2700800000000000000000220603cf9a6ac058d36a6dc325b19715a2223c6416e1cef13bc047a99bded8c99463ca1c30cf1be530000080010000800000008002000080000000000000000000000101475221027f7f2eaf9a44316c2cd98b67584d1e71ccaced29a347673f3364efe16f5919e221028d9b8ff374e0f60fbc698c5a494c12d9a31a3ce364b1f81ae4a46f48ae45acdd52ae2202027f7f2eaf9a44316c2cd98b67584d1e71ccaced29a347673f3364efe16f5919e2109559fbd10f27008001000000000000002202028d9b8ff374e0f60fbc698c5a494c12d9a31a3ce364b1f81ae4a46f48ae45acdd1c30cf1be530000080010000800000008002000080010000000000000000",
                          tx.serialize_as_bytes().hex())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_export_psbt_with_xpubs__singlesig(self, mock_save_db):
         """When exporting a PSBT to be signed by a hw device, test that we populate
@@ -2840,9 +2705,10 @@ class TestWalletSending(ElectrumTestCase):
         wallet1b.adb.receive_tx_callback(funding_txid, funding_tx, TX_HEIGHT_UNCONFIRMED)
 
         # cosignerA creates and signs the tx
-        outputs = [PartialTxOutput.from_address_and_value("tb1qgacvp0zvgtk3etggjayuezrc2mkql8veshv4xw", 200_000)]
+        outputs = [PartialTxOutput.from_address_and_value("tDSM6cpPckbJvCnNNhyxuRW2DSYvJgDgHV", 200_000)]  # p2pkh, same hash160 as tb1qgacvp0zvgtk3etggjayuezrc2mkql8veshv4xw
         coins = wallet1a.get_spendable_coins(domain=None)
         tx = wallet1a.make_unsigned_transaction(coins=coins, outputs=outputs, fee=5000)
+        # note: the 295000 sat change is below the Neurai dust threshold (546000 sat), so there is no change output
         tx.set_rbf(True)
         tx.locktime = 2429212
         tx.version = 2
@@ -2855,12 +2721,12 @@ class TestWalletSending(ElectrumTestCase):
                 tx = copy.deepcopy(orig_tx1)
                 if uses_qr_code1:
                     partial_tx, is_complete = tx.to_qr_data()
-                    self.assertEqual("3PMZFRKS5WP6JMMK.-I6Z5JFJ+3ABTDQ.SEM2ATLOB0EF-5I3VH0+Z:P$3SWOO75P/P41QSRJ+4-P*V6MJLC0H.XH1CJ+066VC6IV/5+H1S0R*1NNW.EBSHKZ7IA3T$-$OTUQMP22B+ZVM4QSL/K/BIT8WOM1712MQWDH1DQA/0DEUH$YKYDYDC+/MO-$ZXBM:L+/8F83FD5*:N8HU45:9YULHULQ/P.HLIHVHFQR+WRVT7P.DTUE0BE91DK56:S$Y8+ZBJ0ZSSRRUPNE$I18Y.TXFRM.CTZSGVTSQWNX8Z+YLWR5F8.RVZ1039*U.H7BN6ZMHSBWS*PLY3SK+9LV/FBGJK4+YU3IGI3S4Z9RXS8$JVP+VZUZ:PDJI$KI-6DG2A//O5PRDLP3RUSX.KBFP.IY2JZV+B:DF3.C+R9LU0JUXF26W3SME9A*/WWNNH0-59RCI-YKG:SOO:U0F*SV5R5VERVP2J57EJMO*9.GH++/7P55YE/QTLU$MB8.KT*HD4S2ISP35+*R14HXP:SDUGWGGH$Y8O/NZSH0*CXQZ+H3G7E5:5HFFB8C-BA/O*04I/GF6.X0DKYETTJ:NO27RKHTL:/44U.PK/F/9+9V4D:N3*YS5OTA7+/:P70+L/JMB0OD7ZMO/HFJXRFCK7GS1-K464$96KODYGML8IJLR31-2W1EI0HXOWG:3N9M7QRTU83-NK*G:6SI.JU*71UW85MZ./Y:03L6KZTG7SJ.VKO3WFZU.XV+745QZ.OWET:VNV/.QNR-ETA2S/LTV-U-M2OC2LV7.*1AIN4XW3LR$*75/BVIV.KG1ZGMBJ7L0IE9F-7O4+1QSZ8JR$GECW6RZFKPZ516O+2GV9FTA:3L1C1QL/6YVSF*L8-38/7L1$**Y7K5FLOP-4T20.*1*8JK-M$C+:5U+S*KLZW3E3U0N$ODSMT",
+                    self.assertEqual("SD-T7SVJB3P83433--$2EN7$*J7/LV4W-*5E*7V:L52*RTGYQ:962N.KD$5ITHX66ZHWJ1VI/386LFTBYLW/LI1DA36CX8TOARW412WLKVBAL765BSZ22RN:D5CMJAXZ8YTE2$FZI.KZJ-Y$H24.P6*V1G:7R.BP$XG+4S2MHJJ510J0AJJ0X0D:QA+V/9YT01B+HZKDH4LIF-6DAKTOCX+:LNEH.$U-W$T6C29QREJU3O$891I7MKMUZWGHXT8/5G4J:U-8D0$7CO-3/I7MJY$789Q:C0V9JA6DAHB13:2RB:F30EO1M342K4Y4I5IU5K06EF1TZQZ9$7E5SQUMTSND/W4L*Q:-D9.6:HOL85-1MDD$08G$Y8GKZAUSZ:7$MMT$9IYNV1S9XQ$ED1MA*5WXOU3QSGNZ2G*IZX0YP75FKENWX/7UQTO027MQRCQU-5HGYZ6Y/86*U/719-KZUETK*TVJ-DMCXGYNLBY$T$5G59WIB5W.LOGF3VPIDDKGK4P$3MCFEQI+OZH-121A$++2X0P2*YF+X:7I/UF3TI5P+/GSKNFJ3W7:AHM7AOS*BNO6OK$9E91C2:0VCI+19GCC8BO-5$UFQ.:2K9L0HPQ896U27",
                                      partial_tx)
                     self.assertFalse(is_complete)
                 else:
                     partial_tx = tx.serialize_as_bytes().hex()
-                    self.assertEqual("70736274ff01007202000000014e375f685f3205e0c7841036525b10f01654632c5ae91e7e04513b815e46a5e10000000000fdffffff02400d0300000000001600144770c0bc4c42ed1cad089749cc887856ec0f9d99588004000000000017a914493900cdec652a41c633436b53d574647e329b18871c112500000100df0200000000010199b6eb9629c9763e9e95c49f2e81d7a9bda0c8e96165897ce42df0c7a4757aa60100000000fdffffff0220a107000000000017a91482e2921d413a7cad08f76d1d35565dbcc85088db8750560e000000000016001481e6fc4a427d0176373bdd7482b8c1d08f3563300247304402202cf7be624cc30640e2b928adeb25b21ed581f32149f78bc1b0fa9c01da785486022066fadccb1aef8d46841388e83386f85ca5776f50890b9921f165f093fabfd2800121022e43546769a51181fad61474a773b0813106895971b6e3f1d43278beb7154d0a1a1125002202026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd4730440220414287f36a02b004d2e9a3892e1862edaf49c35d50b65ae10b601879b8c793ef0220073234c56d5a8ae9f4fcfeaecaa757e2724bf830d45aabfab8ffe37329ebf459010104475221026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd2103a8b896e5216fe7239516a494407c0cc90c6dc33918c7df04d1cda8d57a3bb98152ae2206026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd1418c2928f2d000080000000000000000000000000220603a8b896e5216fe7239516a494407c0cc90c6dc33918c7df04d1cda8d57a3bb9811425750cf72d000080000000000000000000000000000001004752210212de0581d6570d3cc432cdad2b07514807007dc80b792fafeb47bed69fe6276821028748a66f10b13944ccb14640ba36f65dc7a1f3462e9aca65ba8b05013842270b52ae22020212de0581d6570d3cc432cdad2b07514807007dc80b792fafeb47bed69fe627681425750cf72d0000800000000001000000000000002202028748a66f10b13944ccb14640ba36f65dc7a1f3462e9aca65ba8b05013842270b1418c2928f2d00008000000000010000000000000000",
+                    self.assertEqual("70736274ff01005502000000014e375f685f3205e0c7841036525b10f01654632c5ae91e7e04513b815e46a5e10000000000fdffffff01400d0300000000001976a9144770c0bc4c42ed1cad089749cc887856ec0f9d9988ac1c112500000100df0200000000010199b6eb9629c9763e9e95c49f2e81d7a9bda0c8e96165897ce42df0c7a4757aa60100000000fdffffff0220a107000000000017a91482e2921d413a7cad08f76d1d35565dbcc85088db8750560e000000000016001481e6fc4a427d0176373bdd7482b8c1d08f3563300247304402202cf7be624cc30640e2b928adeb25b21ed581f32149f78bc1b0fa9c01da785486022066fadccb1aef8d46841388e83386f85ca5776f50890b9921f165f093fabfd2800121022e43546769a51181fad61474a773b0813106895971b6e3f1d43278beb7154d0a1a1125002202026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd47304402207edd88c228e4a6c02d74d0171ec9876d30e7312e3ccb510b5120970075d5ff540220713967a581617f0194d20a174efc73d6ca489066a5a2914f6e4c304b1193db28010104475221026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd2103a8b896e5216fe7239516a494407c0cc90c6dc33918c7df04d1cda8d57a3bb98152ae2206026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd1418c2928f2d000080000000000000000000000000220603a8b896e5216fe7239516a494407c0cc90c6dc33918c7df04d1cda8d57a3bb9811425750cf72d0000800000000000000000000000000000",
                                      partial_tx)
                 # load tx into cosignerB's online wallet
                 tx = tx_from_any(partial_tx)
@@ -2875,21 +2741,21 @@ class TestWalletSending(ElectrumTestCase):
                         tx = copy.deepcopy(orig_tx2)
                         if uses_qr_code2:
                             partial_tx, is_complete = tx.to_qr_data()
-                            self.assertEqual("3PMZFRKS5WP6JMMK.-I6Z5JFJ+3ABTDQ.SEM2ATLOB0EF-5I3VH0+Z:P$3SWOO75P/P41QSRJ+4-P*V6MJLC0H.XH1CJ+066VC6IV/5+H1S0R*1NNW.EBSHKZ7IA3T$-$OTUQMP22B+ZVM4QSL/K/BIT8WOM1712MQWDH1DQA/0DEUH$YKYDYDC+/MO-$ZXBM:L+/8F83FD5*:N8HU45:9YULHULQ/P.HLIHVHFQR+WRVT7P.DTUE0BE91DK56:S$Y8+ZBJ0ZSSRRUPNE$I18Y.TXFRM.CTZSGVTSQWNX8Z+YLWR5F8.RVZ1039*U.H7BN6ZMHSBWS*PLY3SK+9LV/FBGJK4+YU3IGI3S4Z9RXS8$JVP+VZUZ:PDJI$KI-6DG2A//O5PRDLP3RUSX.KBFP.IY2JZV+B:DF3.C+R9LU0JUXF26W3SME9A*/WWNNH0-59RCI-YKG:SOO:U0F*SV5R5VERVP2J57EJMO*9.GH++/7P55YE/QTLU$MB8.KT*HD4S2ISP35+*R14HXP:SDUGWGGH$Y8O/NZSH0*CXQZ+H3G7E5:5HFFB8C-BA/O*04I/GF6.X0DKYETTJ:NO27RKHTL:/44U.PK/F/9+9V4D:N3*YS5OTA7+/:P70+L/JMB0OD7ZMO/HFJXRFCK7GS1-K464$96KODYGML8IJLR31-2W1EI0HXOWG:3N9M7QRTU83-NK*G:6SI.JU*71UW85MZ./Y:03L6KZTG7SJ.VKO3WFZU.XV+745QZ.OWET:VNV/.QNR-ETA2S/LTV-U-M2OC2LV7.*1AIN4XW3LR$*75/BVIV.KG1ZGMBJ7L0IE9F-7O4+1QSZ8JR$GECW6RZFKPZ516O+2GV9FTA:3L1C1QL/6YVSF*L8-38/7L1$**Y7K5FLOP-4T20.*1*8JK-M$C+:5U+S*KLZW3E3U0N$ODSMT",
+                            self.assertEqual("SD-T7SVJB3P83433--$2EN7$*J7/LV4W-*5E*7V:L52*RTGYQ:962N.KD$5ITHX66ZHWJ1VI/386LFTBYLW/LI1DA36CX8TOARW412WLKVBAL765BSZ22RN:D5CMJAXZ8YTE2$FZI.KZJ-Y$H24.P6*V1G:7R.BP$XG+4S2MHJJ510J0AJJ0X0D:QA+V/9YT01B+HZKDH4LIF-6DAKTOCX+:LNEH.$U-W$T6C29QREJU3O$891I7MKMUZWGHXT8/5G4J:U-8D0$7CO-3/I7MJY$789Q:C0V9JA6DAHB13:2RB:F30EO1M342K4Y4I5IU5K06EF1TZQZ9$7E5SQUMTSND/W4L*Q:-D9.6:HOL85-1MDD$08G$Y8GKZAUSZ:7$MMT$9IYNV1S9XQ$ED1MA*5WXOU3QSGNZ2G*IZX0YP75FKENWX/7UQTO027MQRCQU-5HGYZ6Y/86*U/719-KZUETK*TVJ-DMCXGYNLBY$T$5G59WIB5W.LOGF3VPIDDKGK4P$3MCFEQI+OZH-121A$++2X0P2*YF+X:7I/UF3TI5P+/GSKNFJ3W7:AHM7AOS*BNO6OK$9E91C2:0VCI+19GCC8BO-5$UFQ.:2K9L0HPQ896U27",
                                              partial_tx)
                             self.assertFalse(is_complete)
                         else:
                             partial_tx = tx.serialize_as_bytes().hex()
-                            self.assertEqual("70736274ff01007202000000014e375f685f3205e0c7841036525b10f01654632c5ae91e7e04513b815e46a5e10000000000fdffffff02400d0300000000001600144770c0bc4c42ed1cad089749cc887856ec0f9d99588004000000000017a914493900cdec652a41c633436b53d574647e329b18871c112500000100df0200000000010199b6eb9629c9763e9e95c49f2e81d7a9bda0c8e96165897ce42df0c7a4757aa60100000000fdffffff0220a107000000000017a91482e2921d413a7cad08f76d1d35565dbcc85088db8750560e000000000016001481e6fc4a427d0176373bdd7482b8c1d08f3563300247304402202cf7be624cc30640e2b928adeb25b21ed581f32149f78bc1b0fa9c01da785486022066fadccb1aef8d46841388e83386f85ca5776f50890b9921f165f093fabfd2800121022e43546769a51181fad61474a773b0813106895971b6e3f1d43278beb7154d0a1a1125002202026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd4730440220414287f36a02b004d2e9a3892e1862edaf49c35d50b65ae10b601879b8c793ef0220073234c56d5a8ae9f4fcfeaecaa757e2724bf830d45aabfab8ffe37329ebf459010104475221026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd2103a8b896e5216fe7239516a494407c0cc90c6dc33918c7df04d1cda8d57a3bb98152ae2206026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd1418c2928f2d000080000000000000000000000000220603a8b896e5216fe7239516a494407c0cc90c6dc33918c7df04d1cda8d57a3bb9811425750cf72d000080000000000000000000000000000001004752210212de0581d6570d3cc432cdad2b07514807007dc80b792fafeb47bed69fe6276821028748a66f10b13944ccb14640ba36f65dc7a1f3462e9aca65ba8b05013842270b52ae22020212de0581d6570d3cc432cdad2b07514807007dc80b792fafeb47bed69fe627681425750cf72d0000800000000001000000000000002202028748a66f10b13944ccb14640ba36f65dc7a1f3462e9aca65ba8b05013842270b1418c2928f2d00008000000000010000000000000000",
+                            self.assertEqual("70736274ff01005502000000014e375f685f3205e0c7841036525b10f01654632c5ae91e7e04513b815e46a5e10000000000fdffffff01400d0300000000001976a9144770c0bc4c42ed1cad089749cc887856ec0f9d9988ac1c112500000100df0200000000010199b6eb9629c9763e9e95c49f2e81d7a9bda0c8e96165897ce42df0c7a4757aa60100000000fdffffff0220a107000000000017a91482e2921d413a7cad08f76d1d35565dbcc85088db8750560e000000000016001481e6fc4a427d0176373bdd7482b8c1d08f3563300247304402202cf7be624cc30640e2b928adeb25b21ed581f32149f78bc1b0fa9c01da785486022066fadccb1aef8d46841388e83386f85ca5776f50890b9921f165f093fabfd2800121022e43546769a51181fad61474a773b0813106895971b6e3f1d43278beb7154d0a1a1125002202026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd47304402207edd88c228e4a6c02d74d0171ec9876d30e7312e3ccb510b5120970075d5ff540220713967a581617f0194d20a174efc73d6ca489066a5a2914f6e4c304b1193db28010104475221026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd2103a8b896e5216fe7239516a494407c0cc90c6dc33918c7df04d1cda8d57a3bb98152ae2206026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd1418c2928f2d000080000000000000000000000000220603a8b896e5216fe7239516a494407c0cc90c6dc33918c7df04d1cda8d57a3bb9811425750cf72d0000800000000000000000000000000000",
                                              partial_tx)
                         # load tx into cosignerB's offline wallet
                         tx = tx_from_any(partial_tx)
                         wallet1b_offline.sign_transaction(tx, password=None)
 
-                        self.assertEqual('02000000014e375f685f3205e0c7841036525b10f01654632c5ae91e7e04513b815e46a5e100000000d9004730440220414287f36a02b004d2e9a3892e1862edaf49c35d50b65ae10b601879b8c793ef0220073234c56d5a8ae9f4fcfeaecaa757e2724bf830d45aabfab8ffe37329ebf4590147304402203ba7cc21e407ce31c1eecd11c367df716a5d47f06e0bf7109f08063ede25a364022039f6bef0dd401aa2c3103b8cbab57cc4fed3905ccb0a726dc6594bf5930ae0b401475221026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd2103a8b896e5216fe7239516a494407c0cc90c6dc33918c7df04d1cda8d57a3bb98152aefdffffff02400d0300000000001600144770c0bc4c42ed1cad089749cc887856ec0f9d99588004000000000017a914493900cdec652a41c633436b53d574647e329b18871c112500',
+                        self.assertEqual('02000000014e375f685f3205e0c7841036525b10f01654632c5ae91e7e04513b815e46a5e100000000d90047304402207edd88c228e4a6c02d74d0171ec9876d30e7312e3ccb510b5120970075d5ff540220713967a581617f0194d20a174efc73d6ca489066a5a2914f6e4c304b1193db280147304402201cfeb1024b4b254b5094fb56003a7f9f7d6bf62a84524851f2ec64fa20d539ad022020accce61e6dc068c5685967271fc5a86c583174aaabfcd3d182932e79ee8d5301475221026addf5fd752c92e8a53955e430ca5964feb1b900ce569f968290f65ae7fecbfd2103a8b896e5216fe7239516a494407c0cc90c6dc33918c7df04d1cda8d57a3bb98152aefdffffff01400d0300000000001976a9144770c0bc4c42ed1cad089749cc887856ec0f9d9988ac1c112500',
                                          str(tx))
-                        self.assertEqual('d6823918ff82ed240995e9e6f02e0d2f3f15e0b942616ab34481ce8a3399dc72', tx.txid())
-                        self.assertEqual('d6823918ff82ed240995e9e6f02e0d2f3f15e0b942616ab34481ce8a3399dc72', tx.wtxid())
+                        self.assertEqual('5aebd219bda308b9dcdde1af2d5b782b42e9df52877edfa5d2b2e985e4e4104c', tx.txid())
+                        self.assertEqual('5aebd219bda308b9dcdde1af2d5b782b42e9df52877edfa5d2b2e985e4e4104c', tx.wtxid())
 
 
 class TestWalletOfflineSigning(ElectrumTestCase):
@@ -2919,7 +2785,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         wallet_online.adb.receive_tx_callback(funding_txid, funding_tx, TX_HEIGHT_UNCONFIRMED)
 
         # create unsigned tx
-        outputs = [PartialTxOutput.from_address_and_value('tb1qyw3c0xna6kk2c688y3dygvckn57525y8qnxt3a', 2500000)]
+        outputs = [PartialTxOutput.from_address_and_value('tAB3bjZWh9u8t39P6h91wN2auXUCjQYCnh', 2500000)]  # p2pkh, same hash160 as tb1qyw3c0rvn6kk2c688y3dygvckn57525y8qnxt3a
         tx = wallet_online.mktx(outputs=outputs, password=None, fee=5000, rbf=True)
         tx.locktime = 1446655
         tx.version = 1
@@ -2929,7 +2795,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         self.assertFalse(tx.is_segwit())
         self.assertEqual(1, len(tx.inputs()))
         partial_tx = tx.serialize_as_bytes().hex()
-        self.assertEqual("70736274ff01007401000000015608436ec7dc01c95ca1ca91519f2dc62b6613ac3d6304cb56462f6081059e3b0200000000fdffffff02a02526000000000016001423a3878d93d5acac68e7245a4433169d3d455087585d7200000000001976a914b6a6bbbc4cf9da58786a8acc58291e218d52130688acff121600000100fd000101000000000101161115f8d8110001aa0883989487f9c7a2faf4451038e4305c7594c5236cbb490100000000fdffffff0338117a0000000000160014c1d7b2ded7017cbde837aab36c1e7b2a3952a57800127a00000000001600143e2ab71fc9738ce16fbe6b3b1c210a68c12db84180969800000000001976a91424b64d981d621c227716b51479faf33019371f4688ac0247304402207a5efc6d970f6a5fdcd1933f68b353b4bf2904743f9f1dc3e9177d8754074baf02202eed707e661493bc450357f12cd7a8b8c610c7cb32ded10516c2933a2ba4346a01210287dce03f594fd889726b13a12970237992a0094a5c9f4eebcca6d50d454b39e9ff121600420604e79eb77f2f3f989f5e9d090bc0af50afeb0d5bd6ec916f2022c5629ed022e84a87584ef647d69f073ea314a0f0c110ebe24ad64bc1922a10819ea264fc3f35f50c343ddcab000000000100000000004202048e2004ca581afcc54a5d9b3b47affdf48b3f89e16d5bd96774fc0f167f2d7873bac6264e3d1f1bb96f64d1530a54e026e0bd7d674151d146fba582e79f4ef5e80c343ddcab010000000000000000",
+        self.assertEqual("70736274ff01007701000000015608436ec7dc01c95ca1ca91519f2dc62b6613ac3d6304cb56462f6081059e3b0200000000fdffffff02a0252600000000001976a91423a3878d93d5acac68e7245a4433169d3d45508788ac585d7200000000001976a914b6a6bbbc4cf9da58786a8acc58291e218d52130688acff121600000100fd000101000000000101161115f8d8110001aa0883989487f9c7a2faf4451038e4305c7594c5236cbb490100000000fdffffff0338117a0000000000160014c1d7b2ded7017cbde837aab36c1e7b2a3952a57800127a00000000001600143e2ab71fc9738ce16fbe6b3b1c210a68c12db84180969800000000001976a91424b64d981d621c227716b51479faf33019371f4688ac0247304402207a5efc6d970f6a5fdcd1933f68b353b4bf2904743f9f1dc3e9177d8754074baf02202eed707e661493bc450357f12cd7a8b8c610c7cb32ded10516c2933a2ba4346a01210287dce03f594fd889726b13a12970237992a0094a5c9f4eebcca6d50d454b39e9ff121600420604e79eb77f2f3f989f5e9d090bc0af50afeb0d5bd6ec916f2022c5629ed022e84a87584ef647d69f073ea314a0f0c110ebe24ad64bc1922a10819ea264fc3f35f50c343ddcab000000000100000000004202048e2004ca581afcc54a5d9b3b47affdf48b3f89e16d5bd96774fc0f167f2d7873bac6264e3d1f1bb96f64d1530a54e026e0bd7d674151d146fba582e79f4ef5e80c343ddcab010000000000000000",
                          partial_tx)
         tx_copy = tx_from_any(partial_tx)  # simulates moving partial txn between cosigners
         self.assertTrue(wallet_online.is_mine(wallet_online.adb.get_txin_address(tx_copy.inputs()[0])))
@@ -2941,10 +2807,10 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         self.assertTrue(tx.is_complete())
         self.assertEqual((1, 1), tx.signature_count())
         self.assertFalse(tx.is_segwit())
-        self.assertEqual('01000000015608436ec7dc01c95ca1ca91519f2dc62b6613ac3d6304cb56462f6081059e3b020000008a47304402206bed3e02af8a38f6ba2fa3bf5908cb8c643aa62e78e8de6d9af2e19dec55fafc0220039cc1d81d4e5e0292bbc54ea92b8ec4ec016d4828eedc8975a66952cedf13a1014104e79eb77f2f3f989f5e9d090bc0af50afeb0d5bd6ec916f2022c5629ed022e84a87584ef647d69f073ea314a0f0c110ebe24ad64bc1922a10819ea264fc3f35f5fdffffff02a02526000000000016001423a3878d93d5acac68e7245a4433169d3d455087585d7200000000001976a914b6a6bbbc4cf9da58786a8acc58291e218d52130688acff121600',
+        self.assertEqual('01000000015608436ec7dc01c95ca1ca91519f2dc62b6613ac3d6304cb56462f6081059e3b020000008a47304402205106ba6591c90ddec82f2336e8a70e1a16e57cd5c88adca700a5a15fab4271b2022013a8c270c5fdc8fcfaa6da37f3f85fcc325951569b3c127f20192c77a77f8a61014104e79eb77f2f3f989f5e9d090bc0af50afeb0d5bd6ec916f2022c5629ed022e84a87584ef647d69f073ea314a0f0c110ebe24ad64bc1922a10819ea264fc3f35f5fdffffff02a0252600000000001976a91423a3878d93d5acac68e7245a4433169d3d45508788ac585d7200000000001976a914b6a6bbbc4cf9da58786a8acc58291e218d52130688acff121600',
                          str(tx))
-        self.assertEqual('06032230d0bf6a277bc4f8c39e3311a712e0e614626d0dea7cc9f592abfae5d8', tx.txid())
-        self.assertEqual('06032230d0bf6a277bc4f8c39e3311a712e0e614626d0dea7cc9f592abfae5d8', tx.wtxid())
+        self.assertEqual('1cb9ca4532903d772b65bdf2b8a2b30be74a3b0a46825d145b261cd5610ead92', tx.txid())
+        self.assertEqual('1cb9ca4532903d772b65bdf2b8a2b30be74a3b0a46825d145b261cd5610ead92', tx.wtxid())
 
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_sending_offline_xprv_online_xpub_p2pkh(self, mock_save_db):
@@ -2967,7 +2833,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         wallet_online.adb.receive_tx_callback(funding_txid, funding_tx, TX_HEIGHT_UNCONFIRMED)
 
         # create unsigned tx
-        outputs = [PartialTxOutput.from_address_and_value('tb1qp0mv2sxsyxxfj5gl0332f9uyez93su9cf26757', 2500000)]
+        outputs = [PartialTxOutput.from_address_and_value('t81s6pPdHxsjmGYyDDkqifTCnueEVmMvZf', 2500000)]  # p2pkh, same hash160 as tb1qp0mv2sxsyxxfj5gl0332f9uyez93su9cf26757
         tx = wallet_online.mktx(outputs=outputs, password=None, fee=5000, rbf=True)
         tx.locktime = 1325340
         tx.version = 1
@@ -2982,12 +2848,12 @@ class TestWalletOfflineSigning(ElectrumTestCase):
                 tx = copy.deepcopy(orig_tx)
                 if uses_qr_code:
                     partial_tx, is_complete = tx.to_qr_data()
-                    self.assertEqual("8VXO.MYW+UE2.+5LGGVQP.$087REZNQ8:6*U1CLU+NW7:.T7K04HTV.JW78BXOF$IM*4YYL6LWVSZ4QA0Q-1*8W38XJH833$K3EUK:87-TGQ86XAQ3/RD*PZKM1RLVRAVCFG/8.UHCF8IX*ED1HXNGI*WQ37K*HWJ:XXNKMU.M2A$IYUM-AR:*P34/.EGOQF-YUJ.F0UF$LMW-YXWQU$$CMXD4-L21B7X5/OL7MKXCAD5-9IL/TDP5J2$13KFIH2K5B0/2F*/-XCY:/G-+8K*+1U$56WUE3:J/8KOGSRAN66CNZLG7Y4IB$Y*.S64CC2A9Q/-P5TQFZCF7F+CYG+V363/ME.W0WTPXJM3BC.YPH+Y3K7VIF2+0D.O.JS4LYMZ",
+                    self.assertEqual(":+3R8QLCC5NFK.YG$DNMDFO$OVGZK$Y*E3B$A$W2AYQR3ZI+*0WHV.TQOMOJOC/AWGH1-BD7GL21T4AQA96Q5J/CY9/SVPT6RHFHNZV7SZZQ7NE29BK/SF1G+YNP$76+K-N2DOU.B.V75G64*NYWFHA4H*9ZIQ79IEYLUR1KZVFDANYM*6C.4C1ZO2Y*Q/+B0TA/.XZS234CU093WGHDGNBX+V+/.4ZKFM:2.LQHRMQWYEF.+PU$HUW3359UUO.M4L**V-2F5.98GA:L-LKLQU*5R4YXE$$ZMR8QS8D1:8O*477DK549H9EO2Z*5-5--3KW4WVDX2*0ZN*HK7R-W4UZ6HE..B6.-63*90Q5XCAX9269O$J82HDGGMCMF9Z7G6FMR/",
                                      partial_tx)
                     self.assertFalse(is_complete)
                 else:
                     partial_tx = tx.serialize_as_bytes().hex()
-                    self.assertEqual("70736274ff010074010000000162878508bdcd372fc4c33ce6145cd1fb1dcc5314d4930ceb6957e7f6c54b57980200000000fdffffff02a0252600000000001600140bf6c540d0218c99511f7c62a49784c88b1870b8585d7200000000001976a9149b308d0b3efd4e3469441bc83c3521afde4072b988ac1c391400000100fd4c0d01000000000116e9c9dac2651672316aab3b9553257b6942c5f762c5d795776d9cfa504f183c000000000000fdffffff8085019852fada9da84b58dcf753d292dde314a19f5a5527f6588fa2566142130000000000fdffffffa4154a48db20ce538b28722a89c6b578bd5b5d60d6d7b52323976339e39405230000000000fdffffff0b5ef43f843a96364aebd708e25ea1bdcf2c7df7d0d995560b8b1be5f357b64f0100000000fdffffffd41dfe1199c76fdb3f20e9947ea31136d032d9da48c5e45d85c8f440e2351a510100000000fdffffff5bd015d17e4a1837b01c24ebb4a6b394e3da96a85442bd7dc6abddfbf16f20510000000000fdffffff13a3e7f80b1bd46e38f2abc9e2f335c18a4b0af1778133c7f1c3caae9504345c0200000000fdffffffdf4fc1ab21bca69d18544ddb10a913cd952dbc730ab3d236dd9471445ff405680100000000fdffffffe0424d78a30d5e60ac6b26e2274d7d6e7c6b78fe0b49bdc3ac4dd2147c9535750100000000fdffffff7ab6dd6b3c0d44b0fef0fdc9ab0ad6eee23eef799eee29c005d52bc4461998760000000000fdffffff48a77e5053a21acdf4f235ce00c82c9bc1704700f54d217f6a30704711b9737d0000000000fdffffff86918b39c1d9bb6f34d9b082182f73cedd15504331164dc2b186e95c568ccb870000000000fdffffff15a847356cbb44be67f345965bb3f2589e2fec1c9a0ada21fd28225dcc602e8f0100000000fdffffff9a2875297f81dfd3b77426d63f621db350c270cc28c634ad86b9969ee33ac6960000000000fdffffffd6eeb1d1833e00967083d1ab86fa5a2e44355bd613d9277135240fe6f60148a20100000000fdffffffd8a6e5a9b68a65ff88220ca33e36faf6f826ae8c5c8a13fe818a5e63828b68a40100000000fdffffff73aab8471f82092e45ed1b1afeffdb49ea1ec74ce4853f971812f6a72a7e85aa0000000000fdffffffacd6459dec7c3c51048eb112630da756f5d4cb4752b8d39aa325407ae0885cba0000000000fdffffff1eddd5e13bef1aba1ff151762b5860837daa9b39db1eae8ea8227c81a5a1c8ba0000000000fdffffff67a096ff7c343d39e96929798097f6d7a61156bbdb905fbe534ba36f273271d40100000000fdffffff109a671eb7daf6dcd07c0ceff99f2de65864ab36d64fb3a890bab951569adeee0100000000fdffffff4f1bdc64da8056d08f79db7f5348d1de55946e57aa7c8279499c703889b6e0fd0200000000fdffffff042f280000000000001600149c756aa33f4f89418b33872a973274b5445c727b80969800000000001600146c540c1c9f546004539f45318b8d9f4d7b4857ef80969800000000001976a91422a6daa4a7b695c8a2dd104d47c5dc73d655c96f88ac809698000000000017a914a6885437e0762013facbda93894202a0fe86e35f8702473044022075ef5f04d7a63347064938e15a0c74277a79e5c9d32a26e39e8a517a44d565cc022015246790fb5b29c9bf3eded1b95699b1635bcfc6d521886fddf1135ba1b988ec012102801bc7170efb82c490e243204d86970f15966aa3bce6a06bef5c09a83a5bfffe02473044022061aa9b0d9649ffd7259bc54b35f678565dbbe11507d348dd8885522eaf1fa70c02202cc79de09e8e63e8d57fde6ef66c079ddac4d9828e1936a9db833d4c142615c3012103a8f58fc1f5625f18293403104874f2d38c9279f777e512570e4199c7d292b81b0247304402207744dc1ab0bf77c081b58540c4321d090c0a24a32742a361aa55ad86f0c7c24e02201a9b0dd78b63b495ab5a0b5b161c54cb085d70683c90e188bb4dc2e41e142f6601210361fb354f8259abfcbfbdda36b7cb4c3b05a3ca3d68dd391fd8376e920d93870d0247304402204803e423c321acc6c12cb0ebf196d2906842fdfed6de977cc78277052ee5f15002200634670c1dc25e6b1787a65d3e09c8e6bb0340238d90b9d98887e8fd53944e080121031104c60d027123bf8676bcaefaa66c001a0d3d379dc4a9492a567a9e1004452d02473044022050e4b5348d30011a22b6ae8b43921d29249d88ea71b1fbaa2d9c22dfdef58b7002201c5d5e143aa8835454f61b0742226ebf8cd466bcc2cdcb1f77b92e473d3b13190121030496b9d49aa8efece4f619876c60a77d2c0dc846390ecdc5d9acbfa1bb3128760247304402204d6a9b986e1a0e3473e8aef84b3eb7052442a76dfd7631e35377f141496a55490220131ab342853c01e31f111436f8461e28bc95883b871ca0e01b5f57146e79d7bb012103262ffbc88e25296056a3c65c880e3686297e07f360e6b80f1219d65b0900e84e02483045022100c8ffacf92efa1dddef7e858a241af7a80adcc2489bcc325195970733b1f35fac022076f40c26023a228041a9665c5290b9918d06f03b716e4d8f6d47e79121c7eb37012102d9ba7e02d7cd7dd24302f823b3114c99da21549c663f72440dc87e8ba412120902483045022100b55545d84e43d001bbc10a981f184e7d3b98a7ed6689863716cab053b3655a2f0220537eb76a695fbe86bf020b4b6f7ae93b506d778bbd0885f0a61067616a2c8bce0121034a57f2fa2c32c9246691f6a922fb1ebdf1468792bae7eff253a99fc9f2a5023902483045022100f1d4408463dbfe257f9f778d5e9c8cdb97c8b1d395dbd2e180bc08cad306492c022002a024e19e1a406eaa24467f033659de09ab58822987281e28bb6359288337bd012103e91daa18d924eea62011ce596e15b6d683975cf724ea5bf69a8e2022c26fc12f0247304402204f1e12b923872f396e5e1a3aa94b0b2e86b4ce448f4349a017631db26d7dff8a022069899a05de2ad2bbd8e0202c56ab1025a7db9a4998eea70744e3c367d2a7eb71012103b0eee86792dbef1d4a49bc4ea32d197c8c15d27e6e0c5c33e58e409e26d4a39a0247304402201787dacdb92e0df6ad90226649f0e8321287d0bd8fddc536a297dd19b5fc103e022001fe89300a76e5b46d0e3f7e39e0ee26cc83b71d59a2a5da1dd7b13350cd0c07012103afb1e43d7ec6b7999ef0f1093069e68fe1dfe5d73fc6cfb4f7a5022f7098758c02483045022100acc1212bba0fe4fcc6c3ae5cf8e25f221f140c8444d3c08dfc53a93630ac25da02203f12982847244bd9421ef340293f3a38d2ab5d028af60769e46fcc7d81312e7e012102801bc7170efb82c490e243204d86970f15966aa3bce6a06bef5c09a83a5bfffe024830450221009c04934102402949484b21899271c3991c007b783b8efc85a3c3d24641ac7c24022006fb1895ce969d08a2cb29413e1a85427c7e85426f7a185108ca44b5a0328cb301210360248db4c7d7f76fe231998d2967104fee04df8d8da34f10101cc5523e82648c02483045022100b11fe61b393fa5dbe18ab98f65c249345b429b13f69ee2d1b1335725b24a0e73022010960cdc5565cbc81885c8ed95142435d3c202dfa5a3dc5f50f3914c106335ce0121029c878610c34c21381cda12f6f36ab88bf60f5f496c1b82c357b8ac448713e7b50247304402200ca080db069c15bbf98e1d4dff68d0aea51227ff5d17a8cf67ceae464c22bbb0022051e7331c0918cbb71bb2cef29ca62411454508a16180b0fb5df94248890840df0121028f0be0cde43ff047edbda42c91c37152449d69789eb812bb2e148e4f22472c0f0247304402201fefe258938a2c481d5a745ef3aa8d9f8124bbe7f1f8c693e2ddce4ddc9a927c02204049e0060889ede8fda975edf896c03782d71ba53feb51b04f5ae5897d7431dc012103946730b480f52a43218a9edce240e8b234790e21df5e96482703d81c3c19d3f1024730440220126a6a56dbe69af78d156626fc9cf41d6aac0c07b8b5f0f8491f68db5e89cb5002207ee6ed6f2f41da256f3c1e79679a3de6cf34cc08b940b82be14aefe7da031a6b012102801bc7170efb82c490e243204d86970f15966aa3bce6a06bef5c09a83a5bfffe024730440220363204a1586d7f13c148295122cbf9ec7939685e3cadab81d6d9e921436d21b7022044626b8c2bd4aa7c167d74bc4e9eb9d0744e29ce0ad906d78e10d6d854f23d170121037fb9c51716739bb4c146857fab5a783372f72a65987d61f3b58c74360f4328dd0247304402207925a4c2a3a6b76e10558717ee28fcb8c6fde161b9dc6382239af9f372ace99902204a58e31ce0b4a4804a42d2224331289311ded2748062c92c8aca769e81417a4c012102e18a8c235b48e41ef98265a8e07fa005d2602b96d585a61ad67168d74e7391cb02483045022100bbfe060479174a8d846b5a897526003eb2220ba307a5fee6e1e8de3e4e8b38fd02206723857301d447f67ac98a5a5c2b80ef6820e98fae213db1720f93d91161803b01210386728e2ac3ecee15f58d0505ee26f86a68f08c702941ffaf2fb7213e5026aea10247304402203a2613ae68f697eb02b5b7d18e3c4236966dac2b3a760e3021197d76e9ad4239022046f9067d3df650fcabbdfd250308c64f90757dec86f0b08813c979a42d06a6ec012102a1d7ee1cb4dc502f899aaafae0a2eb6cbf80d9a1073ae60ddcaabc3b1d1f15df02483045022100ab1bea2cc5388428fd126c7801550208701e21564bd4bd00cfd4407cfafc1acd0220508ee587f080f3c80a5c0b2175b58edd84b755e659e2135b3152044d75ebc4b501210236dd1b7f27a296447d0eb3750e1bdb2d53af50b31a72a45511dc1ec3fe7a684a19391400220602ab053d10eda769fab03ab52ee4f1692730288751369643290a8506e31d1e80f00c233d2ae40000000002000000000022020327295144ffff9943356c2d6625f5e2d6411bab77fd56dce571fda6234324e3d90c233d2ae4010000000000000000",
+                    self.assertEqual("70736274ff010077010000000162878508bdcd372fc4c33ce6145cd1fb1dcc5314d4930ceb6957e7f6c54b57980200000000fdffffff02a0252600000000001976a9140bf6c540d0218c99511f7c62a49784c88b1870b888ac585d7200000000001976a9149b308d0b3efd4e3469441bc83c3521afde4072b988ac1c391400000100fd4c0d01000000000116e9c9dac2651672316aab3b9553257b6942c5f762c5d795776d9cfa504f183c000000000000fdffffff8085019852fada9da84b58dcf753d292dde314a19f5a5527f6588fa2566142130000000000fdffffffa4154a48db20ce538b28722a89c6b578bd5b5d60d6d7b52323976339e39405230000000000fdffffff0b5ef43f843a96364aebd708e25ea1bdcf2c7df7d0d995560b8b1be5f357b64f0100000000fdffffffd41dfe1199c76fdb3f20e9947ea31136d032d9da48c5e45d85c8f440e2351a510100000000fdffffff5bd015d17e4a1837b01c24ebb4a6b394e3da96a85442bd7dc6abddfbf16f20510000000000fdffffff13a3e7f80b1bd46e38f2abc9e2f335c18a4b0af1778133c7f1c3caae9504345c0200000000fdffffffdf4fc1ab21bca69d18544ddb10a913cd952dbc730ab3d236dd9471445ff405680100000000fdffffffe0424d78a30d5e60ac6b26e2274d7d6e7c6b78fe0b49bdc3ac4dd2147c9535750100000000fdffffff7ab6dd6b3c0d44b0fef0fdc9ab0ad6eee23eef799eee29c005d52bc4461998760000000000fdffffff48a77e5053a21acdf4f235ce00c82c9bc1704700f54d217f6a30704711b9737d0000000000fdffffff86918b39c1d9bb6f34d9b082182f73cedd15504331164dc2b186e95c568ccb870000000000fdffffff15a847356cbb44be67f345965bb3f2589e2fec1c9a0ada21fd28225dcc602e8f0100000000fdffffff9a2875297f81dfd3b77426d63f621db350c270cc28c634ad86b9969ee33ac6960000000000fdffffffd6eeb1d1833e00967083d1ab86fa5a2e44355bd613d9277135240fe6f60148a20100000000fdffffffd8a6e5a9b68a65ff88220ca33e36faf6f826ae8c5c8a13fe818a5e63828b68a40100000000fdffffff73aab8471f82092e45ed1b1afeffdb49ea1ec74ce4853f971812f6a72a7e85aa0000000000fdffffffacd6459dec7c3c51048eb112630da756f5d4cb4752b8d39aa325407ae0885cba0000000000fdffffff1eddd5e13bef1aba1ff151762b5860837daa9b39db1eae8ea8227c81a5a1c8ba0000000000fdffffff67a096ff7c343d39e96929798097f6d7a61156bbdb905fbe534ba36f273271d40100000000fdffffff109a671eb7daf6dcd07c0ceff99f2de65864ab36d64fb3a890bab951569adeee0100000000fdffffff4f1bdc64da8056d08f79db7f5348d1de55946e57aa7c8279499c703889b6e0fd0200000000fdffffff042f280000000000001600149c756aa33f4f89418b33872a973274b5445c727b80969800000000001600146c540c1c9f546004539f45318b8d9f4d7b4857ef80969800000000001976a91422a6daa4a7b695c8a2dd104d47c5dc73d655c96f88ac809698000000000017a914a6885437e0762013facbda93894202a0fe86e35f8702473044022075ef5f04d7a63347064938e15a0c74277a79e5c9d32a26e39e8a517a44d565cc022015246790fb5b29c9bf3eded1b95699b1635bcfc6d521886fddf1135ba1b988ec012102801bc7170efb82c490e243204d86970f15966aa3bce6a06bef5c09a83a5bfffe02473044022061aa9b0d9649ffd7259bc54b35f678565dbbe11507d348dd8885522eaf1fa70c02202cc79de09e8e63e8d57fde6ef66c079ddac4d9828e1936a9db833d4c142615c3012103a8f58fc1f5625f18293403104874f2d38c9279f777e512570e4199c7d292b81b0247304402207744dc1ab0bf77c081b58540c4321d090c0a24a32742a361aa55ad86f0c7c24e02201a9b0dd78b63b495ab5a0b5b161c54cb085d70683c90e188bb4dc2e41e142f6601210361fb354f8259abfcbfbdda36b7cb4c3b05a3ca3d68dd391fd8376e920d93870d0247304402204803e423c321acc6c12cb0ebf196d2906842fdfed6de977cc78277052ee5f15002200634670c1dc25e6b1787a65d3e09c8e6bb0340238d90b9d98887e8fd53944e080121031104c60d027123bf8676bcaefaa66c001a0d3d379dc4a9492a567a9e1004452d02473044022050e4b5348d30011a22b6ae8b43921d29249d88ea71b1fbaa2d9c22dfdef58b7002201c5d5e143aa8835454f61b0742226ebf8cd466bcc2cdcb1f77b92e473d3b13190121030496b9d49aa8efece4f619876c60a77d2c0dc846390ecdc5d9acbfa1bb3128760247304402204d6a9b986e1a0e3473e8aef84b3eb7052442a76dfd7631e35377f141496a55490220131ab342853c01e31f111436f8461e28bc95883b871ca0e01b5f57146e79d7bb012103262ffbc88e25296056a3c65c880e3686297e07f360e6b80f1219d65b0900e84e02483045022100c8ffacf92efa1dddef7e858a241af7a80adcc2489bcc325195970733b1f35fac022076f40c26023a228041a9665c5290b9918d06f03b716e4d8f6d47e79121c7eb37012102d9ba7e02d7cd7dd24302f823b3114c99da21549c663f72440dc87e8ba412120902483045022100b55545d84e43d001bbc10a981f184e7d3b98a7ed6689863716cab053b3655a2f0220537eb76a695fbe86bf020b4b6f7ae93b506d778bbd0885f0a61067616a2c8bce0121034a57f2fa2c32c9246691f6a922fb1ebdf1468792bae7eff253a99fc9f2a5023902483045022100f1d4408463dbfe257f9f778d5e9c8cdb97c8b1d395dbd2e180bc08cad306492c022002a024e19e1a406eaa24467f033659de09ab58822987281e28bb6359288337bd012103e91daa18d924eea62011ce596e15b6d683975cf724ea5bf69a8e2022c26fc12f0247304402204f1e12b923872f396e5e1a3aa94b0b2e86b4ce448f4349a017631db26d7dff8a022069899a05de2ad2bbd8e0202c56ab1025a7db9a4998eea70744e3c367d2a7eb71012103b0eee86792dbef1d4a49bc4ea32d197c8c15d27e6e0c5c33e58e409e26d4a39a0247304402201787dacdb92e0df6ad90226649f0e8321287d0bd8fddc536a297dd19b5fc103e022001fe89300a76e5b46d0e3f7e39e0ee26cc83b71d59a2a5da1dd7b13350cd0c07012103afb1e43d7ec6b7999ef0f1093069e68fe1dfe5d73fc6cfb4f7a5022f7098758c02483045022100acc1212bba0fe4fcc6c3ae5cf8e25f221f140c8444d3c08dfc53a93630ac25da02203f12982847244bd9421ef340293f3a38d2ab5d028af60769e46fcc7d81312e7e012102801bc7170efb82c490e243204d86970f15966aa3bce6a06bef5c09a83a5bfffe024830450221009c04934102402949484b21899271c3991c007b783b8efc85a3c3d24641ac7c24022006fb1895ce969d08a2cb29413e1a85427c7e85426f7a185108ca44b5a0328cb301210360248db4c7d7f76fe231998d2967104fee04df8d8da34f10101cc5523e82648c02483045022100b11fe61b393fa5dbe18ab98f65c249345b429b13f69ee2d1b1335725b24a0e73022010960cdc5565cbc81885c8ed95142435d3c202dfa5a3dc5f50f3914c106335ce0121029c878610c34c21381cda12f6f36ab88bf60f5f496c1b82c357b8ac448713e7b50247304402200ca080db069c15bbf98e1d4dff68d0aea51227ff5d17a8cf67ceae464c22bbb0022051e7331c0918cbb71bb2cef29ca62411454508a16180b0fb5df94248890840df0121028f0be0cde43ff047edbda42c91c37152449d69789eb812bb2e148e4f22472c0f0247304402201fefe258938a2c481d5a745ef3aa8d9f8124bbe7f1f8c693e2ddce4ddc9a927c02204049e0060889ede8fda975edf896c03782d71ba53feb51b04f5ae5897d7431dc012103946730b480f52a43218a9edce240e8b234790e21df5e96482703d81c3c19d3f1024730440220126a6a56dbe69af78d156626fc9cf41d6aac0c07b8b5f0f8491f68db5e89cb5002207ee6ed6f2f41da256f3c1e79679a3de6cf34cc08b940b82be14aefe7da031a6b012102801bc7170efb82c490e243204d86970f15966aa3bce6a06bef5c09a83a5bfffe024730440220363204a1586d7f13c148295122cbf9ec7939685e3cadab81d6d9e921436d21b7022044626b8c2bd4aa7c167d74bc4e9eb9d0744e29ce0ad906d78e10d6d854f23d170121037fb9c51716739bb4c146857fab5a783372f72a65987d61f3b58c74360f4328dd0247304402207925a4c2a3a6b76e10558717ee28fcb8c6fde161b9dc6382239af9f372ace99902204a58e31ce0b4a4804a42d2224331289311ded2748062c92c8aca769e81417a4c012102e18a8c235b48e41ef98265a8e07fa005d2602b96d585a61ad67168d74e7391cb02483045022100bbfe060479174a8d846b5a897526003eb2220ba307a5fee6e1e8de3e4e8b38fd02206723857301d447f67ac98a5a5c2b80ef6820e98fae213db1720f93d91161803b01210386728e2ac3ecee15f58d0505ee26f86a68f08c702941ffaf2fb7213e5026aea10247304402203a2613ae68f697eb02b5b7d18e3c4236966dac2b3a760e3021197d76e9ad4239022046f9067d3df650fcabbdfd250308c64f90757dec86f0b08813c979a42d06a6ec012102a1d7ee1cb4dc502f899aaafae0a2eb6cbf80d9a1073ae60ddcaabc3b1d1f15df02483045022100ab1bea2cc5388428fd126c7801550208701e21564bd4bd00cfd4407cfafc1acd0220508ee587f080f3c80a5c0b2175b58edd84b755e659e2135b3152044d75ebc4b501210236dd1b7f27a296447d0eb3750e1bdb2d53af50b31a72a45511dc1ec3fe7a684a19391400220602ab053d10eda769fab03ab52ee4f1692730288751369643290a8506e31d1e80f00c233d2ae40000000002000000000022020327295144ffff9943356c2d6625f5e2d6411bab77fd56dce571fda6234324e3d90c233d2ae4010000000000000000",
                                      partial_tx)
                 tx_copy = tx_from_any(partial_tx)  # simulates moving partial txn between cosigners
                 self.assertTrue(wallet_online.is_mine(wallet_online.adb.get_txin_address(tx_copy.inputs()[0])))
@@ -2998,9 +2864,10 @@ class TestWalletOfflineSigning(ElectrumTestCase):
                 tx = wallet_offline.sign_transaction(tx_copy, password=None)
                 self.assertTrue(tx.is_complete())
                 self.assertFalse(tx.is_segwit())
-                self.assertEqual('d9c21696eca80321933e7444ca928aaf25eeda81aaa2f4e5c085d4d0a9cf7aa7', tx.txid())
-                self.assertEqual('d9c21696eca80321933e7444ca928aaf25eeda81aaa2f4e5c085d4d0a9cf7aa7', tx.wtxid())
+                self.assertEqual('1d881725adb7f4bcd09784bf73e847a896f281503722aaaa56f936c26937ccaa', tx.txid())
+                self.assertEqual('1d881725adb7f4bcd09784bf73e847a896f281503722aaaa56f936c26937ccaa', tx.wtxid())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_sending_offline_xprv_online_xpub_p2wpkh_p2sh(self, mock_save_db):
         wallet_offline = WalletIntegrityHelper.create_standard_wallet(
@@ -3046,6 +2913,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         self.assertEqual('3f0d188519237478258ad2bf881643618635d11c2bb95512e830fcf2eda3c522', tx.txid())
         self.assertEqual('27b78ec072a403b0545258e7a1a8d494e4b6fd48bf77f4251a12160c92207cbc', tx.wtxid())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_sending_offline_xprv_online_xpub_p2wpkh(self, mock_save_db):
         wallet_offline = WalletIntegrityHelper.create_standard_wallet(
@@ -3104,6 +2972,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
                 self.assertEqual('ee76c0c6da87f0eb5ab4d1ae05d3942512dcd3c4c42518f9d3619e74400cfc1f', tx.txid())
                 self.assertEqual('484e350beaa722a744bb3e2aa38de005baa8526d86536d6143e5814355acf775', tx.wtxid())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_offline_signing_beyond_gap_limit(self, mock_save_db):
         wallet_offline = WalletIntegrityHelper.create_standard_wallet(
@@ -3149,6 +3018,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         self.assertEqual('ee76c0c6da87f0eb5ab4d1ae05d3942512dcd3c4c42518f9d3619e74400cfc1f', tx.txid())
         self.assertEqual('484e350beaa722a744bb3e2aa38de005baa8526d86536d6143e5814355acf775', tx.wtxid())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_signing_where_offline_ks_does_not_have_keyorigin_but_psbt_contains_it(self, mock_save_db):
         # keystore has intermediate xprv without root fp; tx contains root fp and full path.
@@ -3175,7 +3045,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         wallet_offline = WalletIntegrityHelper.create_imported_wallet(privkeys=True, config=self.config)
         wallet_offline.import_private_key('p2pkh:cQDxbmQfwRV3vP1mdnVHq37nJekHLsuD3wdSQseBRA2ct4MFk5Pq', password=None)
         wallet_online = WalletIntegrityHelper.create_imported_wallet(privkeys=False, config=self.config)
-        wallet_online.import_address('mg2jk6S5WGDhUPA8mLSxDLWpUoQnX1zzoG')
+        wallet_online.import_address('t7SPVqCgs9diZKPXA3n3yLsQYsXsti7pTj')
 
         # bootstrap wallet_online
         funding_tx = Transaction('01000000000101197a89cff51096b9dd4214cdee0eb90cb27a25477e739521d728a679724042730100000000fdffffff048096980000000000160014dab37af8fefbbb31887a0a5f9b2698f4a7b45f6a80969800000000001976a91405a20074ef7eb42c7c6fcd4f499faa699742783288ac809698000000000017a914b808938a8007bc54509cd946944c479c0fa6554f87131b2c0400000000160014a04dfdb9a9aeac3b3fada6f43c2a66886186e2440247304402204f5dbb9dda65eab26179f1ca7c37c8baf028153815085dd1bbb2b826296e3b870220379fcd825742d6e2bdff772f347b629047824f289a5499a501033f6c3495594901210363c9c98740fe0455c646215cea9b13807b758791c8af7b74e62968bef57ff8ae1e391400')
@@ -3184,7 +3054,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         wallet_online.adb.receive_tx_callback(funding_txid, funding_tx, TX_HEIGHT_UNCONFIRMED)
 
         # create unsigned tx
-        outputs = [PartialTxOutput.from_address_and_value('tb1quk7ahlhr3qmjndy0uvu9y9hxfesrtahtta9ghm', 2500000)]
+        outputs = [PartialTxOutput.from_address_and_value('tTsNENzjdEkFEDEszW4di4eC7e4jd5bMZA', 2500000)]  # p2pkh, same hash160 as tb1quk7ahlhr3qmjndy0uvu9y9hxfesrtahtta9ghm
         tx = wallet_online.mktx(outputs=outputs, password=None, fee=5000, rbf=True)
         tx.locktime = 1325340
         tx.version = 1
@@ -3192,7 +3062,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         self.assertFalse(tx.is_complete())
         self.assertEqual(1, len(tx.inputs()))
         partial_tx = tx.serialize_as_bytes().hex()
-        self.assertEqual("70736274ff0100740100000001626bbbb7a4ad82dbf7f6bd64ac3f40d0e2695b606d7953f2802b9ea426ea080a0100000000fdffffff02a025260000000000160014e5bddbfee3883729b48fe3385216e64e6035f6eb585d7200000000001976a91405a20074ef7eb42c7c6fcd4f499faa699742783288ac1c391400000100fd200101000000000101197a89cff51096b9dd4214cdee0eb90cb27a25477e739521d728a679724042730100000000fdffffff048096980000000000160014dab37af8fefbbb31887a0a5f9b2698f4a7b45f6a80969800000000001976a91405a20074ef7eb42c7c6fcd4f499faa699742783288ac809698000000000017a914b808938a8007bc54509cd946944c479c0fa6554f87131b2c0400000000160014a04dfdb9a9aeac3b3fada6f43c2a66886186e2440247304402204f5dbb9dda65eab26179f1ca7c37c8baf028153815085dd1bbb2b826296e3b870220379fcd825742d6e2bdff772f347b629047824f289a5499a501033f6c3495594901210363c9c98740fe0455c646215cea9b13807b758791c8af7b74e62968bef57ff8ae1e391400000000",
+        self.assertEqual("70736274ff0100770100000001626bbbb7a4ad82dbf7f6bd64ac3f40d0e2695b606d7953f2802b9ea426ea080a0100000000fdffffff02a0252600000000001976a914e5bddbfee3883729b48fe3385216e64e6035f6eb88ac585d7200000000001976a91405a20074ef7eb42c7c6fcd4f499faa699742783288ac1c391400000100fd200101000000000101197a89cff51096b9dd4214cdee0eb90cb27a25477e739521d728a679724042730100000000fdffffff048096980000000000160014dab37af8fefbbb31887a0a5f9b2698f4a7b45f6a80969800000000001976a91405a20074ef7eb42c7c6fcd4f499faa699742783288ac809698000000000017a914b808938a8007bc54509cd946944c479c0fa6554f87131b2c0400000000160014a04dfdb9a9aeac3b3fada6f43c2a66886186e2440247304402204f5dbb9dda65eab26179f1ca7c37c8baf028153815085dd1bbb2b826296e3b870220379fcd825742d6e2bdff772f347b629047824f289a5499a501033f6c3495594901210363c9c98740fe0455c646215cea9b13807b758791c8af7b74e62968bef57ff8ae1e391400000000",
                          partial_tx)
         tx_copy = tx_from_any(partial_tx)  # simulates moving partial txn between cosigners
         self.assertTrue(wallet_online.is_mine(wallet_online.adb.get_txin_address(tx_copy.inputs()[0])))
@@ -3204,9 +3074,10 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         tx = wallet_offline.sign_transaction(tx_copy, password=None)
         self.assertTrue(tx.is_complete())
         self.assertFalse(tx.is_segwit())
-        self.assertEqual('e56da664631b8c666c6df38ec80c954c4ac3c4f56f040faf0070e4681e937fc4', tx.txid())
-        self.assertEqual('e56da664631b8c666c6df38ec80c954c4ac3c4f56f040faf0070e4681e937fc4', tx.wtxid())
+        self.assertEqual('67ef1543442c32a4840bc5783b670c0930947cd84acb62ed8222a7f4b1074c14', tx.txid())
+        self.assertEqual('67ef1543442c32a4840bc5783b670c0930947cd84acb62ed8222a7f4b1074c14', tx.wtxid())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_sending_offline_wif_online_addr_p2wpkh_p2sh(self, mock_save_db):
         wallet_offline = WalletIntegrityHelper.create_imported_wallet(privkeys=True, config=self.config)
@@ -3247,6 +3118,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         self.assertEqual('7642816d051aa3b333b6564bb6e44fe3a5885bfe7db9860dfbc9973a5c9a6562', tx.txid())
         self.assertEqual('9bb9949974954613945756c48ca5525cd5cba1b667ccb10c7a53e1ed076a1117', tx.wtxid())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_sending_offline_wif_online_addr_p2wpkh(self, mock_save_db):
         wallet_offline = WalletIntegrityHelper.create_imported_wallet(privkeys=True, config=self.config)
@@ -3293,7 +3165,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
             config=self.config
         )
         wallet_online = WalletIntegrityHelper.create_imported_wallet(privkeys=False, config=self.config)
-        wallet_online.import_address('mg2jk6S5WGDhUPA8mLSxDLWpUoQnX1zzoG')
+        wallet_online.import_address('t7SPVqCgs9diZKPXA3n3yLsQYsXsti7pTj')
 
         # bootstrap wallet_online
         funding_tx = Transaction('01000000000101197a89cff51096b9dd4214cdee0eb90cb27a25477e739521d728a679724042730100000000fdffffff048096980000000000160014dab37af8fefbbb31887a0a5f9b2698f4a7b45f6a80969800000000001976a91405a20074ef7eb42c7c6fcd4f499faa699742783288ac809698000000000017a914b808938a8007bc54509cd946944c479c0fa6554f87131b2c0400000000160014a04dfdb9a9aeac3b3fada6f43c2a66886186e2440247304402204f5dbb9dda65eab26179f1ca7c37c8baf028153815085dd1bbb2b826296e3b870220379fcd825742d6e2bdff772f347b629047824f289a5499a501033f6c3495594901210363c9c98740fe0455c646215cea9b13807b758791c8af7b74e62968bef57ff8ae1e391400')
@@ -3302,7 +3174,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         wallet_online.adb.receive_tx_callback(funding_txid, funding_tx, TX_HEIGHT_UNCONFIRMED)
 
         # create unsigned tx
-        outputs = [PartialTxOutput.from_address_and_value('tb1quk7ahlhr3qmjndy0uvu9y9hxfesrtahtta9ghm', 2500000)]
+        outputs = [PartialTxOutput.from_address_and_value('tTsNENzjdEkFEDEszW4di4eC7e4jd5bMZA', 2500000)]  # p2pkh, same hash160 as tb1quk7ahlhr3qmjndy0uvu9y9hxfesrtahtta9ghm
         tx = wallet_online.mktx(outputs=outputs, password=None, fee=5000, rbf=True)
         tx.locktime = 1325340
         tx.version = 1
@@ -3310,7 +3182,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         self.assertFalse(tx.is_complete())
         self.assertEqual(1, len(tx.inputs()))
         partial_tx = tx.serialize_as_bytes().hex()
-        self.assertEqual("70736274ff0100740100000001626bbbb7a4ad82dbf7f6bd64ac3f40d0e2695b606d7953f2802b9ea426ea080a0100000000fdffffff02a025260000000000160014e5bddbfee3883729b48fe3385216e64e6035f6eb585d7200000000001976a91405a20074ef7eb42c7c6fcd4f499faa699742783288ac1c391400000100fd200101000000000101197a89cff51096b9dd4214cdee0eb90cb27a25477e739521d728a679724042730100000000fdffffff048096980000000000160014dab37af8fefbbb31887a0a5f9b2698f4a7b45f6a80969800000000001976a91405a20074ef7eb42c7c6fcd4f499faa699742783288ac809698000000000017a914b808938a8007bc54509cd946944c479c0fa6554f87131b2c0400000000160014a04dfdb9a9aeac3b3fada6f43c2a66886186e2440247304402204f5dbb9dda65eab26179f1ca7c37c8baf028153815085dd1bbb2b826296e3b870220379fcd825742d6e2bdff772f347b629047824f289a5499a501033f6c3495594901210363c9c98740fe0455c646215cea9b13807b758791c8af7b74e62968bef57ff8ae1e391400000000",
+        self.assertEqual("70736274ff0100770100000001626bbbb7a4ad82dbf7f6bd64ac3f40d0e2695b606d7953f2802b9ea426ea080a0100000000fdffffff02a0252600000000001976a914e5bddbfee3883729b48fe3385216e64e6035f6eb88ac585d7200000000001976a91405a20074ef7eb42c7c6fcd4f499faa699742783288ac1c391400000100fd200101000000000101197a89cff51096b9dd4214cdee0eb90cb27a25477e739521d728a679724042730100000000fdffffff048096980000000000160014dab37af8fefbbb31887a0a5f9b2698f4a7b45f6a80969800000000001976a91405a20074ef7eb42c7c6fcd4f499faa699742783288ac809698000000000017a914b808938a8007bc54509cd946944c479c0fa6554f87131b2c0400000000160014a04dfdb9a9aeac3b3fada6f43c2a66886186e2440247304402204f5dbb9dda65eab26179f1ca7c37c8baf028153815085dd1bbb2b826296e3b870220379fcd825742d6e2bdff772f347b629047824f289a5499a501033f6c3495594901210363c9c98740fe0455c646215cea9b13807b758791c8af7b74e62968bef57ff8ae1e391400000000",
                          partial_tx)
         tx_copy = tx_from_any(partial_tx)  # simulates moving partial txn between cosigners
         self.assertTrue(wallet_online.is_mine(wallet_online.adb.get_txin_address(tx_copy.inputs()[0])))
@@ -3325,9 +3197,10 @@ class TestWalletOfflineSigning(ElectrumTestCase):
             tx.inputs()[0].script_descriptor.to_string_no_checksum())
         self.assertTrue(tx.is_complete())
         self.assertFalse(tx.is_segwit())
-        self.assertEqual('e56da664631b8c666c6df38ec80c954c4ac3c4f56f040faf0070e4681e937fc4', tx.txid())
-        self.assertEqual('e56da664631b8c666c6df38ec80c954c4ac3c4f56f040faf0070e4681e937fc4', tx.wtxid())
+        self.assertEqual('67ef1543442c32a4840bc5783b670c0930947cd84acb62ed8222a7f4b1074c14', tx.txid())
+        self.assertEqual('67ef1543442c32a4840bc5783b670c0930947cd84acb62ed8222a7f4b1074c14', tx.wtxid())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_sending_offline_xprv_online_addr_p2wpkh_p2sh(self, mock_save_db):
         wallet_offline = WalletIntegrityHelper.create_standard_wallet(
@@ -3369,6 +3242,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         self.assertEqual('7642816d051aa3b333b6564bb6e44fe3a5885bfe7db9860dfbc9973a5c9a6562', tx.txid())
         self.assertEqual('9bb9949974954613945756c48ca5525cd5cba1b667ccb10c7a53e1ed076a1117', tx.wtxid())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_sending_offline_xprv_online_addr_p2wpkh(self, mock_save_db):
         wallet_offline = WalletIntegrityHelper.create_standard_wallet(
@@ -3477,6 +3351,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         self.assertEqual('0e8fdc8257a85ebe7eeab14a53c2c258c61a511f64176b7f8fc016bc2263d307', tx.txid())
         self.assertEqual('0e8fdc8257a85ebe7eeab14a53c2c258c61a511f64176b7f8fc016bc2263d307', tx.wtxid())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_sending_offline_hd_multisig_online_addr_p2wsh_p2sh(self, mock_save_db):
         # 2-of-2 p2sh-embedded segwit multisig
@@ -3546,6 +3421,7 @@ class TestWalletOfflineSigning(ElectrumTestCase):
         self.assertEqual('6a58a51591142429203b62b6ddf6b799a6926882efac229998c51bee6c3573eb', tx.txid())
         self.assertEqual('96d0bca1001778c54e4c3a07929fab5562c5b5a23fd1ca3aa3870cc5df2bf97d', tx.wtxid())
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_sending_offline_hd_multisig_online_addr_p2wsh(self, mock_save_db):
         # 2-of-3 p2wsh multisig
@@ -3700,6 +3576,7 @@ class TestWalletHistory_EvilGapLimit(ElectrumTestCase):
         w = WalletIntegrityHelper.create_standard_wallet(ks, gap_limit=20, config=self.config)
         return w
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_restoring_wallet_txorder1(self, mock_save_db):
         w = self.create_wallet()
@@ -3749,6 +3626,7 @@ class TestWalletHistory_DoubleSpend(ElectrumTestCase):
         super().setUp()
         self.config = SimpleConfig({'electrum_path': self.electrum_path})
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_restoring_wallet_without_manual_delete(self, mock_save_db):
         w = restore_wallet_from_text("small rapid pattern language comic denial donate extend tide fever burden barrel",
@@ -3763,6 +3641,7 @@ class TestWalletHistory_DoubleSpend(ElectrumTestCase):
         # txn C is double-spending txn B, to a wallet address
         self.assertEqual(999890, sum(w.get_balance()))
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_restoring_wallet_with_manual_delete(self, mock_save_db):
         w = restore_wallet_from_text("small rapid pattern language comic denial donate extend tide fever burden barrel",
@@ -3800,6 +3679,7 @@ class TestImportedWallet(ElectrumTestCase):
         super().setUp()
         self.config = SimpleConfig({'electrum_path': self.electrum_path})
 
+    @unittest.skip('Neurai has no SegWit')
     @mock.patch.object(wallet.Abstract_Wallet, 'save_db')
     async def test_importing_and_deleting_addresses(self, mock_save_db):
         w = restore_wallet_from_text("tb1q7648a2pm2se425lvun0g3vlf4ahmflcthegz63",

@@ -753,6 +753,10 @@ def get_address_from_output_script(_bytes: bytes, *, net=None) -> Optional[str]:
     if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_P2SH):
         return hash160_to_p2sh(decoded[1][1], net=net)
 
+    # witness programs have no address without a bech32 hrp (Neurai)
+    if not (net or constants.net).SEGWIT_HRP:
+        return None
+
     # segwit address (version 0)
     if match_script_against_template(decoded, SCRIPTPUBKEY_TEMPLATE_WITNESS_V0):
         return hash_to_segwit_addr(decoded[1][1], witver=0, net=net)

@@ -402,6 +402,8 @@ def verify_message_with_address(address: str, sig65: bytes, message: bytes, *, n
     # check public key using the address
     pubkey_hex = public_key.get_public_key_hex(compressed)
     txin_types = (txin_type_guess,) if txin_type_guess else ('p2pkh', 'p2wpkh', 'p2wpkh-p2sh')
+    if not net.SEGWIT_HRP:  # no bech32 addresses to compare with (Neurai)
+        txin_types = tuple(t for t in txin_types if t != 'p2wpkh')
     for txin_type in txin_types:
         addr = pubkey_to_address(txin_type, pubkey_hex, net=net)
         if address == addr:

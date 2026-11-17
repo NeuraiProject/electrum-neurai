@@ -407,6 +407,8 @@ def public_key_to_p2pkh(public_key: bytes, *, net=None) -> str:
 
 def hash_to_segwit_addr(h: bytes, witver: int, *, net=None) -> str:
     if net is None: net = constants.net
+    if not net.SEGWIT_HRP:
+        raise NotImplementedError('this network has no bech32 addresses')
     addr = segwit_addr.encode_segwit_address(net.SEGWIT_HRP, witver, h)
     assert addr is not None
     return addr

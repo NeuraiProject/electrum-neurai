@@ -21,6 +21,12 @@ from electrum.simple_config import SimpleConfig
 from . import ElectrumTestCase, as_testnet
 
 
+# Neurai has no SegWit (constants.net.SEGWIT_HRP == ""): Lightning channels,
+# whose funding outputs are P2WSH, cannot exist on Neurai.
+NO_LIGHTNING = "Neurai has no SegWit, so no Lightning"
+NO_FUNDING_INPUT = NO_LIGHTNING + ": make_funding_input() raises NotImplementedError"
+
+
 funding_tx_id = '8984484a580b825b9972d7adb15050b3ab624ccd731946b3eeddb92f4e7ef6be'
 funding_output_index = 0
 funding_amount_satoshi = 10000000
@@ -466,6 +472,7 @@ class TestLNUtil(ElectrumTestCase):
                 s2 = json.dumps(c2.storage, cls=MyEncoder)
                 self.assertEqual(s1, s2)
 
+    @unittest.skip(NO_FUNDING_INPUT)
     def test_commitment_tx_with_all_five_HTLCs_untrimmed_minimum_feerate(self):
         to_local_msat = 6988000000
         to_remote_msat = 3000000000
@@ -595,6 +602,7 @@ class TestLNUtil(ElectrumTestCase):
         our_htlc_tx._inputs[0].witness = our_htlc_tx_witness
         return str(our_htlc_tx)
 
+    @unittest.skip(NO_FUNDING_INPUT)
     def test_commitment_tx_with_one_output(self):
         to_local_msat= 6988000000
         to_remote_msat= 3000000000
@@ -624,6 +632,7 @@ class TestLNUtil(ElectrumTestCase):
 
         self.assertEqual(str(our_commit_tx), output_commit_tx)
 
+    @unittest.skip(NO_FUNDING_INPUT)
     def test_commitment_tx_with_fee_greater_than_funder_amount(self):
         to_local_msat= 6988000000
         to_remote_msat= 3000000000
@@ -688,6 +697,7 @@ class TestLNUtil(ElectrumTestCase):
         revocationpubkey = derive_blinded_pubkey(revocation_basepoint, per_commitment_point)
         self.assertEqual(revocationpubkey, bfh('02916e326636d19c33f13e8c0c3a03dd157f332f3e99c317c141dd865eb01f8ff0'))
 
+    @unittest.skip(NO_FUNDING_INPUT)
     def test_simple_commitment_tx_with_no_HTLCs(self):
         to_local_msat = 7000000000
         to_remote_msat = 3000000000
@@ -771,7 +781,9 @@ class TestLNUtil(ElectrumTestCase):
         self.assertEqual(extract_nodeid(f"{pubkey1.hex()}@[2001:41d0:e:734::1]:8888"), (pubkey1, "[2001:41d0:e:734::1]:8888"))
         # just pubkey
         self.assertEqual(extract_nodeid(f"{pubkey1.hex()}"), (pubkey1, None))
-        # bolt11 invoice
+
+    @unittest.skip(NO_LIGHTNING + " (Bitcoin 'lnbc' BOLT11 invoice)")
+    def test_extract_nodeid_from_bolt11_invoice(self):
         self.assertEqual(extract_nodeid("lnbc241ps9zprzpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygshp58yjmdan79s6qqdhdzgynm4zwqd5d7xmw5fk98klysy043l2ahrqs9qypqszrwfgrl5k3rt4q4mclc8t00p2tcjsf9pmpcq6lu5zhmampyvk43fk30eqpdm8t5qmdpzan25aqxqaqdzmy0smrtduazjcxx975vz78ccpx0qhev"),
                          (bfh("03e7156ae33b0a208d0744199163177e909e80176e55d97a2f221ede0f934dd9ad"), None))
 
@@ -889,7 +901,8 @@ class TestLNUtil(ElectrumTestCase):
         self.assertFalse(f1.supports(LnFeatures.OPTION_TRAMPOLINE_ROUTING_REQ_ELECTRUM))
 
     def test_lnworker_decode_channel_update_msg(self):
-        msg_without_prefix = bytes.fromhex("439b71c8ddeff63004e4ff1f9764a57dcf20232b79d9d669aef0e31c42be8e44208f7d868d0133acb334047f30e9399dece226ccd98e5df5330adf7f356290516fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d619000000000008762700054a00005ef2cf9c0101009000000000000003e80000000000000001000000002367b880")
+        # chain_hash (after the 64-byte signature) is the one of Neurai mainnet
+        msg_without_prefix = bytes.fromhex("439b71c8ddeff63004e4ff1f9764a57dcf20232b79d9d669aef0e31c42be8e44208f7d868d0133acb334047f30e9399dece226ccd98e5df5330adf7f3562905106484804618cf622331522c2b49ca624047349025cbe19a00b0c3cd34400000008762700054a00005ef2cf9c0101009000000000000003e80000000000000001000000002367b880")
         # good messages
         self.assertNotEqual(
             None,
@@ -920,6 +933,7 @@ class TestLNUtil(ElectrumTestCase):
         channel_type = ChannelType(0b10000000001000000000010).discard_unknown_and_check()
         self.assertEqual(ChannelType(0b10000000001000000000000), channel_type)
 
+    @unittest.skip(NO_LIGHTNING + " (channel backups of a segwit wallet, tb1 funding address)")
     @as_testnet
     async def test_decode_imported_channel_backup_v0(self):
         encrypted_cb = "channel_backup:Adn87xcGIs9H2kfp4VpsOaNKWCHX08wBoqq37l1cLYKGlJamTeoaLEwpJA81l1BXF3GP/mRxqkY+whZG9l51G8izIY/kmMSvnh0DOiZEdwaaT/1/MwEHfsEomruFqs+iW24SFJPHbMM7f80bDtIxcLfZkKmgcKBAOlcqtq+dL3U3yH74S8BDDe2L4snaxxpCjF0JjDMBx1UR/28D+QlIi+lbvv1JMaCGXf+AF1+3jLQf8+lVI+rvFdyArws6Ocsvjf+ANQeSGUwW6Nb2xICQcMRgr1DO7bO4pgGu408eYRr2v3ayJBVtnKwSwd49gF5SDSjTDAO4CCM0uj9H5RxyzH7fqotkd9J80MBr84RiBXAeXKz+Ap8608/FVqgQ9BOcn6LhuAQdE5zXpmbQyw5jUGkPvHuseR+rzthzncy01odUceqTNg=="
@@ -947,6 +961,7 @@ class TestLNUtil(ElectrumTestCase):
             decoded_cb,
         )
 
+    @unittest.skip(NO_LIGHTNING + " (channel backups of a segwit wallet, tb1 funding address)")
     @as_testnet
     async def test_decode_imported_channel_backup_v1(self):
         encrypted_cb = "channel_backup:AVYIedu0qSLfY2M2bBxF6dA4RAxcmobp+3h9mxALWWsv5X7hhNg0XYOKNd11FE6BJOZgZnIZ4CCAlHtLNj0/9S5GbNhbNZiQXxeHMwC1lHvtjawkwSejIJyOI52DkDFHBAGZRd4fJjaPJRHnUizWfySVR4zjd08lTinpoIeL7C7tXBW1N6YqceqV7RpeoywlBXJtFfCCuw0hnUKgq3SMlBKapkNAIgGrg15aIHNcYeENxCxr5FD1s7DIwFSECqsBVnu/Ogx2oii8BfuxqJq8vuGq4Ib/BVaSVtdb2E1wklAor/CG0p9Fg9mFWND98JD+64nz9n/knPFFyHxTXErn+ct3ZcStsLYynWKUIocgu38PtzCJ7r5ivqOw4O49fbbzdjcgMUGklPYxjuinETneCo+dCPa1uepOGTqeOYmnjVYtYZYXOlWV1F5OtNoM7MwwJjAbz84="

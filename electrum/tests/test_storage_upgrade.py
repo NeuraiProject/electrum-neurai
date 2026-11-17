@@ -1,5 +1,3 @@
-import shutil
-import tempfile
 import os
 import json
 from typing import Optional
@@ -7,12 +5,11 @@ import asyncio
 import inspect
 
 import electrum
-from electrum.wallet_db import WalletDB
+from electrum.wallet_db import WalletDB, FINAL_SEED_VERSION
 from electrum.wallet import Wallet
 from electrum import constants
 from electrum import util
-from electrum.plugin import Plugins
-from electrum.simple_config import SimpleConfig
+from electrum.util import WalletFileException
 
 from . import as_testnet
 from .test_wallet import WalletTestCase
@@ -20,6 +17,13 @@ from .test_wallet import WalletTestCase
 
 WALLET_FILES_DIR = os.path.join(os.path.dirname(__file__), "test_storage_upgrade")
 
+
+# Neurai restarted the wallet file versioning: FINAL_SEED_VERSION is 1 and
+# WalletDB.upgrade() has no upgrade steps. The client_1_x/2_x/3_x files are
+# (Bitcoin) Electrum wallet files, with seed_version 4..18 or, for the oldest
+# formats, no seed_version at all. The Neurai client has no upgrade path for
+# them and must refuse to open them with a WalletFileException.
+# Only the current Neurai format (client_0_2_2_*, seed_version 1) loads.
 
 # TODO add other wallet types: 2fa, xpub-only
 # TODO hw wallet with client version 2.6.x (single-, and multiacc)
@@ -38,12 +42,22 @@ class TestStorageUpgrade(WalletTestCase):
 
 ##########
 
+    async def test_upgrade_from_client_0_2_2_seeded(self):
+        # current Neurai wallet file format: nothing to upgrade
+        wallet_str = self._get_wallet_str()
+        db = await self._upgrade_storage(wallet_str)
+        self.assertEqual(FINAL_SEED_VERSION, db.get_seed_version())
+        wallet = Wallet(db, config=self.config)
+        self.assertEqual('NhHj5eaHBV3hyoa6Md4zha2jvghGiwPqhb', wallet.get_receiving_addresses()[0])
+        self.assertEqual('NhHj5eaHBV3hyoa6Md4zha2jvghGiwPqhb', wallet.derive_address(0, 0))
+        await wallet.stop()
+
     async def test_upgrade_from_client_1_9_8_seeded(self):
         """note: this wallet file is not valid json: it tests the ast.literal_eval()
         fallback in wallet_db.load_data()
         """
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     # TODO pre-2.0 mixed wallets are not split currently
     #async def test_upgrade_from_client_1_9_8_mixed(self):
@@ -52,183 +66,183 @@ class TestStorageUpgrade(WalletTestCase):
 
     async def test_upgrade_from_client_2_0_4_seeded(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_0_4_importedkeys(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_0_4_watchaddresses(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_0_4_trezor_singleacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_0_4_trezor_multiacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str, accounts=2)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_0_4_multisig(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_1_1_seeded(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_1_1_importedkeys(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_1_1_watchaddresses(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_1_1_trezor_singleacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_1_1_trezor_multiacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str, accounts=2)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_1_1_multisig(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_2_0_seeded(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_2_0_importedkeys(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_2_0_watchaddresses(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_2_0_trezor_singleacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_2_0_trezor_multiacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str, accounts=2)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_2_0_multisig(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_3_2_seeded(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_3_2_importedkeys(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_3_2_watchaddresses(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_3_2_trezor_singleacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_3_2_trezor_multiacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str, accounts=2)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_3_2_multisig(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_4_3_seeded(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_4_3_importedkeys(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_4_3_watchaddresses(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_4_3_trezor_singleacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_4_3_trezor_multiacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str, accounts=2)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_4_3_multisig(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_5_4_seeded(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_5_4_importedkeys(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_5_4_watchaddresses(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_5_4_trezor_singleacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_5_4_trezor_multiacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str, accounts=2)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_5_4_multisig(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_6_4_seeded(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_6_4_importedkeys(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_6_4_watchaddresses(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_6_4_multisig(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_7_18_seeded(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_7_18_importedkeys(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_7_18_watchaddresses(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_7_18_trezor_singleacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_7_18_multisig(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     # seed_version 13 is ambiguous
     # client 2.7.18 created wallets with an earlier "v13" structure
@@ -239,97 +253,82 @@ class TestStorageUpgrade(WalletTestCase):
     # it's in some sense in an "inconsistent" state
     async def test_upgrade_from_client_2_8_3_importedkeys_flawed_previous_upgrade_from_2_7_18(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_8_3_seeded(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_8_3_importedkeys(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_8_3_watchaddresses(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_8_3_trezor_singleacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_8_3_multisig(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_9_3_seeded(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     @as_testnet
     async def test_upgrade_from_client_2_9_3_old_seeded_with_realistic_history(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_9_3_importedkeys(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_9_3_watchaddresses(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_9_3_trezor_singleacc(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_9_3_multisig(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_3_2_3_ledger_standard_keystore_changes(self):
-        # see #6066
+        # see #6066 (the keystore checks need an upgraded wallet; this file is refused)
         wallet_str = self._get_wallet_str()
-        db = await self._upgrade_storage(wallet_str)
-        wallet = Wallet(db, config=self.config)
-        ks = wallet.keystore
-        # to simulate ks.opportunistically_fill_in_missing_info_from_device():
-        ks._root_fingerprint = "deadbeef"
-        ks.is_requesting_to_be_rewritten_to_wallet_file = True
-        await wallet.stop()
+        self._assert_wallet_file_rejected(wallet_str)
 
     async def test_upgrade_from_client_2_9_3_importedkeys_keystore_changes(self):
-        # see #6401
+        # see #6401 (the keystore checks need an upgraded wallet; this file is refused)
         wallet_str = self._get_wallet_str()
-        db = await self._upgrade_storage(wallet_str)
-        wallet = Wallet(db, config=self.config)
-        wallet.import_private_keys(
-            ["p2wpkh:L1cgMEnShp73r9iCukoPE3MogLeueNYRD9JVsfT1zVHyPBR3KqBY"],
-            password=None
-        )
-        await wallet.stop()
+        self._assert_wallet_file_rejected(wallet_str)
 
     @as_testnet
     async def test_upgrade_from_client_3_3_8_xpub_with_realistic_history(self):
         wallet_str = self._get_wallet_str()
-        await self._upgrade_storage(wallet_str)
+        self._assert_wallet_file_rejected(wallet_str)
 
 ##########
 
-    plugins: 'electrum.plugin.Plugins'
+    # note: no Plugins instance here. It was only needed to load hardware wallet
+    #       keystores (e.g. Trezor), but every hardware wallet file in this module is
+    #       refused before keystores are loaded. Its DaemonThread.on_stop() also needs
+    #       electrum's global event loop, which unit tests do not create
+    #       ("Exception in thread Plugins: event loop not created yet" on teardown).
 
-    def setUp(self):
-        super().setUp()
-        self.__electrum_path = tempfile.mkdtemp()
-        config = SimpleConfig({'electrum_path': self.__electrum_path})
-        gui_name = 'cmdline'
-        # TODO it's probably wasteful to load all plugins... only need Trezor
-        self.plugins = Plugins(config, gui_name)
-
-    def tearDown(self):
-        super().tearDown()
-        shutil.rmtree(self.__electrum_path)
-        self.plugins.stop()
-        self.plugins.stopped_event.wait()
+    def _assert_wallet_file_rejected(self, wallet_json):
+        for manual_upgrades in (True, False):
+            with self.subTest(manual_upgrades=manual_upgrades):
+                with self.assertRaises(WalletFileException):
+                    self._load_db_from_json_string(wallet_json=wallet_json,
+                                                   manual_upgrades=manual_upgrades)
 
     async def _upgrade_storage(self, wallet_json, accounts=1) -> Optional[WalletDB]:
         if accounts == 1:

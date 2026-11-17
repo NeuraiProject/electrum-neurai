@@ -1,54 +1,84 @@
+import json
 import shutil
 import tempfile
 import os
+import struct
 
 from electrum import constants, blockchain
+from electrum.crypto import sha256d
 from electrum.simple_config import SimpleConfig
-from electrum.blockchain import Blockchain, deserialize_header, hash_header, InvalidHeader
+from electrum.blockchain import (Blockchain, deserialize_header, hash_header, InvalidHeader,
+                                 HEADER_SIZE, DGW_PASTBLOCKS)
 from electrum.util import bfh, make_dir
 
 from . import ElectrumTestCase
 
 
+class NeuraiUnitTestNet(constants.NeuraiTestnet):
+    """Regtest-like network for unit tests.
+
+    Its genesis is header 'A' of TestBlockchain.HEADERS and it has no
+    checkpoints, so forks can start at any height. Like any TESTNET,
+    bits and proof of work are not checked and chainwork == height.
+    """
+    NET_NAME = "regtest"
+    GENESIS = "5d5c7ac641d18951ceae27616156b7acc4178d077c81c816ea2e784b47c99817"
+    CHECKPOINTS = []
+    DGW_CHECKPOINTS = []
+
+
+def make_raw_header(label: str, height: int, prev_hash: str) -> bytes:
+    """Deterministic synthetic header for block `label` at `height`, child of `prev_hash`.
+
+    As on Neurai, the genesis (height 0) is a legacy 80-byte header hashed
+    with X16R (timestamp just before KawpowActivationTS), and every other
+    block is a 120-byte KAWPOW header with nheight, a 64-bit nonce and
+    mix_hash. The merkle root and mix_hash are derived from the label, so
+    blocks at the same height on different branches get different hashes.
+    nonce/mix_hash are not real PoW solutions: kawpow.light_verify hashes
+    any value, and PoW is not checked on test networks.
+    """
+    version, bits = 0x20000000, 0x207fffff
+    genesis_time = NeuraiUnitTestNet.KawpowActivationTS - 1
+    merkle_root = sha256d(b'merkle ' + label.encode())
+    if height == 0:
+        return struct.pack('<i32s32sIII', 4, bytes(32), merkle_root, genesis_time, bits, 0)
+    mix_hash = sha256d(b'mix ' + label.encode())
+    return struct.pack('<i32s32sIIIQ32s', version, bfh(prev_hash)[::-1], merkle_root,
+                       genesis_time + 60 * height, bits, height, height, mix_hash)
+
+
+def make_header_tree(tree):
+    """tree: sequence of (label, parent label or None), parents first.
+    Returns (raw headers, deserialized headers), both keyed by label."""
+    raw_headers, headers = {}, {}
+    for label, parent in tree:
+        height = headers[parent]['block_height'] + 1 if parent else 0
+        prev_hash = hash_header(headers[parent]) if parent else '00' * 32
+        raw_headers[label] = make_raw_header(label, height, prev_hash)
+        headers[label] = deserialize_header(raw_headers[label], height)
+    return raw_headers, headers
+
+
 class TestBlockchain(ElectrumTestCase):
 
-    HEADERS = {
-        'A': deserialize_header(bfh("0100000000000000000000000000000000000000000000000000000000000000000000003ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4adae5494dffff7f2002000000"), 0),
-        'B': deserialize_header(bfh("0000002006226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f186c8dfd970a4545f79916bc1d75c9d00432f57c89209bf3bb115b7612848f509c25f45bffff7f2000000000"), 1),
-        'C': deserialize_header(bfh("00000020686bdfc6a3db73d5d93e8c9663a720a26ecb1ef20eb05af11b36cdbc57c19f7ebf2cbf153013a1c54abaf70e95198fcef2f3059cc6b4d0f7e876808e7d24d11cc825f45bffff7f2000000000"), 2),
-        'D': deserialize_header(bfh("00000020122baa14f3ef54985ae546d1611559e3f487bd2a0f46e8dbb52fbacc9e237972e71019d7feecd9b8596eca9a67032c5f4641b23b5d731dc393e37de7f9c2f299e725f45bffff7f2000000000"), 3),
-        'E': deserialize_header(bfh("00000020f8016f7ef3a17d557afe05d4ea7ab6bde1b2247b7643896c1b63d43a1598b747a3586da94c71753f27c075f57f44faf913c31177a0957bbda42e7699e3a2141aed25f45bffff7f2001000000"), 4),
-        'F': deserialize_header(bfh("000000201d589c6643c1d121d73b0573e5ee58ab575b8fdf16d507e7e915c5fbfbbfd05e7aee1d692d1615c3bdf52c291032144ce9e3b258a473c17c745047f3431ff8e2ee25f45bffff7f2000000000"), 5),
-        'O': deserialize_header(bfh("00000020b833ed46eea01d4c980f59feee44a66aa1162748b6801029565d1466790c405c3a141ce635cbb1cd2b3a4fcdd0a3380517845ba41736c82a79cab535d31128066526f45bffff7f2001000000"), 6),
-        'P': deserialize_header(bfh("00000020abe8e119d1877c9dc0dc502d1a253fb9a67967c57732d2f71ee0280e8381ff0a9690c2fe7c1a4450c74dc908fe94dd96c3b0637d51475e9e06a78e944a0c7fe28126f45bffff7f2000000000"), 7),
-        'Q': deserialize_header(bfh("000000202ce41d94eb70e1518bc1f72523f84a903f9705d967481e324876e1f8cf4d3452148be228a4c3f2061bafe7efdfc4a8d5a94759464b9b5c619994d45dfcaf49e1a126f45bffff7f2000000000"), 8),
-        'R': deserialize_header(bfh("00000020552755b6c59f3d51e361d16281842a4e166007799665b5daed86a063dd89857415681cb2d00ff889193f6a68a93f5096aeb2d84ca0af6185a462555822552221a626f45bffff7f2000000000"), 9),
-        'S': deserialize_header(bfh("00000020a13a491cbefc93cd1bb1938f19957e22a134faf14c7dee951c45533e2c750f239dc087fc977b06c24a69c682d1afd1020e6dc1f087571ccec66310a786e1548fab26f45bffff7f2000000000"), 10),
-        'T': deserialize_header(bfh("00000020dbf3a9b55dfefbaf8b6e43a89cf833fa2e208bbc0c1c5d76c0d71b9e4a65337803b243756c25053253aeda309604363460a3911015929e68705bd89dff6fe064b026f45bffff7f2002000000"), 11),
-        'U': deserialize_header(bfh("000000203d0932b3b0c78eccb39a595a28ae4a7c966388648d7783fd1305ec8d40d4fe5fd67cb902a7d807cee7676cb543feec3e053aa824d5dfb528d5b94f9760313d9db726f45bffff7f2001000000"), 12),
-        'G': deserialize_header(bfh("00000020b833ed46eea01d4c980f59feee44a66aa1162748b6801029565d1466790c405c3a141ce635cbb1cd2b3a4fcdd0a3380517845ba41736c82a79cab535d31128066928f45bffff7f2001000000"), 6),
-        'H': deserialize_header(bfh("00000020e19e687f6e7f83ca394c114144dbbbc4f3f9c9450f66331a125413702a2e1a719690c2fe7c1a4450c74dc908fe94dd96c3b0637d51475e9e06a78e944a0c7fe26a28f45bffff7f2002000000"), 7),
-        'I': deserialize_header(bfh("0000002009dcb3b158293c89d7cf7ceeb513add122ebc3880a850f47afbb2747f5e48c54148be228a4c3f2061bafe7efdfc4a8d5a94759464b9b5c619994d45dfcaf49e16a28f45bffff7f2000000000"), 8),
-        'J': deserialize_header(bfh("000000206a65f3bdd3374a5a6c4538008ba0b0a560b8566291f9ef4280ab877627a1742815681cb2d00ff889193f6a68a93f5096aeb2d84ca0af6185a462555822552221c928f45bffff7f2000000000"), 9),
-        'K': deserialize_header(bfh("00000020bb3b421653548991998f96f8ba486b652fdb07ca16e9cee30ece033547cd1a6e9dc087fc977b06c24a69c682d1afd1020e6dc1f087571ccec66310a786e1548fca28f45bffff7f2000000000"), 10),
-        'L': deserialize_header(bfh("00000020c391d74d37c24a130f4bf4737932bdf9e206dd4fad22860ec5408978eb55d46303b243756c25053253aeda309604363460a3911015929e68705bd89dff6fe064ca28f45bffff7f2000000000"), 11),
-        'M': deserialize_header(bfh("000000206a65f3bdd3374a5a6c4538008ba0b0a560b8566291f9ef4280ab877627a1742815681cb2d00ff889193f6a68a93f5096aeb2d84ca0af6185a4625558225522214229f45bffff7f2000000000"), 9),
-        'N': deserialize_header(bfh("00000020383dab38b57f98aa9b4f0d5ff868bc674b4828d76766bf048296f4c45fff680a9dc087fc977b06c24a69c682d1afd1020e6dc1f087571ccec66310a786e1548f4329f45bffff7f2003000000"), 10),
-        'X': deserialize_header(bfh("0000002067f1857f54b7fef732cb4940f7d1b339472b3514660711a820330fd09d8fba6b03b243756c25053253aeda309604363460a3911015929e68705bd89dff6fe0649b29f45bffff7f2002000000"), 11),
-        'Y': deserialize_header(bfh("00000020db33c9768a9e5f7c37d0f09aad88d48165946c87d08f7d63793f07b5c08c527fd67cb902a7d807cee7676cb543feec3e053aa824d5dfb528d5b94f9760313d9d9b29f45bffff7f2000000000"), 12),
-        'Z': deserialize_header(bfh("0000002047822b67940e337fda38be6f13390b3596e4dea2549250256879722073824e7f0f2596c29203f8a0f71ae94193092dc8f113be3dbee4579f1e649fa3d6dcc38c622ef45bffff7f2003000000"), 13),
-    }
     # tree of headers:
     #                                            - M <- N <- X <- Y <- Z
     #                                          /
     #                             - G <- H <- I <- J <- K <- L
     #                           /
     # A <- B <- C <- D <- E <- F <- O <- P <- Q <- R <- S <- T <- U
+    RAW_HEADERS, HEADERS = make_header_tree((
+        ('A', None), ('B', 'A'), ('C', 'B'), ('D', 'C'), ('E', 'D'), ('F', 'E'),
+        ('O', 'F'), ('P', 'O'), ('Q', 'P'), ('R', 'Q'), ('S', 'R'), ('T', 'S'), ('U', 'T'),
+        ('G', 'F'), ('H', 'G'), ('I', 'H'), ('J', 'I'), ('K', 'J'), ('L', 'K'),
+        ('M', 'I'), ('N', 'M'), ('X', 'N'), ('Y', 'X'), ('Z', 'Y'),
+    ))
 
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        constants.set_regtest()
+        constants.net = NeuraiUnitTestNet
 
     @classmethod
     def tearDownClass(cls):
@@ -198,13 +228,13 @@ class TestBlockchain(ElectrumTestCase):
         self.assertEqual(constants.net.GENESIS, chain_u._forkpoint_hash)
         self.assertEqual(None, chain_u._prev_hash)
         self.assertEqual(os.path.join(self.data_dir, "blockchain_headers"), chain_u.path())
-        self.assertEqual(10 * 80, os.stat(chain_u.path()).st_size)
+        self.assertEqual(10 * HEADER_SIZE, os.stat(chain_u.path()).st_size)
         self.assertEqual(6, chain_l.forkpoint)
         self.assertEqual(chain_u, chain_l.parent)
         self.assertEqual(hash_header(self.HEADERS['G']), chain_l._forkpoint_hash)
         self.assertEqual(hash_header(self.HEADERS['F']), chain_l._prev_hash)
-        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_6_5c400c7966145d56291080b6482716a16aa644eefe590f984c1da0ee46ed33b8_711a2e2a701354121a33660f45c9f9f3c4bbdb4441114c39ca837f6e7f689ee1"), chain_l.path())
-        self.assertEqual(4 * 80, os.stat(chain_l.path()).st_size)
+        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_6_26565462a36030638b8b81173b51641677983ceac4eba169933c0c73b64e3f8c_b4b26dcd7e8cc4e40621e78d06f5602ed17c785d87a87fd16e836d45fef988d0"), chain_l.path())
+        self.assertEqual(4 * HEADER_SIZE, os.stat(chain_l.path()).st_size)
 
         self._append_header(chain_l, self.HEADERS['K'])
 
@@ -215,14 +245,14 @@ class TestBlockchain(ElectrumTestCase):
         self.assertEqual(chain_l, chain_u.parent)
         self.assertEqual(hash_header(self.HEADERS['O']), chain_u._forkpoint_hash)
         self.assertEqual(hash_header(self.HEADERS['F']), chain_u._prev_hash)
-        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_6_5c400c7966145d56291080b6482716a16aa644eefe590f984c1da0ee46ed33b8_aff81830e28e01ef7d23277c56779a6b93f251a2d50dcc09d7c87d119e1e8ab"), chain_u.path())
-        self.assertEqual(4 * 80, os.stat(chain_u.path()).st_size)
+        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_6_26565462a36030638b8b81173b51641677983ceac4eba169933c0c73b64e3f8c_e1efb7906e3753febe47b1854c0bf762ae3e4c49f0e936f58e0da46a821c4941"), chain_u.path())
+        self.assertEqual(4 * HEADER_SIZE, os.stat(chain_u.path()).st_size)
         self.assertEqual(0, chain_l.forkpoint)
         self.assertEqual(None, chain_l.parent)
         self.assertEqual(constants.net.GENESIS, chain_l._forkpoint_hash)
         self.assertEqual(None, chain_l._prev_hash)
         self.assertEqual(os.path.join(self.data_dir, "blockchain_headers"), chain_l.path())
-        self.assertEqual(11 * 80, os.stat(chain_l.path()).st_size)
+        self.assertEqual(11 * HEADER_SIZE, os.stat(chain_l.path()).st_size)
         for b in (chain_u, chain_l):
             self.assertTrue(all([b.can_connect(b.read_header(i), False) for i in range(b.height())]))
 
@@ -245,19 +275,19 @@ class TestBlockchain(ElectrumTestCase):
         self.assertEqual(constants.net.GENESIS, chain_z._forkpoint_hash)
         self.assertEqual(None, chain_z._prev_hash)
         self.assertEqual(os.path.join(self.data_dir, "blockchain_headers"), chain_z.path())
-        self.assertEqual(14 * 80, os.stat(chain_z.path()).st_size)
+        self.assertEqual(14 * HEADER_SIZE, os.stat(chain_z.path()).st_size)
         self.assertEqual(9, chain_l.forkpoint)
         self.assertEqual(chain_z, chain_l.parent)
         self.assertEqual(hash_header(self.HEADERS['J']), chain_l._forkpoint_hash)
         self.assertEqual(hash_header(self.HEADERS['I']), chain_l._prev_hash)
-        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_9_2874a1277687ab8042eff9916256b860a5b0a08b0038456c5a4a37d3bdf3656a_6e1acd473503ce0ee3cee916ca07db2f656b48baf8968f999189545316423bbb"), chain_l.path())
-        self.assertEqual(3 * 80, os.stat(chain_l.path()).st_size)
+        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_9_5fd0f0e466d5c91235d99b86299e55342c05f894aa9e55e9566f358097f40207_cb89ad503493e36a9b7b860cddc988335b1e4120f7e1a19078e36a4fc28c1f11"), chain_l.path())
+        self.assertEqual(3 * HEADER_SIZE, os.stat(chain_l.path()).st_size)
         self.assertEqual(6, chain_u.forkpoint)
         self.assertEqual(chain_z, chain_u.parent)
         self.assertEqual(hash_header(self.HEADERS['O']), chain_u._forkpoint_hash)
         self.assertEqual(hash_header(self.HEADERS['F']), chain_u._prev_hash)
-        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_6_5c400c7966145d56291080b6482716a16aa644eefe590f984c1da0ee46ed33b8_aff81830e28e01ef7d23277c56779a6b93f251a2d50dcc09d7c87d119e1e8ab"), chain_u.path())
-        self.assertEqual(7 * 80, os.stat(chain_u.path()).st_size)
+        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_6_26565462a36030638b8b81173b51641677983ceac4eba169933c0c73b64e3f8c_e1efb7906e3753febe47b1854c0bf762ae3e4c49f0e936f58e0da46a821c4941"), chain_u.path())
+        self.assertEqual(7 * HEADER_SIZE, os.stat(chain_u.path()).st_size)
         for b in (chain_u, chain_l, chain_z):
             self.assertTrue(all([b.can_connect(b.read_header(i), False) for i in range(b.height())]))
 
@@ -312,19 +342,19 @@ class TestBlockchain(ElectrumTestCase):
         self.assertEqual(constants.net.GENESIS, chain_z._forkpoint_hash)
         self.assertEqual(None, chain_z._prev_hash)
         self.assertEqual(os.path.join(self.data_dir, "blockchain_headers"), chain_z.path())
-        self.assertEqual(12 * 80, os.stat(chain_z.path()).st_size)
+        self.assertEqual(12 * HEADER_SIZE, os.stat(chain_z.path()).st_size)
         self.assertEqual(9, chain_l.forkpoint)
         self.assertEqual(chain_z, chain_l.parent)
         self.assertEqual(hash_header(self.HEADERS['J']), chain_l._forkpoint_hash)
         self.assertEqual(hash_header(self.HEADERS['I']), chain_l._prev_hash)
-        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_9_2874a1277687ab8042eff9916256b860a5b0a08b0038456c5a4a37d3bdf3656a_6e1acd473503ce0ee3cee916ca07db2f656b48baf8968f999189545316423bbb"), chain_l.path())
-        self.assertEqual(2 * 80, os.stat(chain_l.path()).st_size)
+        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_9_5fd0f0e466d5c91235d99b86299e55342c05f894aa9e55e9566f358097f40207_cb89ad503493e36a9b7b860cddc988335b1e4120f7e1a19078e36a4fc28c1f11"), chain_l.path())
+        self.assertEqual(2 * HEADER_SIZE, os.stat(chain_l.path()).st_size)
         self.assertEqual(6, chain_u.forkpoint)
         self.assertEqual(chain_z, chain_u.parent)
         self.assertEqual(hash_header(self.HEADERS['O']), chain_u._forkpoint_hash)
         self.assertEqual(hash_header(self.HEADERS['F']), chain_u._prev_hash)
-        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_6_5c400c7966145d56291080b6482716a16aa644eefe590f984c1da0ee46ed33b8_aff81830e28e01ef7d23277c56779a6b93f251a2d50dcc09d7c87d119e1e8ab"), chain_u.path())
-        self.assertEqual(5 * 80, os.stat(chain_u.path()).st_size)
+        self.assertEqual(os.path.join(self.data_dir, "forks", "fork2_6_26565462a36030638b8b81173b51641677983ceac4eba169933c0c73b64e3f8c_e1efb7906e3753febe47b1854c0bf762ae3e4c49f0e936f58e0da46a821c4941"), chain_u.path())
+        self.assertEqual(5 * HEADER_SIZE, os.stat(chain_u.path()).st_size)
 
         self.assertEqual(constants.net.GENESIS, chain_z.get_hash(0))
         self.assertEqual(hash_header(self.HEADERS['F']), chain_z.get_hash(5))
@@ -384,6 +414,36 @@ class TestBlockchain(ElectrumTestCase):
         self.assertEqual([chain_u], self.get_chains_that_contain_header_helper(self.HEADERS['O']))
         self.assertEqual([chain_z, chain_l], self.get_chains_that_contain_header_helper(self.HEADERS['I']))
 
+    async def test_connect_chunk_with_legacy_genesis(self):
+        # Servers send headers below KawpowActivationHeight (only the genesis)
+        # as 80 bytes and the rest as 120-byte KAWPOW headers; on disk every
+        # header takes HEADER_SIZE bytes.
+        blockchain.blockchains[constants.net.GENESIS] = chain_u = Blockchain(
+            config=self.config, forkpoint=0, parent=None,
+            forkpoint_hash=constants.net.GENESIS, prev_hash=None)
+        open(chain_u.path(), 'w+').close()
+
+        # C is missing, so D does not connect
+        bad_chunk = b''.join(self.RAW_HEADERS[x] for x in 'ABD')
+        self.assertFalse(await chain_u.connect_chunk(0, bad_chunk.hex()))
+        self.assertEqual(-1, chain_u.height())
+
+        labels = 'ABCDEFOPQ'
+        chunk = b''.join(self.RAW_HEADERS[x] for x in labels)
+        self.assertEqual(80 + 8 * 120, len(chunk))
+        self.assertTrue(await chain_u.connect_chunk(0, chunk.hex()))
+        self.assertEqual(8, chain_u.height())
+        self.assertEqual(9 * HEADER_SIZE, os.stat(chain_u.path()).st_size)
+        for height, label in enumerate(labels):
+            self.assertEqual(self.HEADERS[label], chain_u.read_header(height))
+            self.assertEqual(hash_header(self.HEADERS[label]), chain_u.get_hash(height))
+        self.assertTrue(all([chain_u.can_connect(chain_u.read_header(i), False) for i in range(chain_u.height())]))
+
+        # the chain keeps growing and forking header by header
+        self._append_header(chain_u, self.HEADERS['R'])
+        chain_l = chain_u.fork(self.HEADERS['G'])
+        self.assertEqual(hash_header(self.HEADERS['F']), chain_l._prev_hash)
+
     def test_target_to_bits(self):
         # https://github.com/bitcoin/bitcoin/blob/7fcf53f7b4524572d1d0c9a5fdc388e87eb02416/src/arith_uint256.h#L269
         self.assertEqual(0x05123456, Blockchain.target_to_bits(0x1234560000))
@@ -428,17 +488,27 @@ class TestBlockchain(ElectrumTestCase):
 
 class TestVerifyHeader(ElectrumTestCase):
 
-    # Data for Bitcoin block header #100.
-    valid_header = "0100000095194b8567fe2e8bbda931afd01a7acd399b9325cb54683e64129bcd00000000660802c98f18fd34fd16d61c63cf447568370124ac5f3be626c2e1c3c9f0052d19a76949ffff001d33f3c25d"
-    target = Blockchain.bits_to_target(0x1d00ffff)
-    prev_hash = "00000000cd9b12643e6854cb25939b39cd7a1ad0af31a9bd8b2efe67854b1995"
+    # Data for Neurai mainnet block header #1000000 (KAWPOW),
+    # from neurai-cli getblockheader <hash> false
+    valid_header = "0000003023cd5588b1a1c7bd6e6a2c057f766157cd6484779d8bc6e2759703000000000038ff34aadc3af79aa8727b18a020dc5b17e93b447551b59208d3078403f5f2fb42ebd76795380e1b40420f006f3dc3a35a70e0bb377d100892307431c20d61857a04fa154efd9b446def74af6a8f69046ed3eb97"
+    block_hash = "000000000002370f2552985148f4231c5af71aa13d975a0205d6bc2df8d6cfbc"
+    target = Blockchain.bits_to_target(0x1b0e3895)
+    prev_hash = "0000000000039775e2c68b9d778464cd5761767f052c6a6ebdc7a1b18855cd23"
 
     def setUp(self):
         super().setUp()
-        self.header = deserialize_header(bfh(self.valid_header), 100)
+        self.header = deserialize_header(bfh(self.valid_header), 1000000)
 
     def test_valid_header(self):
-        Blockchain.verify_header(self.header, self.prev_hash, self.target)
+        self.assertEqual(self.block_hash, hash_header(self.header))
+        Blockchain.verify_header(self.header, self.prev_hash, self.target,
+                                 expected_header_hash=self.block_hash)
+
+    def test_valid_genesis_header(self):
+        # the genesis predates KAWPOW: legacy 80-byte header hashed with X16R
+        genesis = deserialize_header(bfh("04000000000000000000000000000000000000000000000000000000000000000000000051595fe1fb519173c0bd75904e460872585a1d38579788d183cd60d993bf284b08063d64ffff001e92cf6c00"), 0)
+        self.assertEqual(constants.net.GENESIS, hash_header(genesis))
+        Blockchain.verify_header(genesis, '00' * 32, Blockchain.bits_to_target(0x1e00ffff))
 
     def test_expected_hash_mismatch(self):
         with self.assertRaises(InvalidHeader):
@@ -451,10 +521,35 @@ class TestVerifyHeader(ElectrumTestCase):
 
     def test_target_mismatch(self):
         with self.assertRaises(InvalidHeader):
-            other_target = Blockchain.bits_to_target(0x1d00eeee)
+            other_target = Blockchain.bits_to_target(0x1b0eeeee)
             Blockchain.verify_header(self.header, self.prev_hash, other_target)
 
     def test_insufficient_pow(self):
         with self.assertRaises(InvalidHeader):
             self.header["nonce"] = 42
             Blockchain.verify_header(self.header, self.prev_hash, self.target)
+
+    def test_dark_gravity_wave(self):
+        # Real mainnet headers just above the last DGW checkpoint (1870847);
+        # past the checkpoints the client computes every target with DGW from
+        # the previous DGW_PASTBLOCKS headers and checks bits and PoW against it.
+        with open(os.path.join(os.path.dirname(__file__), 'blockchain_mainnet_headers.json')) as f:
+            data = json.load(f)
+        first = data['first_height']
+        headers = {first + i: deserialize_header(bfh(raw), first + i)
+                   for i, raw in enumerate(data['headers'])}
+        last = max(headers)
+        self.assertEqual(1870857, last)
+        self.assertEqual("0000000000802b3d79be15f7742766a257a9595fe059b9a08d3cfefe4a0a7700",
+                         hash_header(headers[last]))
+        chain = Blockchain(config=SimpleConfig({'electrum_path': self.electrum_path}),
+                           forkpoint=0, parent=None, forkpoint_hash=constants.net.GENESIS, prev_hash=None)
+        for height in range(first + DGW_PASTBLOCKS + 1, last + 1):
+            target = chain.get_target_dgwv3(height, headers)
+            Blockchain.verify_header(headers[height], hash_header(headers[height - 1]), target)
+        # the target depends on the timestamps of the window
+        oldest = last - DGW_PASTBLOCKS
+        headers[oldest] = dict(headers[oldest], timestamp=headers[oldest]['timestamp'] - 3600)
+        target = chain.get_target_dgwv3(last, headers)
+        with self.assertRaisesRegex(InvalidHeader, "bits mismatch"):
+            Blockchain.verify_header(headers[last], hash_header(headers[last - 1]), target)

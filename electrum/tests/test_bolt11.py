@@ -20,6 +20,14 @@ PRIVKEY=unhexlify('e126f68f7eafcc8b74f54d269fe206be715000f94dac067d1c04a8ca3b2db
 PUBKEY=unhexlify('03e7156ae33b0a208d0744199163177e909e80176e55d97a2f221ede0f934dd9ad')
 
 
+# BOLT11 invoices are Lightning-only and these vectors use Bitcoin networks
+# (lnbc/lntb/lnsb); Neurai has no SegWit, hence no Lightning and no BOLT11 HRP.
+# (electrum/lnaddr.py also needs a bitstring release that still provides
+# ConstBitStream and .len; bitstring 5.0.0 does not.)
+NO_LIGHTNING = "Neurai has no SegWit, so no Lightning"
+
+
+@unittest.skip(NO_LIGHTNING)
 class TestBolt11(ElectrumTestCase):
     def test_shorten_amount(self):
         tests = {

@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import sys
+import unittest
 
 from electrum.bitcoin import (public_key_to_p2pkh, address_from_private_key,
                               is_address, is_private_key,
@@ -229,16 +230,17 @@ class Test_bitcoin(ElectrumTestCase):
 
         sig1 = self.sign_message_with_wif_privkey(
             'L1TnU2zbNaAqMoVh65Cyvmcjzbrj41Gs9iTLcWbpJCMynXuap6UN', msg1)  # compressed pubkey
-        addr1 = '15hETetDmcXm1mM4sEf7U2KXC9hDHFMSzz'
+        addr1 = 'NQcCeQgVQB6CMjjfAUK1AfkDYtMD353Ahr'
         sig2 = self.sign_message_with_wif_privkey(
             '5Hxn5C4SQuiV6e62A1MtZmbSeQyrLFhu5uYks62pU5VBUygK2KD', msg2)  # uncompressed pubkey
-        addr2 = '1GPHVTY8UD9my6jyP4tb2TYJwUbDetyNC6'
+        addr2 = 'NbJFgDLQ6miDK58ZgJYUj6y1JDFDJ6c8Jv'
 
         sig1_b64 = base64.b64encode(sig1)
         sig2_b64 = base64.b64encode(sig2)
 
-        self.assertEqual(sig1_b64, b'Hzsu0U/THAsPz/MSuXGBKSULz2dTfmrg1NsAhFp+wH5aKfmX4Db7ExLGa7FGn0m6Mf43KsbEOWpvUUUBTM3Uusw=')
-        self.assertEqual(sig2_b64, b'HBQdYfv7kOrxmRewLJnG7sV6KlU71O04hUnE4tai97p7Pg+D+yKaWXsdGgHTrKw90caQMo/D6b//qX50ge9P9iI=')
+        # signatures over the "Neurai Signed Message:\n" magic
+        self.assertEqual(sig1_b64, b'H1xgEDIxmzYr730CUuZlvA55muGcL6cGlevE/ItrXCl5ZyZdI4vEM8txo9A2o7sTY5+eTnx7r8a7UhAOxQWYzsA=')
+        self.assertEqual(sig2_b64, b'HCd5BznvQY7xWbUj3I+F82tvAfeJ0O2EohgSfO1md6K5SCm+UiOSup624AmV5mO3GuJAXTbry1xqZ/e/lSFuYWg=')
 
         self.assertTrue(ecc.verify_message_with_address(addr1, sig1, msg1))
         self.assertTrue(ecc.verify_message_with_address(addr2, sig2, msg2))
@@ -246,6 +248,7 @@ class Test_bitcoin(ElectrumTestCase):
         self.assertFalse(ecc.verify_message_with_address(addr1, b'wrong', msg1))
         self.assertFalse(ecc.verify_message_with_address(addr1, sig2, msg1))
 
+    @unittest.skip("Neurai has no SegWit")
     def test_signmessage_segwit_witness_v0_address(self):
         msg = b'Electrum'
         # p2wpkh-p2sh
@@ -261,6 +264,7 @@ class Test_bitcoin(ElectrumTestCase):
         self.assertTrue(ecc.verify_message_with_address(addr2, sig2, msg))
         self.assertFalse(ecc.verify_message_with_address(addr2, sig2, b'heyheyhey'))
 
+    @unittest.skip("Neurai has no SegWit")
     def test_signmessage_segwit_witness_v0_address_test_we_also_accept_sigs_from_trezor(self):
         """Trezor and some other projects use a slightly different scheme for message-signing
         with p2wpkh and p2wpkh-p2sh addresses. Test that we also accept signatures from them.
@@ -522,20 +526,12 @@ class Test_bitcoin(ElectrumTestCase):
         self.assertEqual(add_number_to_script(2147483647), bfh('04ffffff7f'))
 
     def test_address_to_script(self):
-        # bech32/bech32m native segwit
-        # test vectors from BIP-0173
-        # note: the ones that are commented out have been invalidated by BIP-0350
-        self.assertEqual(address_to_script('BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4'), '0014751e76e8199196d454941c45d1b3a323f1433bd6')
-        # self.assertEqual(address_to_script('bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7k7grplx'), '5128751e76e8199196d454941c45d1b3a323f1433bd6751e76e8199196d454941c45d1b3a323f1433bd6')
-        # self.assertEqual(address_to_script('BC1SW50QA3JX3S'), '6002751e')
-        # self.assertEqual(address_to_script('bc1zw508d6qejxtdg4y5r3zarvaryvg6kdaj'), '5210751e76e8199196d454941c45d1b3a323')
-
-        # bech32/bech32m native segwit
-        # test vectors from BIP-0350
-        self.assertEqual(address_to_script('bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7kt5nd6y'), '5128751e76e8199196d454941c45d1b3a323f1433bd6751e76e8199196d454941c45d1b3a323f1433bd6')
-        self.assertEqual(address_to_script('BC1SW50QGDZ25J'), '6002751e')
-        self.assertEqual(address_to_script('bc1zw508d6qejxtdg4y5r3zarvaryvaxxpcs'), '5210751e76e8199196d454941c45d1b3a323')
-        self.assertEqual(address_to_script('bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0'), '512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798')
+        # Neurai has no SegWit: valid bech32/bech32m addresses (BIP-0173, BIP-0350) are rejected
+        self.assertFalse(is_address('BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4'))
+        self.assertFalse(is_address('bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7kt5nd6y'))
+        self.assertFalse(is_address('BC1SW50QGDZ25J'))
+        self.assertFalse(is_address('bc1zw508d6qejxtdg4y5r3zarvaryvaxxpcs'))
+        self.assertFalse(is_address('bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0'))
 
         # invalid addresses (from BIP-0173)
         self.assertFalse(is_address('tc1qw508d6qejxtdg4y5r3zarvary0c5xw7kg3g4ty'))
@@ -567,37 +563,24 @@ class Test_bitcoin(ElectrumTestCase):
         self.assertFalse(is_address('bc1gmk9yu'))
 
         # base58 P2PKH
-        self.assertEqual(address_to_script('14gcRovpkCoGkCNBivQBvw7eso7eiNAbxG'), '76a91428662c67561b95c79d2257d2a93d9d151c977e9188ac')
-        self.assertEqual(address_to_script('1BEqfzh4Y3zzLosfGhw1AsqbEKVW6e1qHv'), '76a914704f4b81cadb7bf7e68c08cd3657220f680f863c88ac')
+        self.assertEqual(address_to_script('NPbacZj6NmMi6Akn2A45daYMEXmeQRZiHu'), '76a91428662c67561b95c79d2257d2a93d9d151c977e9188ac')
+        self.assertEqual(address_to_script('NW9orkVLAcZRgnGFZwatsXGHb49VjkhtkX'), '76a914704f4b81cadb7bf7e68c08cd3657220f680f863c88ac')
 
         # base58 P2SH
-        self.assertEqual(address_to_script('35ZqQJcBQMZ1rsv8aSuJ2wkC7ohUCQMJbT'), 'a9142a84cf00d47f699ee7bbc1dea5ec1bdecb4ac15487')
-        self.assertEqual(address_to_script('3PyjzJ3im7f7bcV724GR57edKDqoZvH7Ji'), 'a914f47c8954e421031ad04ecd8e7752c9479206b9d387')
+        self.assertEqual(address_to_script('p9RPgTzSvZT9TRXqKSCzLzEJcJZ7oeGdDu'), 'a9142a84cf00d47f699ee7bbc1dea5ec1bdecb4ac15487')
+        self.assertEqual(address_to_script('pTqJGTRzHKZFCA6om3a7PA8joihT8g6KvJ'), 'a914f47c8954e421031ad04ecd8e7752c9479206b9d387')
 
     def test_address_to_payload(self):
-        # bech32 P2WPKH
-        self.assertEqual(
-            address_to_payload('bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4'),
-            (OnchainOutputType.WITVER0_P2WPKH, bytes.fromhex('751e76e8199196d454941c45d1b3a323f1433bd6')))
-
-        # bech32 P2WSH
-        self.assertEqual(
-            address_to_payload('bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3'),
-            (OnchainOutputType.WITVER0_P2WSH, bytes.fromhex('1863143c14c5166804bd19203356da136c985678cd4d27a1b8c6329604903262')))
-
-        # bech32m P2TR
-        self.assertEqual(
-            address_to_payload('bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr'),
-            (OnchainOutputType.WITVER1_P2TR, bytes.fromhex('a60869f0dbcf1dc659c9cecbaf8050135ea9e8cdc487053f1dc6880949dc684c')))
+        # Neurai has no SegWit: the bech32 P2WPKH/P2WSH/P2TR cases are not applicable
 
         # base58 P2PKH
         self.assertEqual(
-            address_to_payload('14gcRovpkCoGkCNBivQBvw7eso7eiNAbxG'),
+            address_to_payload('NPbacZj6NmMi6Akn2A45daYMEXmeQRZiHu'),
             (OnchainOutputType.P2PKH, bytes.fromhex('28662c67561b95c79d2257d2a93d9d151c977e91')))
 
         # base58 P2SH
         self.assertEqual(
-            address_to_payload('35ZqQJcBQMZ1rsv8aSuJ2wkC7ohUCQMJbT'),
+            address_to_payload('p9RPgTzSvZT9TRXqKSCzLzEJcJZ7oeGdDu'),
             (OnchainOutputType.P2SH, bytes.fromhex('2a84cf00d47f699ee7bbc1dea5ec1bdecb4ac154')))
 
     def test_bech32_decode(self):
@@ -693,16 +676,10 @@ class Test_bitcoin_testnet(ElectrumTestCase):
     TESTNET = True
 
     def test_address_to_script(self):
-        # bech32/bech32m native segwit
-        # test vectors from BIP-0173
-        self.assertEqual(address_to_script('tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7'), '00201863143c14c5166804bd19203356da136c985678cd4d27a1b8c6329604903262')
-        self.assertEqual(address_to_script('tb1qqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesrxh6hy'), '0020000000c4a5cad46221b2a187905e5266362b99d5e91c6ce24d165dab93e86433')
-
-        # bech32/bech32m native segwit
-        # test vectors from BIP-0350
-        self.assertEqual(address_to_script('tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7'), '00201863143c14c5166804bd19203356da136c985678cd4d27a1b8c6329604903262')
-        self.assertEqual(address_to_script('tb1qqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesrxh6hy'), '0020000000c4a5cad46221b2a187905e5266362b99d5e91c6ce24d165dab93e86433')
-        self.assertEqual(address_to_script('tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c'), '5120000000c4a5cad46221b2a187905e5266362b99d5e91c6ce24d165dab93e86433')
+        # Neurai has no SegWit: valid bech32/bech32m testnet addresses (BIP-0173, BIP-0350) are rejected
+        self.assertFalse(is_address('tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7'))
+        self.assertFalse(is_address('tb1qqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesrxh6hy'))
+        self.assertFalse(is_address('tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c'))
 
         # invalid addresses (from BIP-0173)
         self.assertFalse(is_address('tc1qw508d6qejxtdg4y5r3zarvary0c5xw7kg3g4ty'))
@@ -734,10 +711,10 @@ class Test_bitcoin_testnet(ElectrumTestCase):
         self.assertFalse(is_address('bc1gmk9yu'))
 
         # base58 P2PKH
-        self.assertEqual(address_to_script('mutXcGt1CJdkRvXuN2xoz2quAAQYQ59bRX'), '76a9149da64e300c5e4eb4aaffc9c2fd465348d5618ad488ac')
-        self.assertEqual(address_to_script('miqtaRTkU3U8rzwKbEHx3g8FSz8GJtPS3K'), '76a914247d2d5b6334bdfa2038e85b20fc15264f8e5d2788ac')
+        self.assertEqual(address_to_script('tMJBN1ecZC3mWrmHkkHuk3CVEEXdnTx2xX'), '76a9149da64e300c5e4eb4aaffc9c2fd465348d5618ad488ac')
+        self.assertEqual(address_to_script('tAFYLAEMpvt9wwAhywd3ogUqX4FMbXcDM9'), '76a914247d2d5b6334bdfa2038e85b20fc15264f8e5d2788ac')
 
-        # base58 P2SH
+        # base58 P2SH (Neurai testnet uses the same P2SH version byte as Bitcoin testnet: 196)
         self.assertEqual(address_to_script('2N3LSvr3hv5EVdfcrxg2Yzecf3SRvqyBE4p'), 'a9146eae23d8c4a941316017946fc761a7a6c85561fb87')
         self.assertEqual(address_to_script('2NE4ZdmxFmUgwu5wtfoN2gVniyMgRDYq1kk'), 'a914e4567743d378957cd2ee7072da74b1203c1a7a0b87')
 
@@ -1049,7 +1026,7 @@ class Test_keyImport(ElectrumTestCase):
            {'priv': 'KzMFjMC2MPadjvX5Cd7b8AKKjjpBSoRKUTpoAtN6B3J9ezWYyXS6',
             'exported_privkey': 'p2pkh:KzMFjMC2MPadjvX5Cd7b8AKKjjpBSoRKUTpoAtN6B3J9ezWYyXS6',
             'pub': '02c6467b7e621144105ed3e4835b0b4ab7e35266a2ae1c4f8baa19e9ca93452997',
-            'address': '17azqT8T16coRmWKYFj3UjzJuxiYrYFRBR',
+            'address': 'NSVy2CvidfBEmjtuqVNwBPR1GhNYULYgAe',
             'minikey' : False,
             'txin_type': 'p2pkh',
             'compressed': True,
@@ -1058,7 +1035,7 @@ class Test_keyImport(ElectrumTestCase):
            {'priv': 'p2pkh:Kzj8VjwpZ99bQqVeUiRXrKuX9mLr1o6sWxFMCBJn1umC38BMiQTD',
             'exported_privkey': 'p2pkh:Kzj8VjwpZ99bQqVeUiRXrKuX9mLr1o6sWxFMCBJn1umC38BMiQTD',
             'pub': '0352d78b4b37e0f6d4e164423436f2925fa57817467178eca550a88f2821973c41',
-            'address': '1GXgZ5Qi6gmXTHVSpUPZLy4Ci2nbfb3ZNb',
+            'address': 'NbSejqCyjFKxoFt37i3T3cUu4mSbJHGmiM',
             'minikey': False,
             'txin_type': 'p2pkh',
             'compressed': True,
@@ -1067,7 +1044,7 @@ class Test_keyImport(ElectrumTestCase):
            {'priv': '5Hxn5C4SQuiV6e62A1MtZmbSeQyrLFhu5uYks62pU5VBUygK2KD',
             'exported_privkey': 'p2pkh:5Hxn5C4SQuiV6e62A1MtZmbSeQyrLFhu5uYks62pU5VBUygK2KD',
             'pub': '04e5fe91a20fac945845a5518450d23405ff3e3e1ce39827b47ee6d5db020a9075422d56a59195ada0035e4a52a238849f68e7a325ba5b2247013e0481c5c7cb3f',
-            'address': '1GPHVTY8UD9my6jyP4tb2TYJwUbDetyNC6',
+            'address': 'NbJFgDLQ6miDK58ZgJYUj6y1JDFDJ6c8Jv',
             'minikey': False,
             'txin_type': 'p2pkh',
             'compressed': False,
@@ -1076,53 +1053,18 @@ class Test_keyImport(ElectrumTestCase):
            {'priv': 'p2pkh:5KhYQCe1xd5g2tqpmmGpUWDpDuTbA8vnpbiCNDwMPAx29WNQYfN',
             'exported_privkey': 'p2pkh:5KhYQCe1xd5g2tqpmmGpUWDpDuTbA8vnpbiCNDwMPAx29WNQYfN',
             'pub': '048f0431b0776e8210376c81280011c2b68be43194cb00bd47b7e9aa66284b713ce09556cde3fee606051a07613f3c159ef3953b8927c96ae3dae94a6ba4182e0e',
-            'address': '147kiRHHm9fqeMQSgqf4k35XzuWLP9fmmS',
+            'address': 'NP2iuB5ZPiEGzKo2z5JxSgWEMeAL1pKXK8',
             'minikey': False,
             'txin_type': 'p2pkh',
             'compressed': False,
             'addr_encoding': 'base58',
             'scripthash': '6dd2e07ad2de9ba8eec4bbe8467eb53f8845acff0d9e6f5627391acc22ff62df'},
-           {'priv': 'LHJnnvRzsdrTX2j5QeWVsaBkabK7gfMNqNNqxnbBVRaJYfk24iJz',
-            'exported_privkey': 'p2wpkh-p2sh:Kz9XebiCXL2BZzhYJViiHDzn5iup1povWV8aqstzWU4sz1K5nVva',
-            'pub': '0279ad237ca0d812fb503ab86f25e15ebd5fa5dd95c193639a8a738dcd1acbad81',
-            'address': '3GeVJB3oKr7psgKR6BTXSxKtWUkfsHHhk7',
-            'minikey': False,
-            'txin_type': 'p2wpkh-p2sh',
-            'compressed': True,
-            'addr_encoding': 'base58',
-            'scripthash': 'd7b04e882fa6b13246829ac552a2b21461d9152eb00f0a6adb58457a3e63d7c5'},
-           {'priv': 'p2wpkh-p2sh:L3CZH1pm87X4bbE6mSGvZnAZ1KcFDRomBudUkrkBG7EZhDtBVXMW',
-            'exported_privkey': 'p2wpkh-p2sh:L3CZH1pm87X4bbE6mSGvZnAZ1KcFDRomBudUkrkBG7EZhDtBVXMW',
-            'pub': '0229da20a15b3363b2c28e3c5093c180b56c439df0b968a970366bb1f38435361e',
-            'address': '3C79goMwT7zSTjXnPoCg6VFGAnUpZAkyus',
-            'minikey': False,
-            'txin_type': 'p2wpkh-p2sh',
-            'compressed': True,
-            'addr_encoding': 'base58',
-            'scripthash': '714bf6bfe1083e69539f40d4c7a7dca85d187471b35642e55f20d7e866494cf7'},
-           {'priv': 'L8g5V8kFFeg2WbecahRSdobARbHz2w2STH9S8ePHVSY4fmia7Rsj',
-            'exported_privkey': 'p2wpkh:Kz6SuyPM5VktY5dr2d2YqdVgBA6LCWkiHqXJaC3BzxnMPSUuYzmF',
-            'pub': '03e9f948421aaa89415dc5f281a61b60dde12aae3181b3a76cd2d849b164fc6d0b',
-            'address': 'bc1qqmpt7u5e9hfznljta5gnvhyvfd2kdd0r90hwue',
-            'minikey': False,
-            'txin_type': 'p2wpkh',
-            'compressed': True,
-            'addr_encoding': 'bech32',
-            'scripthash': '1929acaaef3a208c715228e9f1ca0318e3a6b9394ab53c8d026137f847ecf97b'},
-           {'priv': 'p2wpkh:KyDWy5WbjLA58Zesh1o8m3pADGdJ3v33DKk4m7h8BD5zDKDmDFwo',
-            'exported_privkey': 'p2wpkh:KyDWy5WbjLA58Zesh1o8m3pADGdJ3v33DKk4m7h8BD5zDKDmDFwo',
-            'pub': '038c57657171c1f73e34d5b3971d05867d50221ad94980f7e87cbc2344425e6a1e',
-            'address': 'bc1qpakeeg4d9ydyjxd8paqrw4xy9htsg532xzxn50',
-            'minikey': False,
-            'txin_type': 'p2wpkh',
-            'compressed': True,
-            'addr_encoding': 'bech32',
-            'scripthash': '242f02adde84ebb2a7dd778b2f3a81b3826f111da4d8960d826d7a4b816cb261'},
+           # Neurai has no SegWit: the p2wpkh-p2sh and p2wpkh vectors were dropped
            # from http://bitscan.com/articles/security/spotlight-on-mini-private-keys
            {'priv': 'SzavMBLoXU6kDrqtUVmffv',
             'exported_privkey': 'p2pkh:5Kb8kLf9zgWQnogidDA76MzPL6TsZZY36hWXMssSzNydYXYB9KF',
             'pub': '04588d202afcc1ee4ab5254c7847ec25b9a135bbda0f2bc69ee1a714749fd77dc9f88ff2a00d7e752d44cbe16e1ebcf0890b76ec7c78886109dee76ccfc8445424',
-            'address': '1CC3X2gu58d6wXUWMffpuzN9JAfTUWu4Kj',
+            'address': 'NX71hnVAhhBYHVs6euKicdnqeuKT7vs3fQ',
             'minikey': True,
             'txin_type': 'p2pkh',
             'compressed': False,  # this is actually ambiguous... issue #2748
@@ -1159,14 +1101,14 @@ class Test_keyImport(ElectrumTestCase):
         self.assertFalse(is_address("not an address"))
 
     def test_is_address_bad_checksums(self):
-        self.assertTrue(is_address('1819s5TxxbBtuRPr3qYskMVC8sb1pqapWx'))
-        self.assertFalse(is_address('1819s5TxxbBtuRPr3qYskMVC8sb1pqapWw'))
+        self.assertTrue(is_address('NSv83qGEb9kLFPnSM5CmSzutVcF1VFGzRT'))
+        self.assertFalse(is_address('NSv83qGEb9kLFPnSM5CmSzutVcF1VFGzRS'))
 
-        self.assertTrue(is_address('3LrjLVnngqnaJeo3BQwMBg34iqYsjZjQUe'))
-        self.assertFalse(is_address('3LrjLVnngqnaJeo3BQwMBg34iqYsjZjQUd'))
+        self.assertTrue(is_address('pQiHcfB4D3ghuCQjvQF3ViXBDLQXPmdZhj'))
+        self.assertFalse(is_address('pQiHcfB4D3ghuCQjvQF3ViXBDLQXPmdZhi'))
 
-        self.assertTrue(is_address('bc1qxq64lrwt02hm7tu25lr3hm9tgzh58snfe67yt6'))
-        self.assertFalse(is_address('bc1qxq64lrwt02hm7tu25lr3hm9tgzh58snfe67yt5'))
+        # Neurai has no SegWit: bech32 addresses are rejected even with a valid checksum
+        self.assertFalse(is_address('bc1qxq64lrwt02hm7tu25lr3hm9tgzh58snfe67yt6'))
 
     def test_is_private_key(self):
         for priv_details in self.priv_pub_addr:

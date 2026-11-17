@@ -22,6 +22,7 @@
 # SOFTWARE.
 
 import asyncio
+import heapq
 import threading
 import itertools
 from collections import defaultdict
@@ -68,6 +69,9 @@ class HistoryItem(NamedTuple):
     delta: int
     fee: Optional[int]
     balance: int
+    # an entry of the recent history the server sent for an address followed
+    # by its UTXOs, whose transaction is not in the wallet (see recent_history.py)
+    from_recent_history: bool = False
 
 
 def _txo_scripthash(scriptpubkey: bytes) -> str:
@@ -130,6 +134,12 @@ class AddressSynchronizer(Logger, EventListener):
         self._get_assets_in_mempool_cache = {}
         # txid -> height of the UTXOs of the addresses followed by their UTXOs
         self._utxo_txid_heights = {}  # type: Dict[str, int]
+        # coinbase transactions among them (as far as their sets tell)
+        self._utxo_coinbase_txids = set()  # type: Set[str]
+        # txid -> [(address, entry)] of the recent histories (built when needed)
+        self._recent_index = None  # type: Optional[Dict[str, List[Tuple[str, list]]]]
+        # height -> timestamp of the (deep enough) headers of recent histories
+        self._header_timestamps = {}  # type: Dict[int, int]
 
         self.load_and_cleanup()
 
@@ -143,7 +153,7 @@ class AddressSynchronizer(Logger, EventListener):
         return func_wrapper
 
     def load_and_cleanup(self):
-        self._utxo_txid_heights = utxo_sync.txid_heights(self.db.get_utxo_sets().values())
+        self._load_utxo_set_indexes()
         self.load_local_history()
         self.check_history()
         self.load_unverified_transactions()
@@ -559,12 +569,18 @@ class AddressSynchronizer(Logger, EventListener):
         self.add_unverified_or_unconfirmed_tx(tx_hash, tx_height)
         self.add_transaction(tx, allow_unrelated=True)
 
+    def _load_utxo_set_indexes(self) -> None:
+        utxo_sets = self.db.get_utxo_sets().values()
+        self._utxo_txid_heights = utxo_sync.txid_heights(utxo_sets)
+        self._utxo_coinbase_txids = utxo_sync.coinbase_txids(utxo_sets)
+        self._recent_index = None
+
     def receive_utxo_set_callback(self, addr: str, utxo_set: dict) -> None:
         """A new UTXO set for an address followed by its UTXOs (its history
         being too large for the server to send; see utxo_sync.py)."""
         with self.lock, self.transaction_lock:
             self.db.set_utxo_set(addr, utxo_set)
-            self._utxo_txid_heights = utxo_sync.txid_heights(self.db.get_utxo_sets().values())
+            self._load_utxo_set_indexes()
             self._get_balance_cache.clear()  # invalidate cache
             self._get_asset_balance_cache.clear()
             self._get_assets_in_mempool_cache.clear()
@@ -574,6 +590,97 @@ class AddressSynchronizer(Logger, EventListener):
             for asset in assets:
                 self.watch_asset(asset)
         self._mark_address_history_changed(addr)
+
+    def receive_recent_history_callback(self, addr: str, recent: Optional[dict]) -> None:
+        """The last transactions of an address followed by its UTXOs, as the
+        server sends them (see recent_history.py); None drops them."""
+        with self.lock, self.transaction_lock:
+            self.db.set_recent_history(addr, recent)
+            self._recent_index = None
+        self._mark_address_history_changed(addr)
+
+    def get_recent_history(self, addr: str) -> Optional[dict]:
+        """The recent history of `addr`, if it is followed by its UTXOs."""
+        if self.db.get_utxo_set(addr) is None:
+            return None
+        return self.db.get_recent_history(addr)
+
+    def get_recent_entries(self, txid: str) -> List[Tuple[str, list]]:
+        """The entries of txid in the recent histories: [(address, entry)]."""
+        with self.lock:
+            if self._recent_index is None:
+                index = defaultdict(list)
+                for addr in self.db.list_recent_histories():
+                    recent = self.get_recent_history(addr)
+                    for entry in recent['entries'] if recent else ():
+                        index[entry[0]].append((addr, entry))
+                self._recent_index = dict(index)
+            return list(self._recent_index.get(txid, ()))
+
+    def is_coinbase_hint(self, txid: str) -> bool:
+        """Whether txid is known to be a coinbase from the UTXO sets (they tell
+        only those recent enough to be immature)."""
+        return txid in self._utxo_coinbase_txids
+
+    def _has_tx_height(self, txid: str) -> bool:
+        """Whether we know where txid is from the history of an address (SPV
+        verified or not), rather than from a recent history."""
+        return bool(self.db.get_verified_tx(txid) or txid in self.unverified_tx or txid in self.unconfirmed_tx)
+
+    def header_timestamp(self, height: int) -> Optional[int]:
+        """Timestamp of our header at `height`, if we have it."""
+        ts = self._header_timestamps.get(height)
+        if ts is not None or height <= 0 or not self.network:
+            return ts
+        try:
+            header = self.network.blockchain().read_header(height)
+        except Exception:
+            return None
+        ts = header.get('timestamp') if header else None
+        if ts is not None and height <= self.get_local_height() - 10:  # deep enough not to be reorged
+            if len(self._header_timestamps) > 10_000:
+                self._header_timestamps.clear()
+            self._header_timestamps[height] = ts
+        return ts
+
+    def recent_tx_mined_info(self, height: int) -> TxMinedInfo:
+        """TxMinedInfo of an entry of a recent history, as the server says."""
+        if height <= 0:
+            return TxMinedInfo(height=height, conf=0)
+        conf = max(self.get_local_height() - height + 1, 0)
+        return TxMinedInfo(height=height, conf=conf, timestamp=self.header_timestamp(height))
+
+    def _unsent_tx_delta(self, txid: str, height: int, addr: str) -> Optional[Dict[Optional[str], int]]:
+        """Effect on an address followed by its UTXOs of one of our transactions
+        (at `height` <= 0) its recent history doesn't have yet: in the mempool
+        for us, or local and spending coins of its UTXO set; else None. The
+        coins it spends are in the set."""
+        utxo_set = self.db.get_utxo_set(addr)
+        tx = self.db.get_transaction(txid)
+        if utxo_set is None or tx is None:
+            return None
+        spent = {ser: (v, asset) for ser, v, asset in self.db.get_txi_addr(txid, addr)}
+        delta = defaultdict(int)
+        spends_from_set = False
+        for txin in tx.inputs():
+            ser = txin.prevout.to_str()
+            if ser in utxo_set['utxos']:
+                v, asset = utxo_set['utxos'][ser][1:3]
+                spends_from_set = True
+            elif ser in utxo_set['mempool_added']:
+                v, asset = utxo_set['mempool_added'][ser]
+                spends_from_set = True
+            elif ser in spent:
+                v, asset = spent[ser]
+            else:
+                continue
+            delta[asset] -= v
+        if height in (TX_HEIGHT_LOCAL, TX_HEIGHT_FUTURE) and not spends_from_set:
+            # not ours to show: e.g. an old transaction of ours, out of the recent history
+            return None
+        for n, (v, asset, cb) in self.db.get_txo_addr(txid, addr).items():
+            delta[asset] += v
+        return delta or None
 
     def receive_history_callback(self, addr: str, hist, tx_fees: Dict[str, int]):
         with self.lock:
@@ -639,6 +746,8 @@ class AddressSynchronizer(Logger, EventListener):
                 self.db.clear_history()
                 self._history_local.clear()
                 self._utxo_txid_heights = {}
+                self._utxo_coinbase_txids = set()
+                self._recent_index = None
                 self._get_balance_cache.clear()  # invalidate cache
                 self._get_asset_balance_cache.clear()
                 self._get_assets_in_mempool_cache.clear()
@@ -720,6 +829,91 @@ class AddressSynchronizer(Logger, EventListener):
                 self.logger.error(f'sanity check failed! key={key}; c={c},u={u},x={x} while history balance={_balance}')
                 raise Exception("wallet.get_history() failed balance sanity-check")
         return h2
+
+    @with_lock
+    @with_transaction_lock
+    @with_local_height_cached
+    def get_history_with_recent(self, domain, *, limit: int = None) -> Sequence[HistoryItem]:
+        """get_history, with the recent history the server sends for the
+        addresses followed by their UTXOs (see recent_history.py): their
+        transactions are its entries (not downloaded), plus ours the server
+        doesn't know yet. As their history is not complete, the balance is
+        counted back from the current one. Oldest first; with `limit`, the last
+        `limit` transactions only."""
+        domain = set(domain)
+        recents = {addr: r for addr in domain if (r := self.get_recent_history(addr)) is not None}
+        if not recents and limit is None:
+            return self.get_history(domain)  # as always
+        # 1. the transactions: entries of the recent histories, and those of
+        #    the local history of the other addresses
+        entries = defaultdict(list)  # type: Dict[str, List[list]]  # txid -> entries
+        order = {}  # type: Dict[str, int]  # txid -> position in a recent history (newest: 0)
+        for addr, recent in recents.items():
+            for i, entry in enumerate(recent['entries']):
+                entries[entry[0]].append(entry)
+                order[entry[0]] = min(order.get(entry[0], i), i)
+        local_addrs = defaultdict(list)  # type: Dict[str, List[str]]  # txid -> addresses
+        local_txids = set()
+        for addr in domain:
+            for txid in self._history_local.get(addr, ()):
+                local_txids.add(txid)
+                if addr not in recents:
+                    local_addrs[txid].append(addr)
+        # ours the server doesn't have yet (a payment from those addresses is in
+        # the local history of its change address, not in theirs)
+        unsent = defaultdict(list)  # type: Dict[str, List[Dict[Optional[str], int]]]  # txid -> deltas
+        for txid in local_txids - set(entries) if recents else ():
+            height = self.get_tx_height(txid).height
+            if height > 0:
+                continue
+            for addr in recents:
+                if (delta := self._unsent_tx_delta(txid, height, addr)) is not None:
+                    unsent[txid].append(delta)
+        mined = {}  # type: Dict[str, TxMinedInfo]
+        for txid in set(entries) | set(local_addrs) | set(unsent):
+            if txid in entries and not self._has_tx_height(txid):
+                mined[txid] = self.recent_tx_mined_info(entries[txid][0][1])
+            else:
+                mined[txid] = self.get_tx_height(txid)
+        # not downloaded: opened from the server
+        from_recent = {txid for txid in entries if self.db.get_transaction(txid) is None}
+
+        def sort_key(txid):
+            info = mined[txid]
+            txpos = info.txpos if info.txpos is not None else -1
+            return self.tx_height_to_sort_height(info.height), txpos, -order.get(txid, 0), txid
+
+        if limit is None:
+            txids = sorted(mined, key=sort_key)
+        else:
+            txids = sorted(heapq.nlargest(limit, mined, key=sort_key), key=sort_key)
+        # 2. what they change
+        history = []
+        for txid in txids:
+            delta = defaultdict(int)  # type: Dict[Optional[str], int]
+            for addr in local_addrs.get(txid, ()):
+                for asset, value in self.get_tx_delta(txid, addr).items():
+                    delta[asset] += value
+            for unsent_delta in unsent.get(txid, ()):
+                for asset, value in unsent_delta.items():
+                    delta[asset] += value
+            for _txid, _height, value, assets in entries.get(txid, ()):
+                if value or not assets:
+                    delta[None] += value
+                for asset, amount in assets:
+                    delta[asset] += amount
+            fee = None if txid in from_recent else self.get_tx_fee(txid)
+            for asset in sorted(delta, key=lambda a: (a is not None, a or '')):
+                history.append([txid, mined[txid], asset, delta[asset], fee])
+        # 3. the balance after each one, back from the current one
+        balance = {asset: sum(b) for asset, b in self.get_balance(domain, asset_aware=True).items()}
+        balances = []
+        for txid, info, asset, delta, fee in reversed(history):
+            balances.append(balance.get(asset, 0))
+            balance[asset] = balance.get(asset, 0) - delta
+        return [HistoryItem(txid=txid, tx_mined_status=info, asset=asset, delta=delta, fee=fee,
+                            balance=bal, from_recent_history=txid in from_recent)
+                for (txid, info, asset, delta, fee), bal in zip(history, reversed(balances))]
 
     def _add_tx_to_local_history(self, txid):
         with self.transaction_lock:
@@ -1403,6 +1597,10 @@ class AddressSynchronizer(Logger, EventListener):
             self.synchronizer.reset_request_counters()
         if self.verifier:
             self.verifier.reset_request_counters()
+
+    def num_utxo_sets_pending(self) -> int:
+        synchronizer = self.synchronizer
+        return synchronizer.num_utxo_sets_pending() if synchronizer else 0
 
     def get_history_sync_state_details(self) -> Tuple[int, int]:
         nsent, nans = 0, 0

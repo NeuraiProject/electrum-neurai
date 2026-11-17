@@ -24,13 +24,13 @@
 # SOFTWARE.
 import asyncio
 import hashlib
-from typing import Dict, List, TYPE_CHECKING, Tuple, Set
+from typing import Dict, List, Optional, TYPE_CHECKING, Tuple, Set
 from collections import defaultdict
 import logging
 
 from aiorpcx import run_in_thread, RPCError
 
-from . import util, constants, utxo_sync
+from . import util, constants, utxo_sync, recent_history
 from .transaction import Transaction, PartialTransaction
 from .util import make_aiohttp_session, NetworkJobOnDefaultServer, random_shuffled_copy, OldTaskGroup, is_hash256_str
 from .bitcoin import address_to_scripthash, is_address, is_b58_address, b58_address_to_hash160
@@ -441,6 +441,9 @@ class Synchronizer(SynchronizerBase):
 
         self.requested_histories = set()
         self.requested_utxo_sets = set()  # (addr, status) being synced
+        self.requested_recent_histories = set()  # (addr, status) being synced
+        # addresses the server has no recent history of (see recent_history.py)
+        self._recent_history_unavailable = set()
         self.requested_asset_metadata = set()
         self.requested_qualifiers_for_tags_results = set()
         self.requested_h160s_for_tags_results = set()
@@ -469,6 +472,7 @@ class Synchronizer(SynchronizerBase):
                 and not self._stale_histories
                 and not self._handling_utxo_statuses
                 and not self.requested_utxo_sets
+                and not self.requested_recent_histories
 
                 and not self._adding_assets
                 and not self.requested_assets
@@ -761,18 +765,32 @@ class Synchronizer(SynchronizerBase):
     async def _on_utxo_status(self, addr, status):
         try:
             stored = self.adb.db.get_utxo_set(addr)
-            if stored is not None and stored.get('status') == status:
-                return
-            if (addr, status) in self.requested_utxo_sets:
-                return
-            self.requested_utxo_sets.add((addr, status))
+            want_utxo_set = stored is None or stored.get('status') != status
+            if want_utxo_set:
+                if (addr, status) in self.requested_utxo_sets:
+                    return
+                self.requested_utxo_sets.add((addr, status))
+            recent = self.adb.db.get_recent_history(addr)
+            want_recent = ((recent is None or recent.get('status') != status)
+                           and (addr, status) not in self.requested_recent_histories)
+            if want_recent:
+                self.requested_recent_histories.add((addr, status))
         finally:
             self._handling_utxo_statuses.discard(addr)
+        if want_utxo_set:
+            await self._sync_utxo_set(addr, status, stored)
+        if want_recent:
+            try:
+                await self._sync_recent_history(addr, status, recent)
+            finally:
+                self.requested_recent_histories.discard((addr, status))
+
+    async def _sync_utxo_set(self, addr: str, status: str, stored: Optional[dict]) -> None:
         h = address_to_scripthash(addr)
         self._requests_sent += 1
         try:
             async with self._network_request_semaphore:
-                utxo_set = await utxo_sync.sync(self.interface, h, stored)
+                utxo_set = await utxo_sync.sync(self.interface, h, stored, progress=self._count_requests)
         except utxo_sync.UtxoSetError as e:
             raise SynchronizerFailure(f"bad UTXO set for {addr}: {e}") from e
         self._requests_answered += 1
@@ -785,6 +803,61 @@ class Synchronizer(SynchronizerBase):
         self.adb.receive_utxo_set_callback(addr, utxo_set)
         # Remove request; this allows up_to_date to be True
         self.requested_utxo_sets.discard((addr, status))
+
+    async def _sync_recent_history(self, addr: str, status: str, stored: Optional[dict]) -> None:
+        """The last transactions of an address followed by its UTXOs, on servers
+        that have them (recent_history.py). Without them, the address has no
+        history, as before: what is kept of another server is dropped once it
+        is out of date."""
+        if addr in self._recent_history_unavailable or not await self.interface.supports_recent_history():
+            if stored is not None:
+                self.adb.receive_recent_history_callback(addr, None)
+            return
+        h = address_to_scripthash(addr)
+        num_requests = 0
+
+        def progress(sent: int, answered: int) -> None:
+            nonlocal num_requests
+            num_requests += sent
+            self._count_requests(sent, answered)
+        try:
+            async with self._network_request_semaphore:
+                recent = await recent_history.sync(self.interface, h, stored, is_in_chain=self._is_in_chain,
+                                                   progress=progress)
+        except RPCError as e:
+            if e.code != recent_history.RECENT_HISTORY_UNAVAILABLE:
+                raise
+            self.logger.info(f"no recent history of {addr} on this server")
+            self._recent_history_unavailable.add(addr)
+            if stored is not None:
+                self.adb.receive_recent_history_callback(addr, None)
+            return
+        except recent_history.RecentHistoryError as e:
+            # only shown to the user: keep what we have, and try again with the next status
+            self.logger.warning(f"bad recent history for {addr}: {e}")
+            return
+        recent['status'] = status
+        known = {e[0] for e in stored['entries']} if stored else set()
+        num_new = sum(1 for e in recent['entries'] if e[0] not in known)
+        self.logger.info(f"recent history of {addr}: {len(recent['entries'])} entries at height {recent['height']}"
+                         f" ({num_new} new, {num_requests} requests){'' if recent['complete'] else ', not all of them'}")
+        self.adb.receive_recent_history_callback(addr, recent)
+
+    def _is_in_chain(self, height: int, block_hash: str) -> bool:
+        """Whether block_hash is still at `height` in our chain."""
+        try:
+            return self.network.blockchain().get_hash(height) == block_hash
+        except Exception:  # e.g. MissingHeader
+            return False
+
+    def _count_requests(self, sent: int, answered: int) -> None:
+        self._requests_sent += sent
+        self._requests_answered += answered
+
+    def num_utxo_sets_pending(self) -> int:
+        """UTXO sets being fetched: the first one of a large address can take
+        the server a while to build."""
+        return len(self.requested_utxo_sets)
 
     async def _mark_coinbase_outputs(self, utxo_set: dict) -> None:
         """Coinbase outputs are spendable after the network's coinbase maturity: among

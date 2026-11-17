@@ -85,7 +85,11 @@ class TestUtxoSync(ElectrumTestCase):
         iface.replies[None], iface.chunks['r1'] = reply(
             from_block=None, block='01' * 32, height=12, utxos=[a, b, c],
             chunks=[{'added': [a, b], 'removed_utxos': []}, {'added': [c], 'removed_utxos': []}])
-        stored = await utxo_sync.sync(iface, sh, None)
+        counted = []
+        stored = await utxo_sync.sync(iface, sh, None, progress=lambda s, a: counted.append((s, a)))
+        # both chunk requests are announced, then each answer, for the GUI's progress
+        self.assertEqual((2, 0), counted[0])
+        self.assertEqual([(0, 1), (0, 1)], counted[1:])
         self.assertEqual(3, len(stored['utxos']))
         self.assertEqual([11, 200, 'TOKEN', None], stored['utxos'][f"{b['tx_hash']}:1"])
         self.assertEqual(to_hex(h(a) + h(b) + h(c)), stored['set_hash'])
@@ -256,3 +260,7 @@ class TestUtxoModeWallet(ElectrumTestCase):
         self.assertEqual((9_000, 0, 0), balances['TOKEN'])
         self.assertEqual(0, w.adb.get_tx_height('dd' * 32).height)
         self.assertNotIn('bb' * 32 + ':1', [c.prevout.to_str() for c in w.get_spendable_coins(None)])
+        # their transactions aren't downloaded: the Coins tab gets no parents, not an error
+        w._up_to_date = True
+        self.assertIsNone(w.get_num_parents('cc' * 32))
+        self.assertEqual({}, w.get_tx_parents('cc' * 32))

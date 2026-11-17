@@ -323,6 +323,8 @@ QLabel#cardTotal { color: @text; font-size: 26px; font-weight: 700; }
 QLabel#cardHint { color: @muted; font-size: 12px; }
 QLabel#emptyHint { color: @muted; font-size: 13px; }
 QListView#overviewList { background: transparent; border: none; }
+/* Notice of the history: the addresses whose history is shown in part. */
+QLabel#historyNotice { color: @text; background-color: @warnbg; border: 1px solid @warnborder; border-radius: 8px; padding: 7px 10px; }
 QLineEdit#overviewSearch { padding: 3px 9px; }
 
 /* Status bar buttons of Electrum (preferences, hardware wallet...). */
@@ -368,6 +370,8 @@ def build_stylesheet(t: Tokens, dark: bool) -> str:
         ('@successborder', css(with_alpha(t.success, 120))),
         ('@successbg', css(with_alpha(t.success, 36))),
         ('@errorborder', css(with_alpha(t.error, 120))),
+        ('@warnborder', css(with_alpha(t.warning, 120))),
+        ('@warnbg', css(with_alpha(t.warning, 36))),
         ('@errorbg', css(with_alpha(t.error, 36))),
         ('@fieldborder', css(t.field_border)),
         ('@primhover', css(t.primary_hover)),

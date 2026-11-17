@@ -23,6 +23,7 @@
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+import math
 import os
 import sys
 import time
@@ -38,7 +39,7 @@ from PyQt5.QtCore import (Qt, QPersistentModelIndex, QModelIndex, QAbstractItemM
                           QSortFilterProxyModel, QVariant, QItemSelectionModel, QDate, QPoint)
 from PyQt5.QtWidgets import (QMenu, QHeaderView, QLabel, QMessageBox,
                              QPushButton, QComboBox, QVBoxLayout, QCalendarWidget,
-                             QGridLayout)
+                             QGridLayout, QWidget, QHBoxLayout)
 
 from electrum.gui import messages
 from electrum.asset import ASSET_OWNER_IDENTIFIER
@@ -131,7 +132,10 @@ class HistoryNode(CustomNode):
                 status, status_str = self.model.tx_status_cache[tx_hash]
             except KeyError:
                 tx_mined_info = self.model._tx_mined_info_from_tx_item(tx_item)
-                status, status_str = window.wallet.get_tx_status(tx_hash, tx_mined_info)
+                if tx_item.get('recent'):
+                    status, status_str = window.wallet.get_recent_tx_status(tx_mined_info)
+                else:
+                    status, status_str = window.wallet.get_tx_status(tx_hash, tx_mined_info)
 
         if role == ROLE_SORT_ORDER:
             d = {
@@ -181,6 +185,10 @@ class HistoryNode(CustomNode):
                                 "You can either broadcast it now, or simply remove it.")
                     else:
                         msg = str(conf) + _(" confirmation" + ("s" if conf != 1 else ""))
+                        if tx_item.get('recent'):
+                            if tx_item['height'] > 0:
+                                msg += '\n' + _('Block {}').format(tx_item['height'])
+                            msg += '\n' + _('Reported by the server: double-click to download the transaction.')
                 return QVariant(msg)
             elif col == HistoryColumns.ASSET and role == Qt.ToolTipRole:
                 asset = tx_item.get('asset', '')
@@ -310,13 +318,20 @@ class HistoryModel(CustomModel, Logger):
         if fx: fx.history_used_spot = False
         wallet = self.window.wallet
         self.set_visibility_of_columns()
+        domain = self.get_domain()
         transactions = wallet.get_full_history(
             self.window.fx,
-            onchain_domain=self.get_domain(),
+            onchain_domain=domain,
             include_lightning=self.should_include_lightning_payments(),
             include_fiat=self.should_show_fiat(),
+            include_recent=True,
         )
-        
+        # the last transactions of the addresses with a long history (see
+        # electrum/recent_history.py): a notice when they are not all of them,
+        # and the list in pages
+        self.view.update_recent_notice(wallet.get_incomplete_recent_histories(domain))
+        self.view.set_paging(any(item.get('recent') for item in transactions.values()))
+
         if transactions == self.transactions:
             return
 
@@ -395,7 +410,10 @@ class HistoryModel(CustomModel, Logger):
         for (txid, asset), tx_item in self.transactions.items():
             if not tx_item.get('lightning', False):
                 tx_mined_info = self._tx_mined_info_from_tx_item(tx_item)
-                self.tx_status_cache[(txid, asset)] = self.window.wallet.get_tx_status(txid, tx_mined_info)
+                if tx_item.get('recent'):
+                    self.tx_status_cache[(txid, asset)] = self.window.wallet.get_recent_tx_status(tx_mined_info)
+                else:
+                    self.tx_status_cache[(txid, asset)] = self.window.wallet.get_tx_status(txid, tx_mined_info)
         # update counter
         num_tx = len(set(v['txid'] for v in self.transactions.values()))
         if self.view:
@@ -496,6 +514,9 @@ class HistoryModel(CustomModel, Logger):
 
 class HistoryList(MyTreeView, AcceptFileDragDrop):
     alternating_rows = False  # the rows of a transaction share a background ("offcolor")
+    # rows per page, when the history has the recent history of addresses with
+    # a long history (up to a thousand transactions each)
+    PAGE_SIZE = 100
 
     class Columns(MyTreeView.BaseColumnsEnum):
         STATUS = enum.auto()
@@ -565,6 +586,86 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
             self.header().setSectionResizeMode(col, sm)
         if self.config:
             self.configvar_show_toolbar = self.config.cv.GUI_QT_HISTORY_TAB_SHOW_TOOLBAR
+        # notice above the list, and page navigation under it: placed by the
+        # page or dialog that shows the list
+        self.recent_notice = QLabel()
+        self.recent_notice.setObjectName('historyNotice')
+        self.recent_notice.setWordWrap(True)
+        self.recent_notice.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.recent_notice.hide()
+        self._paging = False
+        self._page = 0
+        self.pager = self._create_pager()
+        self.proxy.layoutChanged.connect(self._on_sorted)
+
+    def _create_pager(self) -> QWidget:
+        pager = QWidget()
+        hbox = QHBoxLayout(pager)
+        hbox.setContentsMargins(0, 0, 0, 0)
+        hbox.setSpacing(8)
+        self.page_label = QLabel()
+        self.page_label.setObjectName('cardHint')
+        self.prev_page_button = QPushButton('‹ ' + _('Previous'))
+        self.prev_page_button.clicked.connect(lambda: self.show_page(self._page - 1))
+        self.next_page_button = QPushButton(_('Next') + ' ›')
+        self.next_page_button.clicked.connect(lambda: self.show_page(self._page + 1))
+        hbox.addStretch(1)
+        hbox.addWidget(self.prev_page_button)
+        hbox.addWidget(self.page_label)
+        hbox.addWidget(self.next_page_button)
+        pager.hide()
+        return pager
+
+    def update_recent_notice(self, incomplete):
+        """incomplete: (address, number of transactions) of the addresses whose
+        recent history is not all of their history."""
+        lines = [_('Showing the last {} transactions of {}: its history is too long to show in full.').format(n, addr)
+                 for addr, n in incomplete]
+        text = '\n'.join(lines)
+        if text != self.recent_notice.text():
+            self.recent_notice.setText(text)
+        self.recent_notice.setVisible(bool(lines))
+
+    def set_paging(self, b: bool) -> None:
+        if b != self._paging:
+            self._paging = b
+            self._page = 0
+
+    def show_page(self, page: int) -> None:
+        self._page = max(0, page)
+        self.hide_rows()
+        self.scrollToTop()
+
+    def _on_sorted(self):
+        if self._paging:
+            self.hide_rows()
+
+    def filter(self, p=None):
+        if p is not None and p.lower() != self.current_filter:
+            self._page = 0
+        super().filter(p)
+
+    def hide_rows(self):
+        super().hide_rows()
+        self._apply_paging()
+
+    def _apply_paging(self):
+        """Of the rows the filters show, those of the current page only."""
+        if not self._paging:
+            self.pager.hide()
+            return
+        root = QModelIndex()
+        shown = [row for row in range(self.model().rowCount()) if not self.isRowHidden(row, root)]
+        num_pages = max(1, math.ceil(len(shown) / self.PAGE_SIZE))
+        self._page = min(self._page, num_pages - 1)
+        start = self._page * self.PAGE_SIZE
+        for i, row in enumerate(shown):
+            if not start <= i < start + self.PAGE_SIZE:
+                self.setRowHidden(row, root, True)
+        self.page_label.setText(_('Page {} of {}').format(self._page + 1, num_pages))
+        self.prev_page_button.setEnabled(self._page > 0)
+        self.next_page_button.setEnabled(self._page + 1 < num_pages)
+        self.pager.setVisible(num_pages > 1)
 
     def update(self):
         self.hm.refresh('HistoryList.update()')
@@ -767,6 +868,9 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
         tx_hash = tx_item['txid']
         tx = self.wallet.adb.get_transaction(tx_hash)
         if not tx:
+            if tx_item.get('recent'):
+                # not in the wallet: downloaded to be shown
+                self.main_window.show_transaction_from_txid(tx_hash)
             return
         self.main_window.show_transaction(tx)
 
@@ -808,6 +912,8 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
         tx_hash = tx_item['txid']
         tx = self.wallet.adb.get_transaction(tx_hash)
         if not tx:
+            if tx_item.get('recent'):
+                self.create_recent_menu(position, org_idx, idx, tx_item)
             return
         tx_URL = block_explorer_URL(self.config, 'tx', tx_hash)
         tx_details = self.wallet.get_tx_info(tx)
@@ -851,6 +957,24 @@ class HistoryList(MyTreeView, AcceptFileDragDrop):
         if asset and not self.wallet.is_asset_in_blacklist(asset):
             menu.addAction(_('Mark asset as junk'), lambda: self.wallet.add_asset_regex_to_blacklist_for_asset(asset) or self.main_window.update_tabs())
             
+        menu.exec_(self.viewport().mapToGlobal(position))
+
+    def create_recent_menu(self, position: QPoint, org_idx: QModelIndex, idx: QModelIndex, tx_item) -> None:
+        """Menu of an entry of a recent history: its transaction is not in the wallet."""
+        tx_hash = tx_item['txid']
+        menu = QMenu()
+        menu.addAction(_("Details"), lambda: self.main_window.show_transaction_from_txid(tx_hash))
+        copy_menu = self.add_copy_menu(menu, idx)
+        copy_menu.addAction(_("Transaction ID"), lambda: self.place_text_on_clipboard(tx_hash, title="TXID"))
+        menu_edit = menu.addMenu(_("Edit"))
+        for c in self.editable_columns:
+            if self.isColumnHidden(c): continue
+            label = self.hm.headerData(c, Qt.Horizontal, Qt.DisplayRole)
+            persistent = QPersistentModelIndex(org_idx.sibling(org_idx.row(), c))
+            menu_edit.addAction(_("{}").format(label), lambda p=persistent: self.edit(QModelIndex(p)))
+        tx_URL = block_explorer_URL(self.config, 'tx', tx_hash)
+        if tx_URL:
+            menu.addAction(_("View on block explorer"), lambda: webopen(tx_URL))
         menu.exec_(self.viewport().mapToGlobal(position))
 
     def remove_local_tx(self, tx_hash: str):

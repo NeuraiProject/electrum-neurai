@@ -154,6 +154,46 @@ def _assert_utxo_changes(val: Any) -> None:
         _assert_outpoint(outpoint)
 
 
+def _assert_recent_history(res: Any, *, offset: int, limit: int) -> None:
+    """A get_recent_history reply: its tip, and its entries newest first."""
+    for field in ('height', 'block_hash', 'total', 'complete', 'entries'):
+        assert_dict_contains_field(res, field_name=field)
+    assert_non_negative_integer(res['height'])
+    assert_hash256_str(res['block_hash'])
+    assert_non_negative_integer(res['total'])
+    if not isinstance(res['complete'], bool):
+        raise RequestCorrupted(f"{res['complete']!r} should be a bool")
+    entries = res['entries']
+    assert_list_or_tuple(entries)
+    if len(entries) > limit or (entries and offset + len(entries) > res['total']):
+        raise RequestCorrupted(f"{len(entries)} entries from {offset} (limit {limit}, total {res['total']})")
+    prev_height = None
+    txids = set()
+    for entry in entries:
+        assert_hash256_str(assert_dict_contains_field(entry, field_name='tx_hash'))
+        height = assert_dict_contains_field(entry, field_name='height')
+        assert_integer(height)
+        assert_integer(assert_dict_contains_field(entry, field_name='value'))
+        assets = assert_dict_contains_field(entry, field_name='assets')
+        if not isinstance(assets, dict):
+            raise RequestCorrupted(f'{assets!r} should be a dict')
+        for asset, amount in assets.items():
+            if not isinstance(asset, str) or not asset:
+                raise RequestCorrupted(f'{asset!r} should be an asset name')
+            assert_integer(amount)
+        if height < -1 or height > res['height']:
+            raise RequestCorrupted(f"entry at height {height} (tip {res['height']})")
+        # newest first: the mempool ones, then the confirmed ones by height
+        if prev_height is not None and prev_height > 0 and height <= 0:
+            raise RequestCorrupted('mempool entries must come before the confirmed ones')
+        if prev_height is not None and prev_height > 0 and height > prev_height:
+            raise RequestCorrupted('confirmed entries must be newest first')
+        prev_height = height
+        if entry['tx_hash'] in txids:
+            raise RequestCorrupted(f"entry {entry['tx_hash']} twice")
+        txids.add(entry['tx_hash'])
+
+
 class NotificationSession(RPCSession):
 
     def __init__(self, *args, interface: 'Interface', **kwargs):
@@ -1124,6 +1164,26 @@ class Interface(Logger):
             return False
         version = features.get('utxo_chunks')
         return isinstance(version, int) and not isinstance(version, bool) and version >= 1
+
+    async def supports_recent_history(self) -> bool:
+        """Whether the server sends the last transactions of the addresses
+        followed by their UTXOs (blockchain.scripthash.get_recent_history,
+        version 1; see recent_history.py)."""
+        try:
+            features = await self.get_server_features()
+        except aiorpcx.jsonrpc.RPCError:
+            return False
+        version = features.get('recent_history')
+        return isinstance(version, int) and not isinstance(version, bool) and version >= 1
+
+    async def get_recent_history(self, sh: str, offset: int, limit: int) -> dict:
+        """Entries `offset` to `offset + limit` of the recent history of `sh`
+        (newest first: the mempool ones, then the confirmed ones)."""
+        if not is_hash256_str(sh):
+            raise Exception(f"{repr(sh)} is not a scripthash")
+        res = await self.session.send_request('blockchain.scripthash.get_recent_history', [sh, offset, limit])
+        _assert_recent_history(res, offset=offset, limit=limit)
+        return res
 
     async def utxo_sync(self, sh: str, from_block: Optional[str]) -> dict:
         """The changes of the confirmed UTXO set of `sh` since block

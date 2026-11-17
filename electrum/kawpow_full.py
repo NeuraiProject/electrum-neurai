@@ -51,7 +51,10 @@ def _make_keccak512():
     try:
         f, unpack = kawpow.lib.kawpow_keccak512, kawpow.ffi.unpack
         def keccak512(data: bytes) -> bytes:
-            return unpack(f(data, len(data)).str, 64)
+            # keep the returned union alive while reading it: `.str` only
+            # points into its memory, which another thread could reuse
+            result = f(data, len(data))
+            return unpack(result.str, 64)
         if keccak512(bytes(64)) == kawpow.keccak_512(bytes(64)):
             return keccak512
     except Exception:

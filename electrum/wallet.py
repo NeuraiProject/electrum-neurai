@@ -924,7 +924,10 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         tx_hash = tx.txid()  # note: txid can be None! e.g. when called from GUI tx dialog
         is_lightning_funding_tx = self.is_lightning_funding_tx(tx_hash)
         tx_we_already_have_in_db = self.adb.db.get_transaction(tx_hash)
-        can_save_as_local = (is_relevant and tx.txid() is not None
+        # an entry of the recent history of an address followed by its UTXOs,
+        # downloaded to be shown: known to the server, not to be saved
+        recent_entries = self.adb.get_recent_entries(tx_hash) if tx_hash and not tx_we_already_have_in_db else []
+        can_save_as_local = (is_relevant and tx.txid() is not None and not recent_entries
                              and (tx_we_already_have_in_db is None or not tx_we_already_have_in_db.is_complete()))
         label = ''
         tx_mined_status = self.adb.get_tx_height(tx_hash)
@@ -966,6 +969,13 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                         status = _('Local (future: {})').format(_('in {} blocks').format(num_blocks_remainining))
                     can_broadcast = self.network is not None
                     can_bump = (is_any_input_ismine or is_swap) and not tx.is_final()
+            elif recent_entries:
+                label = self.get_label_for_txid(tx_hash)
+                tx_mined_status = self.adb.recent_tx_mined_info(recent_entries[0][1][1])
+                if tx_mined_status.height > 0:
+                    status = _("{} confirmations").format(tx_mined_status.conf)
+                else:
+                    status = _('Unconfirmed')
             else:
                 status = _("Signed")
                 can_broadcast = self.network is not None
@@ -974,7 +984,21 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             s, r = tx.signature_count()
             status = _("Unsigned") if s == 0 else _('Partially signed') + ' (%d/%d)'%(s,r)
 
-        if is_relevant:
+        if recent_entries:
+            # the server's word for the addresses followed by their UTXOs (the
+            # coins they spend are not in the wallet), ours for the others
+            is_relevant = True
+            utxo_set_addrs = {addr for addr, entry in recent_entries}
+            amount = sum(entry[2] for addr, entry in recent_entries)
+            with self.lock, self.transaction_lock:
+                for txin in tx.inputs():
+                    addr = self.adb.get_txin_address(txin)
+                    if addr not in utxo_set_addrs and self.is_mine(addr):
+                        amount -= self.adb.get_txin_value(txin, address=addr) or 0
+                for txout in tx.outputs():
+                    if txout.address not in utxo_set_addrs and self.is_mine(txout.address):
+                        amount += txout.value
+        elif is_relevant:
             if tx_wallet_delta.is_all_input_ismine:
                 assert fee is not None
                 amount = tx_wallet_delta.delta + fee
@@ -1008,6 +1032,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         if not self.is_up_to_date():
             return
         if txid not in self._num_parents:
+            if not self.adb.get_transaction(txid):
+                return None  # e.g. a coin of an address followed by its UTXOs
             self._num_parents[txid] = len(self.get_tx_parents(txid))
         return self._num_parents[txid]
 
@@ -1035,7 +1061,10 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             parents = []  # type: List[str]
             uncles = []   # type: List[str]
             tx = self.adb.get_transaction(txid)
-            assert tx, f"cannot find {txid} in db"
+            if tx is None:
+                # not downloaded: coins of addresses followed by their UTXOs
+                # come without their transactions
+                return {}
             for i, txin in enumerate(tx.inputs()):
                 _txid = txin.prevout.txid.hex()
                 parents.append(_txid)
@@ -1175,11 +1204,18 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         # return last balance
         return balance
 
-    def get_onchain_history(self, *, domain=None):
+    def get_onchain_history(self, *, domain=None, include_recent=False):
+        """With include_recent, the addresses followed by their UTXOs count by the
+        recent history the server sends of them (recent_history.py): items with
+        'recent' are its entries, whose transactions are not in the wallet."""
         if domain is None:
             domain = self.get_addresses()
         monotonic_timestamp = 0
-        for hist_item in self.adb.get_history(domain=domain):
+        if include_recent:
+            history = self.adb.get_history_with_recent(domain)
+        else:
+            history = self.adb.get_history(domain=domain)
+        for hist_item in history:
             monotonic_timestamp = max(monotonic_timestamp, (hist_item.tx_mined_status.timestamp or TX_TIMESTAMP_INF))
             d = {
                 'txid': hist_item.txid,
@@ -1198,6 +1234,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             }
             if wanted_height := hist_item.tx_mined_status.wanted_height:
                 d['wanted_height'] = wanted_height
+            if hist_item.from_recent_history:
+                d['recent'] = True
             yield d
 
     def create_invoice(self, *, outputs: List[PartialTxOutput], message, pr, URI) -> Invoice:
@@ -1408,10 +1446,15 @@ class Abstract_Wallet(ABC, Logger, EventListener):
         return is_paid, conf_needed
 
     @profiler
-    def get_full_history(self, fx=None, *, onchain_domain=None, include_lightning=True, include_fiat=False):
+    def get_full_history(self, fx=None, *, onchain_domain=None, include_lightning=True, include_fiat=False,
+                         include_recent=False):
+        """include_recent: with the recent history of the addresses followed by
+        their UTXOs (see get_onchain_history). It is for the GUI's history: the
+        other users of the history (export, fiat summary, ...) see only the
+        transactions of the wallet."""
         transactions_tmp = OrderedDictWithIndex()
         # add on-chain txns
-        onchain_history = self.get_onchain_history(domain=onchain_domain)
+        onchain_history = self.get_onchain_history(domain=onchain_domain, include_recent=include_recent)
         for tx_item in onchain_history:
             txid = tx_item['txid']
             asset = tx_item.get('asset')
@@ -1500,7 +1543,7 @@ class Abstract_Wallet(ABC, Logger, EventListener):
             item['balance'] = Satoshis(balance[asset])
             if include_fiat and asset is None:
                 txid = item.get('txid')
-                if not item.get('lightning') and txid:
+                if not item.get('lightning') and not item.get('recent') and txid:
                     fiat_fields = self.get_tx_item_fiat(tx_hash=txid, amount_sat=value, fx=fx, tx_fee=item['fee_sat'])
                     item.update(fiat_fields)
                 else:
@@ -1508,7 +1551,40 @@ class Abstract_Wallet(ABC, Logger, EventListener):
                     fiat_value = value / Decimal(bitcoin.COIN) * fx.timestamp_rate(timestamp)
                     item['fiat_value'] = Fiat(fiat_value, fx.ccy)
                     item['fiat_default'] = True
+        domain = (onchain_domain if onchain_domain is not None else self.get_addresses()) if include_recent else ()
+        if any(self.adb.get_recent_history(addr) is not None for addr in domain):
+            # a recent history is not complete: count the balance back from the
+            # current one, as the onchain history does
+            current = self.adb.get_balance(domain, asset_aware=True)
+            for item in transactions.values():
+                asset = item.get('asset')
+                offset = sum(current[asset]) - balance[asset]
+                item['balance'] = Satoshis(item['balance'].value + offset)
         return transactions
+
+    def get_recent_tx_status(self, tx_mined_info: TxMinedInfo) -> Tuple[int, str]:
+        """get_tx_status of an entry of a recent history (its transaction is not
+        in the wallet): the date of its block if we have its header, else its
+        height."""
+        height, conf, timestamp = tx_mined_info.height, tx_mined_info.conf or 0, tx_mined_info.timestamp
+        if height == TX_HEIGHT_UNCONF_PARENT:
+            return 1, TX_STATUS[1]
+        if height <= 0:
+            return 0, TX_STATUS[0]
+        status = 3 + max(1, min(conf, 6))
+        return status, format_time(timestamp) if timestamp else _('Block {}').format(height)
+
+    def get_incomplete_recent_histories(self, domain=None) -> List[Tuple[str, int]]:
+        """(address, number of transactions) of the addresses of domain whose
+        recent history is not all of their history."""
+        if domain is None:
+            domain = self.get_addresses()
+        out = []
+        for addr in domain:
+            recent = self.adb.get_recent_history(addr)
+            if recent is not None and not recent['complete']:
+                out.append((addr, len(recent['entries'])))
+        return out
 
     @profiler
     def get_detailed_history(

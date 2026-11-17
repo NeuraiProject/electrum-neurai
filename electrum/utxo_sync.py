@@ -26,7 +26,7 @@ A set is kept in the wallet file as a dict:
 
 import asyncio
 import hashlib
-from typing import Dict, Iterable, List, Optional, Sequence, TYPE_CHECKING
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, TYPE_CHECKING
 
 from aiorpcx.jsonrpc import RPCError
 
@@ -111,22 +111,31 @@ def apply_changes(base: Dict[str, list], chunks: Sequence[dict], hashes: Sequenc
     return utxos
 
 
-async def _get_chunks(interface: 'Interface', sh: str, reply_id: str, count: int) -> List[dict]:
+async def _get_chunks(interface: 'Interface', sh: str, reply_id: str, count: int,
+                      progress: Callable[[int, int], None]) -> List[dict]:
     chunks = [None] * count  # type: List[Optional[dict]]
     semaphore = asyncio.Semaphore(CHUNKS_IN_FLIGHT)
+    progress(count, 0)
 
     async def get(i):
         async with semaphore:
             chunks[i] = await interface.utxo_chunk(sh, reply_id, i)
+        progress(0, 1)
 
     await asyncio.gather(*(get(i) for i in range(count)))
     return chunks
 
 
-async def sync(interface: 'Interface', sh: str, stored: Optional[dict]) -> dict:
+def _no_progress(sent: int, answered: int) -> None:
+    pass
+
+
+async def sync(interface: 'Interface', sh: str, stored: Optional[dict], *,
+               progress: Callable[[int, int], None] = _no_progress) -> dict:
     """The set of `sh` after the changes since `stored` (from scratch when
     None), as a new dict to store. Raises UtxoSetError for a reply that
-    doesn't add up."""
+    doesn't add up. progress(sent, answered) is told about each chunk
+    request, so that the GUI can show how the download goes."""
     for attempt in range(3):
         from_block = stored['block_hash'] if stored else None
         reply = await interface.utxo_sync(sh, from_block)
@@ -135,7 +144,7 @@ async def sync(interface: 'Interface', sh: str, stored: Optional[dict]) -> dict:
             chunks = [{'added': reply['added'], 'removed': reply['removed']}]
         else:
             try:
-                chunks = await _get_chunks(interface, sh, reply['id'], len(hashes))
+                chunks = await _get_chunks(interface, sh, reply['id'], len(hashes), progress)
             except RPCError as e:
                 if e.code == SNAPSHOT_EXPIRED and attempt < 2:
                     continue  # ask again
@@ -183,3 +192,11 @@ def txid_heights(utxo_sets: Iterable[dict]) -> Dict[str, int]:
         for outpoint in utxo_set['mempool_added']:
             heights.setdefault(outpoint.split(':')[0], 0)
     return heights
+
+
+def coinbase_txids(utxo_sets: Iterable[dict]) -> Set[str]:
+    """Transactions of the UTXOs of `utxo_sets` known to be coinbases (only
+    those recent enough for their maturity to matter are checked)."""
+    return {outpoint.split(':')[0]
+            for utxo_set in utxo_sets
+            for outpoint, utxo in utxo_set['utxos'].items() if utxo[3]}

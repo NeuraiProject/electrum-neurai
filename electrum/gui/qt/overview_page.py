@@ -5,7 +5,7 @@
 an XNA balance card with quick actions, an asset balance card with a search
 field and a card with the most recent transactions."""
 
-import heapq
+import math
 from decimal import Decimal, ROUND_DOWN
 from typing import TYPE_CHECKING, Optional, Dict, List, Tuple
 
@@ -31,7 +31,8 @@ if TYPE_CHECKING:
     from .main_window import ElectrumWindow
 
 
-NUM_RECENT_TXS = 8     # like neurai-qt (NUM_ITEMS)
+NUM_RECENT_TXS = 50    # the most recent transactions shown...
+RECENT_TXS_PAGE = 10   # ... in pages of this many rows
 TX_ROW_HEIGHT = 54     # DECORATION_SIZE of neurai-qt
 ASSET_ROW_HEIGHT = 52
 CARD_MARGINS = (15, 9, 15, 10)  # neurai-qt: 1 px border + "padding: 8px 6px 4px 6px" + layout margins
@@ -247,6 +248,8 @@ class OverviewPage(QWidget, Logger):
         self.setObjectName('overviewPage')
         self._pending_refresh = False
         self._recent_key = None
+        self._recent_rows = []
+        self._recent_page = 0
         self._counterparty_cache = {}  # (txid, asset, incoming) -> address
         self._asset_rows = None
         # Coalesce the bursts of updates during synchronization
@@ -449,6 +452,29 @@ class OverviewPage(QWidget, Logger):
         self.tx_empty.setAlignment(Qt.AlignCenter)
         vbox.addWidget(self.tx_empty, 1)
         self.tx_empty.hide()
+        # page navigation of the recent transactions
+        self.tx_pager = QWidget()
+        pager = QHBoxLayout(self.tx_pager)
+        pager.setContentsMargins(0, 0, 0, 0)
+        pager.setSpacing(4)
+        link_style = (f'QPushButton {{ color: {neurai_theme.css(tokens().primary)}; padding: 2px 6px; }}'
+                      f'QPushButton:hover {{ color: {neurai_theme.css(tokens().primary_hover)}; }}'
+                      f'QPushButton:disabled {{ color: {neurai_theme.css(tokens().text_muted)}; }}')
+        self.tx_prev_button = QPushButton('‹ ' + _('Newer'))
+        self.tx_next_button = QPushButton(_('Older') + ' ›')
+        for b, step in ((self.tx_prev_button, -1), (self.tx_next_button, 1)):
+            b.setFlat(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet(link_style)
+            b.clicked.connect(lambda _checked, step=step: self._show_recent_page(self._recent_page + step))
+        self.tx_page_label = QLabel()
+        self.tx_page_label.setObjectName('cardHint')
+        pager.addStretch(1)
+        pager.addWidget(self.tx_prev_button)
+        pager.addWidget(self.tx_page_label)
+        pager.addWidget(self.tx_next_button)
+        vbox.addWidget(self.tx_pager)
+        self.tx_pager.hide()
         return card
 
     # ------------------------------------------------------------------ updates
@@ -577,41 +603,25 @@ class OverviewPage(QWidget, Logger):
         self.asset_empty.setVisible(not has_rows)
 
     def _recent_history(self, count: int) -> List[dict]:
-        """The last transactions of the wallet, newest first, one row per asset.
-        Only the latest transactions are looked at in detail, so that this stays
-        fast on wallets with thousands of transactions."""
+        """The last transactions of the wallet, newest first, one row per asset,
+        with the recent history the server sends of the addresses followed by
+        their UTXOs (see electrum/recent_history.py). Only the latest
+        transactions are looked at in detail, so that this stays fast on
+        wallets with thousands of transactions."""
         wallet = self.wallet
-        adb = wallet.adb
-        tx_addrs = {}  # type: Dict[str, List[str]]
-        sort_heights = {}  # type: Dict[str, int]
-        for addr in wallet.get_addresses():
-            for txid, height in adb.get_address_history(addr).items():
-                tx_addrs.setdefault(txid, []).append(addr)
-                sort_heights[txid] = adb.tx_height_to_sort_height(height)
-        # the latest transactions by height (a transaction can give several
-        # rows (assets) or none (blacklisted assets), hence the margin), and all
-        # those of the lowest of these heights, to order them by block position
-        latest = heapq.nlargest(count * 2, sort_heights.values())
-        threshold = latest[-1] if latest else 0
-        candidates = [txid for txid, h in sort_heights.items() if h >= threshold]
-        mined = {txid: adb.get_tx_height(txid) for txid in candidates}
-
-        def sort_key(txid):
-            info = mined[txid]
-            return adb.tx_height_to_sort_height(info.height), info.txpos or -1, txid
-
+        # a transaction can give several rows (assets) or none (blacklisted
+        # assets), hence the margin
+        items = wallet.adb.get_history_with_recent(wallet.get_addresses(), limit=count * 2)
+        rows_of = {}  # type: Dict[str, List[dict]]  # txid -> rows, newest transaction first
+        for item in reversed(items):
+            if item.asset and wallet.is_asset_in_blacklist(item.asset):
+                continue
+            rows_of.setdefault(item.txid, []).append({
+                'txid': item.txid, 'asset': item.asset, 'delta': item.delta,
+                'mined': item.tx_mined_status, 'recent': item.from_recent_history})
         rows = []
-        for txid in sorted(candidates, key=sort_key, reverse=True):
-            deltas = {}
-            for addr in tx_addrs[txid]:
-                for asset, value in adb.get_tx_delta(txid, addr).items():
-                    deltas[asset] = deltas.get(asset, 0) + value
-            for asset in sorted(deltas, key=lambda a: (a is not None, a or '')):
-                if asset and wallet.is_asset_in_blacklist(asset):
-                    continue
-                rows.append({'txid': txid, 'asset': asset, 'delta': deltas[asset], 'mined': mined[txid]})
-            if len(rows) >= count:
-                break
+        for tx_rows in rows_of.values():
+            rows += sorted(tx_rows, key=lambda r: (r['asset'] is not None, r['asset'] or ''))
         return rows[:count]
 
     def _counterparty(self, txid: str, asset: Optional[str], incoming: bool) -> str:
@@ -654,25 +664,47 @@ class OverviewPage(QWidget, Logger):
 
     @profiler(min_threshold=0.05)
     def update_recent_transactions(self):
-        wallet = self.wallet
         if len(self._counterparty_cache) > 500:
             self._counterparty_cache.clear()
         rows = self._recent_history(NUM_RECENT_TXS)
-        key = [(r['txid'], r['asset'], r['delta'], r['mined'].conf, r['mined'].height,
+        if [r['txid'] for r in rows[:1]] != [r['txid'] for r in self._recent_rows[:1]]:
+            self._recent_page = 0  # a new transaction: back to the latest ones
+        self._recent_rows = rows
+        self._show_recent_page(self._recent_page)
+
+    def _show_recent_page(self, page: int):
+        wallet = self.wallet
+        rows = self._recent_rows
+        num_pages = max(1, math.ceil(len(rows) / RECENT_TXS_PAGE))
+        page = self._recent_page = max(0, min(page, num_pages - 1))
+        rows = rows[page * RECENT_TXS_PAGE:(page + 1) * RECENT_TXS_PAGE]
+        key = [(r['txid'], r['asset'], r['delta'], r['mined'].conf, r['mined'].height, r['mined'].timestamp,
                 wallet.get_label_for_txid(r['txid'])) for r in rows]
-        key.append(self.window.base_unit())
+        key += [self.window.base_unit(), page, num_pages]
         if key == self._recent_key:
             return
         self._recent_key = key
+        self.tx_page_label.setText(_('{} of {}').format(page + 1, num_pages))
+        self.tx_prev_button.setEnabled(page > 0)
+        self.tx_next_button.setEnabled(page + 1 < num_pages)
+        self.tx_pager.setVisible(num_pages > 1)
         unit = self.window.base_unit()
         locale = QLocale()
         self.tx_model.clear()
         for r in rows:
             txid, asset, delta, mined = r['txid'], r['asset'], r['delta'], r['mined']
-            status, status_str = wallet.get_tx_status(txid, mined)
+            if r['recent']:
+                # an entry of a recent history: its transaction is not in the wallet
+                status, status_str = wallet.get_recent_tx_status(mined)
+            else:
+                status, status_str = wallet.get_tx_status(txid, mined)
             confirmed = mined.conf > 0
             label = wallet.get_label_for_txid(txid)
-            title = label or self._counterparty(txid, asset, delta > 0) or txid
+            if r['recent']:
+                entries = wallet.adb.get_recent_entries(txid)
+                title = label or (entries[0][0] if entries else '') or txid
+            else:
+                title = label or self._counterparty(txid, asset, delta > 0) or txid
             if mined.timestamp:
                 dt = QDateTime.fromSecsSinceEpoch(int(mined.timestamp))
                 date = locale.toString(dt.date(), QLocale.ShortFormat) + ' ' + dt.toString('hh:mm')
@@ -684,7 +716,8 @@ class OverviewPage(QWidget, Logger):
             else:
                 amount = self.config.format_amount(delta)
                 if delta > 0:
-                    icon = 'tx_mined' if self._is_coinbase(txid) else 'tx_input'
+                    coinbase = wallet.adb.is_coinbase_hint(txid) if r['recent'] else self._is_coinbase(txid)
+                    icon = 'tx_mined' if coinbase else 'tx_input'
                 else:
                     icon = 'tx_output' if delta < 0 else 'tx_inout'
             if delta > 0 and not amount.startswith('+'):
@@ -706,6 +739,7 @@ class OverviewPage(QWidget, Logger):
         has_rows = self.tx_model.rowCount() > 0
         self.tx_list.setVisible(has_rows)
         self.tx_empty.setVisible(not has_rows)
+        self.tx_list.scrollToTop()
 
     # ------------------------------------------------------------------ actions
 
@@ -720,9 +754,8 @@ class OverviewPage(QWidget, Logger):
         txid = index.data(ROLE_TXID)
         if not txid:
             return
-        tx = self.wallet.adb.get_transaction(txid)
-        if tx:
-            self.window.show_transaction(tx)
+        # downloaded if it is an entry of a recent history
+        self.window.show_transaction_from_txid(txid)
 
     def _on_asset_clicked(self, index: QModelIndex):
         name = index.data(ROLE_NAME)

@@ -189,7 +189,9 @@ class AddressDialog(WindowModalDialog):
 
                 vbox_history = QVBoxLayout()
                 vbox_history.addWidget(self.hw.num_tx_label)
+                vbox_history.addWidget(self.hw.recent_notice)
                 vbox_history.addWidget(self.hw)
+                vbox_history.addWidget(self.hw.pager)
                 history_widget = QWidget()
                 history_widget.setLayout(vbox_history)
 
@@ -202,10 +204,14 @@ class AddressDialog(WindowModalDialog):
                 vbox.addWidget(tabs)
             else:
                 vbox.addWidget(self.hw.num_tx_label)
+                vbox.addWidget(self.hw.recent_notice)
                 vbox.addWidget(self.hw)
+                vbox.addWidget(self.hw.pager)
         else:
             vbox.addWidget(self.hw.num_tx_label)
+            vbox.addWidget(self.hw.recent_notice)
             vbox.addWidget(self.hw)
+            vbox.addWidget(self.hw.pager)
 
         vbox.addLayout(Buttons(CloseButton(self)))
         self.format_amount = self.window.format_amount

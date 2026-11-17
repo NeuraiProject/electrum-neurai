@@ -246,6 +246,8 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
 
         self.create_status_bar()
         self.need_update = threading.Event()
+        # raw transactions downloaded to be shown (entries of recent histories), by txid
+        self._downloaded_txs = {}  # type: Dict[str, str]
 
         self.completions = QStringListModel()
 
@@ -1073,8 +1075,12 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
             # Display the synchronizing message in that case.
             if not self.wallet.is_up_to_date() or server_height == 0:
                 num_sent, num_answered = self.wallet.adb.get_history_sync_state_details()
-                network_text = ("{} ({}/{})"
-                                .format(_("Synchronizing..."), num_answered, num_sent))
+                if self.wallet.adb.num_utxo_sets_pending():
+                    # the server may take a while to gather the coins of a huge address
+                    syncing = _("Loading the coins of addresses with a long history...")
+                else:
+                    syncing = _("Synchronizing...")
+                network_text = "{} ({}/{})".format(syncing, num_answered, num_sent)
                 sync_color = t.warning
                 sync_progress = (num_answered, num_sent)
             elif server_lag > 1:
@@ -1190,6 +1196,10 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         self.history_model.set_view(self.history_list)
         l.searchable_list = l
         tab = self.create_list_tab(self.history_list)
+        # notice of the addresses whose history is shown in part, and pages
+        vbox = tab.layout()
+        vbox.insertWidget(vbox.indexOf(l), l.recent_notice)
+        vbox.addWidget(l.pager)
         return tab
 
     def show_address(self, addr: str, *, parent: QWidget = None):
@@ -1214,6 +1224,23 @@ class ElectrumWindow(QMainWindow, MessageBoxMixin, Logger, QtEventListener):
         payment_identifier: PaymentIdentifier = None,
     ):
         show_transaction(tx, parent=self, external_keypairs=external_keypairs, payment_identifier=payment_identifier)
+
+    def show_transaction_from_txid(self, txid: str) -> None:
+        """Show a transaction of the history, downloading it if the wallet
+        doesn't have it: those of the recent history of the addresses followed
+        by their UTXOs are not downloaded until they are opened."""
+        tx = self.wallet.adb.get_transaction(txid)
+        if tx is None:
+            raw_tx = self._downloaded_txs.get(txid)
+            if raw_tx is None:
+                raw_tx = self._fetch_tx_from_network(txid)
+                if not raw_tx:
+                    return
+                if len(self._downloaded_txs) >= 50:
+                    self._downloaded_txs.pop(next(iter(self._downloaded_txs)))
+                self._downloaded_txs[txid] = raw_tx
+            tx = Transaction(raw_tx)
+        self.show_transaction(tx)
 
     def show_lightning_transaction(self, tx_item):
         from .lightning_tx_dialog import LightningTxDialog

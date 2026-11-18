@@ -66,6 +66,8 @@ info "Building $pkgname..."
                 --enable-video=yes \
                 --with-jpeg=yes"
         fi
+        # GCC 14 makes this pointer mismatch (char** vs const char** to iconv) an error
+        CFLAGS="${CFLAGS:--g -O2} -Wno-error=incompatible-pointer-types" \
         ./configure \
             $AUTOCONF_FLAGS \
             --prefix="$here/$pkgname/dist" \

@@ -1,3 +1,23 @@
+# Release 0.2.9 (Nov 18 2026)
+ * New look, shared with the neurai-qt wallet: light and dark themes, a
+   header with navigation and an Overview front page.
+ * Addresses with very long histories (e.g. mining pools) are followed by
+   their UTXOs, downloaded in chunks, and show their last 1000
+   transactions (needs electrs-neurai with "utxo_chunks" and
+   "recent_history").
+ * Header checkpoints up to block 1,870,847: a new wallet reaches the tip
+   in about a second.
+ * Full KAWPOW proof-of-work check of the headers above the checkpoints.
+ * Testnet follows the current Neurai testnet (SHA256d headers).
+ * Wallets that Neurai can't use yet (SegWit, 2FA, Lightning) can no
+   longer be created or restored by mistake.
+ * Fixes: reorg handling of the headers file, witness outputs breaking
+   sync, sweeping private keys, asset fee bumps, slow history on big
+   wallets, message verification, a bitstring version pin.
+ * Default servers: electrumx1/2/3.neurai.top (SSL).
+ * Build images: Windows on Debian 13 with Wine 11; AppImage and sdist
+   keep Debian 11 for compatibility, from a pinned snapshot only.
+
 # Release 0.2.2 (Nov 05 2025)
  * Update libraries and checlpoints.
 

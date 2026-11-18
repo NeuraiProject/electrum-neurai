@@ -1,19 +1,25 @@
 # Note: we deliberately use an old Debian stable as base image.
 # from https://docs.appimage.org/introduction/concepts.html :
 # "[AppImages] should be built on the oldest possible system, allowing them to run on newer system[s]"
+# Debian 11 (glibc 2.31): the AppImage runs on Ubuntu 20.04+, Debian 11+, Mint 20+...
+# Debian 11 is end-of-life, so its live repos are not used at all: every
+# package comes from the pinned snapshot.
 
-FROM debian:bullseye
+FROM debian:bullseye@sha256:6f519a81440354a85eb592c5f32109ab80605f6b892455983a6f618bf87fabe9
 
 ENV LC_ALL=C.UTF-8 LANG=C.UTF-8
 ENV DEBIAN_FRONTEND=noninteractive
 
-# need ca-certificates before using snapshot packages
-RUN apt update -qq > /dev/null && apt install -qq --yes --no-install-recommends \
-    ca-certificates
-
-# pin the distro packages
-COPY apt.sources.list /etc/apt/sources.list
+# Pin the distro packages. ca-certificates comes first from the snapshot over
+# plain http (apt still checks the signed Release files), then the https URLs
+# are used.
+COPY apt.sources.list /tmp/apt.sources.list
 COPY apt.preferences /etc/apt/preferences.d/snapshot
+RUN rm -f /etc/apt/sources.list.d/* /etc/apt/sources.list && \
+    sed 's|https://|http://|' /tmp/apt.sources.list > /etc/apt/sources.list && \
+    apt-get update -qq && \
+    apt-get install -qq --yes --no-install-recommends --allow-downgrades ca-certificates && \
+    mv /tmp/apt.sources.list /etc/apt/sources.list
 
 RUN apt-get update -q && \
     apt-get install -qy --allow-downgrades \

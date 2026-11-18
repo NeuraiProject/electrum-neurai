@@ -90,8 +90,10 @@ info "Building PyInstaller."
     echo "const char *electrum_tag = \"tagged by Electrum@$ELECTRUM_COMMIT_HASH\";" >> ./bootloader/src/pyi_main.c
     pushd bootloader
     # cross-compile to Windows using host python
+    # (GCC 14 turns a "may be used uninitialized" warning of this pinned
+    # bootloader into an error)
     python3 ./waf all CC="${GCC_TRIPLET_HOST}-gcc" \
-                      CFLAGS="-static"
+                      CFLAGS="-static -Wno-error=maybe-uninitialized"
     popd
     # sanity check bootloader is there:
     [[ -e "PyInstaller/bootloader/Windows-$PYINST_ARCH-intel/runw.exe" ]] || fail "Could not find runw.exe in target dir!"

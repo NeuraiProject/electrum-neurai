@@ -1,26 +1,27 @@
-FROM debian:bullseye@sha256:43ef0c6c3585d5b406caa7a0f232ff5a19c1402aeb415f68bcd1cf9d10180af8
-
-# need ca-certificates before using snapshot packages
-RUN apt update -qq > /dev/null && apt install -qq --yes --no-install-recommends \
-    ca-certificates
-
-# pin the distro packages.
-COPY apt.sources.list /etc/apt/sources.list
-COPY apt.preferences /etc/apt/preferences.d/snapshot
+FROM debian:trixie@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6
 
 ENV LC_ALL=C.UTF-8 LANG=C.UTF-8
 ENV DEBIAN_FRONTEND=noninteractive
+
+# Pin the distro packages: only the snapshot below is used, never the live
+# Debian repos. ca-certificates comes first from the snapshot over plain http
+# (apt still checks the signed Release files), then the https URLs are used.
+COPY apt.sources.list /tmp/apt.sources.list
+COPY apt.preferences /etc/apt/preferences.d/snapshot
+RUN rm -f /etc/apt/sources.list.d/* /etc/apt/sources.list && \
+    sed 's|https://|http://|' /tmp/apt.sources.list > /etc/apt/sources.list && \
+    apt-get update -qq && \
+    apt-get install -qq --yes --no-install-recommends --allow-downgrades ca-certificates && \
+    mv /tmp/apt.sources.list /etc/apt/sources.list
 
 RUN dpkg --add-architecture i386 && \
     apt-get update -q && \
     apt-get install -qy --allow-downgrades \
         wget \
-        gnupg2 \
+        gnupg \
         dirmngr \
-        python3-software-properties \
-        software-properties-common \
+        python3 \
         git \
-        p7zip-full \
         make \
         mingw-w64 \
         mingw-w64-tools \
@@ -36,23 +37,18 @@ RUN dpkg --add-architecture i386 && \
     apt-get autoremove -y && \
     apt-get clean
 
-RUN wget -nc https://dl.winehq.org/wine-builds/Release.key && \
-        echo "c51bcb8cc4a12abfbd7c7660eaf90f49674d15e222c262f27e6c96429111b822 Release.key" | sha256sum -c - && \
-        apt-key add Release.key && \
-        rm Release.key && \
-    wget -nc https://dl.winehq.org/wine-builds/winehq.key && \
-        echo "d965d646defe94b3dfba6d5b4406900ac6c81065428bf9d9303ad7a72ee8d1b8 winehq.key" | sha256sum -c - && \
-        apt-key add winehq.key && \
-        rm winehq.key && \
-    apt-add-repository https://dl.winehq.org/wine-builds/debian/ && \
+# Wine from WineHQ (the 32-bit Windows Python runs in it, hence i386 too)
+RUN mkdir -p -m 755 /etc/apt/keyrings && \
+    wget -nc -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key && \
+        echo "d965d646defe94b3dfba6d5b4406900ac6c81065428bf9d9303ad7a72ee8d1b8 /etc/apt/keyrings/winehq-archive.key" | sha256sum -c - && \
+    echo "deb [arch=amd64,i386 signed-by=/etc/apt/keyrings/winehq-archive.key] https://dl.winehq.org/wine-builds/debian/ trixie main" \
+        > /etc/apt/sources.list.d/winehq.list && \
     apt-get update -q && \
     apt-get install -qy --allow-downgrades \
-        wine-stable-amd64:amd64=8.0.1~bullseye-1 \
-        wine-stable-i386:i386=8.0.1~bullseye-1 \
-        wine-stable:amd64=8.0.1~bullseye-1 \
-        winehq-stable:amd64=8.0.1~bullseye-1 \
-        libvkd3d1:amd64=1.3~bullseye-1 \
-        libvkd3d1:i386=1.3~bullseye-1 \
+        wine-stable-amd64:amd64=11.0.0.0~trixie-1 \
+        wine-stable-i386:i386=11.0.0.0~trixie-1 \
+        wine-stable:amd64=11.0.0.0~trixie-1 \
+        winehq-stable:amd64=11.0.0.0~trixie-1 \
         && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get autoremove -y && \

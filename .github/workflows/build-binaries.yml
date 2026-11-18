@@ -1,0 +1,151 @@
+# Builds the release binaries on GitHub-hosted runners:
+#   - Windows (installer, standalone and portable .exe) and the Linux AppImage
+#     and source tarball, with the same Docker builds as on a developer machine
+#   - macOS (.dmg, Intel; runs on Apple Silicon through Rosetta 2)
+# Started by hand (Actions > Build binaries > Run workflow) the files are kept
+# as a workflow artifact; pushing a tag v* also opens a draft GitHub release
+# with them. Every run publishes SHA256SUMS and a signed build provenance
+# attestation (`gh attestation verify <file> -R NeuraiProject/electrum-neurai`).
+#
+# Security: clean runners and no build cache; third-party code limited to
+# GitHub's own actions, pinned by commit; no secrets; read-only token except
+# for the attestation and the draft release; never run for pull requests.
+
+name: Build binaries
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-binaries-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0  # git describe names the files after the last tag
+          persist-credentials: false
+      - name: Build
+        run: contrib/build-wine/build.sh
+      - name: Checksums
+        run: sha256sum contrib/build-wine/dist/*.exe
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows
+          path: contrib/build-wine/dist/*.exe
+          if-no-files-found: error
+
+  appimage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build
+        run: contrib/build-linux/appimage/build.sh
+      - name: Checksums
+        run: sha256sum dist/*.AppImage
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: appimage
+          path: dist/*.AppImage
+          if-no-files-found: error
+
+  sdist:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build
+        run: contrib/build-linux/sdist/build.sh
+      - name: Checksums
+        run: sha256sum dist/*.tar.gz
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  macos:
+    # Intel: the pinned PyQt5-Qt5 5.15.2 has no arm64 wheels
+    runs-on: macos-15-intel
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build
+        run: contrib/osx/make_osx.sh
+      - name: Checksums
+        run: shasum -a 256 dist/*.dmg
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  checksums:
+    needs: [windows, appimage, sdist, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write      # signs the provenance attestation (Sigstore)
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: release
+          merge-multiple: true
+      - name: SHA256SUMS
+        working-directory: release
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: 'release/*'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: electrum-neurai-${{ github.ref_name }}
+          path: release/*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [checksums]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write      # creates the draft release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: electrum-neurai-${{ github.ref_name }}
+          path: release
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" release/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --title "Electrum-Neurai $TAG" \
+            --notes "Built by GitHub Actions run $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Check the files with SHA256SUMS and \`gh attestation verify <file> -R $GITHUB_REPOSITORY\`."

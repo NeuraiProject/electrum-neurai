@@ -59,6 +59,9 @@ info "Building $pkgname..."
                 --with-x=no \
                 --enable-video=no \
                 --with-jpeg=no"
+            # iconv is in the system's libiconv, not in libSystem, and
+            # configure doesn't add it: the dylib wouldn't link
+            export LIBS="${LIBS:-} -liconv"
         else
             # linux target
             AUTOCONF_FLAGS="$AUTOCONF_FLAGS \

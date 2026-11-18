@@ -101,6 +101,15 @@ source $VENV_DIR/bin/activate
 #       see additional "strip" pass on built files later in the file.
 export CFLAGS="-g0"
 
+# pure-python versions of these, as in the Windows build: their 2022 C
+# extensions are not worth compiling with today's Apple clang
+export AIOHTTP_NO_EXTENSIONS=1
+export YARL_NO_EXTENSIONS=1
+export MULTIDICT_NO_EXTENSIONS=1
+export FROZENLIST_NO_EXTENSIONS=1
+# Homebrew ships CMake 4, which refuses projects asking for CMake < 3.5
+export CMAKE_POLICY_VERSION_MINIMUM=3.5
+
 info "Installing build dependencies"
 # note: re pip installing from PyPI,
 #       we prefer compiling C extensions ourselves, instead of using binary wheels,
